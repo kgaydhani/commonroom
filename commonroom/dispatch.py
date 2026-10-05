@@ -188,8 +188,10 @@ class Job:
 
 
 class Dispatcher:
-    def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False):
+    def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False, only_provider: str | None = None):
         self.cfg, self.ledger, self.log, self.dry_run = cfg, ledger, log, dry_run
+        # With one dispatcher per provider, each takes only jobs whose policy choice is its own provider.
+        self.only_provider = only_provider
         self.project = cfg["project"].get("name")
         self.root = Path(cfg["_root"]) if cfg.get("_root") else None
         self.board = board or GitHubBoard(cfg["project"]["repo"])
@@ -214,7 +216,11 @@ class Dispatcher:
                 review = "APPROVE"
             if review == "APPROVE" and checks == "green":
                 if not self.dry_run:
-                    self.board.merge(pr["number"])
+                    try:
+                        self.board.merge(pr["number"])
+                    except Exception as exc:  # e.g. another dispatcher merged it a moment ago
+                        actions.append(f"merge of PR #{pr['number']} skipped: {str(exc)[:120]}")
+                        continue
                     run = self.ledger.start_run(self.project, f"#{issue_no}", "merge", "none")
                     self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
                 actions.append(f"merged PR #{pr['number']} (issue #{issue_no})")
@@ -255,6 +261,12 @@ class Dispatcher:
             return [f"deploy FAILED: {type(exc).__name__}: {str(exc)[:160]}"]
 
     # Choosing work ---------------------------------------------------------------------------------
+    def choose(self, spec: list[str], allowed: dict[str, gate.Verdict], exclude: str | None = None):
+        choice = choose_provider(spec, allowed, exclude=exclude) or (choose_provider(spec, allowed) if exclude else None)
+        if choice and self.only_provider and choice[0] != self.only_provider:
+            return None
+        return choice
+
     def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         issue_labels = None
@@ -270,44 +282,45 @@ class Dispatcher:
                 high_risk = "risk:high" in issue_labels.get(int(m.group(1)), set())
                 spec = self.roles.get("reviewer_high_risk" if high_risk else "reviewer", builder_spec)
                 built_by = self.last_provider(f"#{m.group(1)}", "builder")
-                choice = choose_provider(spec, allowed, exclude=built_by) or choose_provider(spec, allowed)
+                choice = self.choose(spec, allowed, exclude=built_by)
                 if choice:
                     return Job("review", "reviewer", pr=detail, reason=f"PR #{pr['number']} awaits {'high-risk ' if high_risk else ''}review"), *choice
         open_now = self.board.open_issues(None)
         ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)
-                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone)]
+                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
+                      or any(l.startswith("provider:") for l in labels(i)))]
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i)]
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
         if owner:
-            choice = choose_provider(self.roles.get("director", ["claude:opus"]), allowed)
+            choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=owner), *choice
         scout_spec = self.roles.get("scout", ["claude:sonnet"])
         # Research must not starve behind an endless build queue: a ready scout task goes first every few hours.
         if scouting and time.time() - self.last_run_at("scout") > SCOUT_INTERLEAVE:
-            choice = choose_provider(scout_spec, allowed)
+            choice = self.choose(scout_spec, allowed)
             if choice:
                 issue = min(scouting, key=lambda i: i["number"])
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
         for issue in sorted(ready, key=lambda i: i["number"]):
             # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
             pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
-            choice = choose_provider(pinned or builder_spec, allowed)
+            choice = self.choose(pinned or builder_spec, allowed)
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
         for issue in sorted(scouting, key=lambda i: i["number"]):
-            choice = choose_provider(scout_spec, allowed)
+            choice = self.choose(scout_spec, allowed)
             if choice:
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
         sweep = self.capability_sweep_due()
-        if sweep and choose_provider(scout_spec, allowed):
+        if sweep and self.choose(scout_spec, allowed):
             issue = self.create_sweep_issue(sweep)
             if issue:
-                return Job("build", "scout", issue=issue, reason=f"scheduled capability sweep: {sweep}"), *choose_provider(scout_spec, allowed)
+                return Job("build", "scout", issue=issue, reason=f"scheduled capability sweep: {sweep}"), *self.choose(scout_spec, allowed)
         trigger = self.director_trigger()
         if trigger:
-            choice = choose_provider(self.roles.get("director", ["claude:opus"]), allowed)
+            choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=trigger), *choice
         return None
@@ -581,7 +594,7 @@ class Dispatcher:
 
     def run_once(self) -> dict:
         self.refresh_readings(time.time())
-        report = {"housekeeping": self.housekeeping()}
+        report = {"housekeeping": self.housekeeping() if self.only_provider in (None, "claude") else []}
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()

@@ -159,19 +159,24 @@ def cmd_run(args) -> int:
         print("No room.toml found; run inside a project")
         return 2
     ledger = Ledger()
-    lock = ledger.path.parent / f"{cfg['project'].get('name') or 'default'}.lock"
+    name = cfg['project'].get('name') or 'default'
+    tag = f" [{args.provider}]" if args.provider else ""
+    # One dispatcher per provider (or one for all): each has its own lock so Claude and Codex work in parallel.
+    lock = ledger.path.parent / f"{name}{'-' + args.provider if args.provider else ''}.lock"
     if not args.dry_run and not acquire_lock(lock):
         print(f"another dispatcher holds {lock}; exiting")
         ledger.close()
         return 0
-    dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, log=lambda line: print(f"{datetime.now():%H:%M:%S} {line}", flush=True))
-    stop_file = ledger.path.parent / f"{cfg['project'].get('name') or 'default'}.stop"
+    dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, only_provider=args.provider,
+                            log=lambda line: print(f"{datetime.now():%H:%M:%S}{tag} {line}", flush=True))
+    # `room stop` writes a timestamp; every dispatcher started before it exits between jobs.
+    stop_file = ledger.path.parent / f"{name}.stop"
+    started = time.time()
     try:
         while True:
             report = dispatcher.run_once()
-            if stop_file.exists():
-                stop_file.unlink(missing_ok=True)
-                print(f"{datetime.now():%H:%M:%S} stop requested; exiting between jobs", flush=True)
+            if stop_file.exists() and stop_file.stat().st_mtime > started:
+                print(f"{datetime.now():%H:%M:%S}{tag} stop requested; exiting between jobs", flush=True)
                 return 0
             idle = report.get("job") is None
             if args.dry_run or (not args.loop and not args.until_idle) or (args.until_idle and idle):
@@ -396,7 +401,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
-    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)

@@ -169,7 +169,8 @@ function beacon(d){
   const paused=d.breakers.find(b=>b.kind=='paused_by_owner'), breaker=d.breakers.find(b=>b.kind!='paused_by_owner');
   const allHeld=Object.values(d.usage).every(v=>!v.allowed);
   let cls='idle',state='Idle',what='Nothing ready to run. Waiting for the next task or trigger.';
-  if(run){cls='working';state='Working';what=`${roleName[run.role]||run.role} on ${esc(run.task||'-')} · ${esc(run.provider)} ${esc(run.model||'')} · ${ago(run.started_at)}`}
+  if(run){cls='working';state=d.running.length>1?`Working ×${d.running.length}`:'Working';
+    what=d.running.map(r=>`${roleName[r.role]||r.role} on ${esc(r.task||'-')} · ${esc(r.provider)} ${esc(r.model||'')} · ${ago(r.started_at)}`).join('<br>')}
   else if(breaker){cls='stopped';state='Stopped';what=esc(breaker.detail)}
   else if(paused){cls='held';state='Paused';what='Autonomy paused from the dashboard.'}
   else if(allHeld){cls='held';state='Held';what=esc(Object.values(d.usage).map(v=>v.reason).join(' · '))}

@@ -155,6 +155,24 @@ class WithLedger(unittest.TestCase):
         job, _, _ = d.pick(allowed)
         self.assertEqual((job.role, job.issue["number"]), ("builder", 60))  # scouted recently: builds first
 
+    def test_per_provider_dispatchers_split_work_by_policy(self):
+        issues = [issue(70, ["status:ready", "role:builder"]),
+                  issue(71, ["status:ready", "role:builder", "provider:codex"], milestone="M1")]
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"]["builder"] = ["claude:sonnet", "codex"]  # the real policy: Claude first, Codex overflow
+        claude = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="claude")
+        codex = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="codex")
+        job, provider, _ = claude.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (70, "claude"))   # routine build stays on Claude
+        job, provider, _ = codex.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (71, "codex"))    # pinned task, even from another milestone
+        issues[1]["labels"] = [{"name": "done"}]
+        self.assertIsNone(codex.pick(allowed))                               # Codex doesn't poach Claude's routine work
+        allowed["claude"] = gate.Verdict(False, "held")
+        job, provider, _ = codex.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (70, "codex"))    # ...unless Claude is held: overflow
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
