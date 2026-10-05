@@ -1,0 +1,27 @@
+# Common Room v2
+
+A goal-driven AI studio for one owner. It runs Claude Code and Codex workers against a project's GitHub board, spends subscription allowance only on work that produces output, and treats the owner as both boss (executive channel) and team member (room channel).
+
+- Why it exists, and what went wrong with v1: [docs/postmortem-v1.md](docs/postmortem-v1.md)
+- How it works: [docs/design.md](docs/design.md)
+
+## Use
+Run from anywhere inside a project that has a `room.toml`:
+
+```
+python D:/Dev/commonroom/room.py status          # goal, your queue, usage, runs, breakers
+python D:/Dev/commonroom/room.py usage           # meter readings and gate verdicts
+python D:/Dev/commonroom/room.py gate claude     # exit 0 if autonomous Claude work may run now
+python D:/Dev/commonroom/room.py probe codex     # read the Codex meter (no inference)
+python D:/Dev/commonroom/room.py breaker reset   # clear a tripped breaker after reading the diagnosis
+```
+
+`room tap` is a Claude Code status-line command. It records your Claude rate limits on every response and prints a compact usage line.
+
+The ledger lives at `~/.commonroom/room.sqlite3`.
+
+## Develop
+```
+python -m unittest discover -s tests -v
+```
+The core uses only the standard library. The optional `/usage` screen reader needs `pywinpty` and `pyte` (`uv pip install pywinpty pyte` into `.venv`).
