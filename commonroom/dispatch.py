@@ -253,10 +253,19 @@ class Dispatcher:
             bash = find_bash()
             if not bash:
                 return ["deploy FAILED: Git bash not found"]
-            done = subprocess.run([bash, "-lc", command], cwd=self.root, capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", timeout=900)
+            log_dir = Path(self.ledger.path).parent / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / f"deploy-{time.strftime('%Y%m%d-%H%M%S')}.log"
+            # Godot's first import of freshly pulled files can fail transiently; one retry clears it.
+            for attempt in (1, 2):
+                done = subprocess.run([bash, "-lc", command], cwd=self.root, capture_output=True, text=True,
+                                      encoding="utf-8", errors="replace", timeout=900)
+                with log_path.open("a", encoding="utf-8") as log:
+                    log.write(f"--- attempt {attempt}, exit {done.returncode}\n{done.stdout}\n{done.stderr}\n")
+                if done.returncode == 0:
+                    return [f"deploy ok{' (after a retry)' if attempt == 2 else ''}"]
             tail = (done.stdout + done.stderr).strip().splitlines()[-1:] or [""]
-            return [f"deploy {'ok' if done.returncode == 0 else 'FAILED'}: {tail[0][:160]}"]
+            return [f"deploy FAILED twice: {tail[0][:120]} (full log: {log_path})"]
         except Exception as exc:
             return [f"deploy FAILED: {type(exc).__name__}: {str(exc)[:160]}"]
 
