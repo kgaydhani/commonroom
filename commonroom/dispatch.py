@@ -337,7 +337,9 @@ class Dispatcher:
             if choice:
                 issue = min(scouting, key=priority)
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
-        if self.only_provider == "codex" and self.roles.get("codex_parallel_builds", True):
+        pinned_here = [i for i in ready if f"provider:{self.only_provider}" in labels(i)] if self.only_provider else []
+        if self.only_provider == "codex" and self.roles.get("codex_parallel_builds", True) and not pinned_here:
+            # Work only Codex can do (pinned, e.g. image generation) comes before routine parallel builds.
             # Codex shouldn't idle while there's a queue: it takes the second routine task in parallel,
             # leaving the top-priority one for Claude, and never the heavy (Opus) work.
             routine = [i for i in sorted(ready, key=priority)

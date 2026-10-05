@@ -233,6 +233,10 @@ class WithLedger(unittest.TestCase):
         self.assertEqual((job.issue["number"], provider), (100, "claude"))  # Claude keeps the first
         issues.pop(1)
         self.assertIsNone(codex.pick(allowed))                               # one routine task left: it stays Claude's
+        issues.append(issue(103, ["status:ready", "role:builder", "size:S"]))
+        issues.append(issue(104, ["status:ready", "role:builder", "provider:codex"], milestone="M1"))
+        job, _, _ = codex.pick(allowed)
+        self.assertEqual(job.issue["number"], 104)                           # pinned Codex-only work beats parallel routine
 
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
