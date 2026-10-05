@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, usage
 from commonroom.dispatch import Dispatcher, verdicts
@@ -284,6 +286,42 @@ def cmd_peek(args) -> int:
     return 0
 
 
+def _port_open(port: int) -> bool:
+    import socket
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def cmd_services(args) -> int:
+    """Start the project's long-running services if they aren't up: the dashboard, plus anything in [services]."""
+    import subprocess
+    cfg = config_mod.load()
+    root = cfg.get("_root")
+    if not root:
+        print("No room.toml found; run inside a project")
+        return 2
+    room_py = str(Path(__file__).resolve().parent.parent / "room.py")
+    services = {"dashboard": {"command": [sys.executable, room_py, "dashboard"], "port": 8770}}
+    for name, spec in (cfg.get("services") or {}).items():
+        services[name] = {"command": spec["command"], "port": spec.get("port")}
+    logs = Ledger().path.parent / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    flags = 0
+    if os.name == "nt":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    for name, spec in services.items():
+        if spec.get("port") and _port_open(int(spec["port"])):
+            print(f"{name}: already running on :{spec['port']}")
+            continue
+        log = open(logs / f"service-{name}.log", "a", encoding="utf-8")
+        command = spec["command"]
+        subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                         shell=isinstance(command, str), creationflags=flags, close_fds=True)
+        print(f"{name}: started" + (f" on :{spec['port']}" if spec.get("port") else ""))
+    return 0
+
+
 def cmd_stop(args) -> int:
     """Ask a running dispatcher to exit after its current job (used to deploy new room code)."""
     cfg = config_mod.load()
@@ -357,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)
     p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
