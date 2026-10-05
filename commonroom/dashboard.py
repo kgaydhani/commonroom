@@ -59,6 +59,23 @@ def owner_queue(repo: str) -> list[dict]:
     return sorted(queue, key=lambda q: q["due"] or "9999")
 
 
+def latest_report(ledger: Ledger, project: str | None) -> dict | None:
+    """The auditor's newest status report. Its first line is `VERDICT: <ON TRACK|AT RISK|OFF TRACK> - <headline>`."""
+    path = ledger.path.parent / "reports" / (project or "default") / "latest.md"
+    if not path.exists():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    first, _, rest = text.partition("\n")
+    verdict, headline = "REPORT", first
+    if first.upper().startswith("VERDICT:"):
+        body = first.split(":", 1)[1].strip()
+        for v in ("OFF TRACK", "AT RISK", "ON TRACK"):
+            if body.upper().startswith(v):
+                verdict, headline = v, body[len(v):].lstrip(" -—:")
+                break
+    return {"verdict": verdict, "headline": headline, "body": rest.strip(), "updated": path.stat().st_mtime}
+
+
 def state(cfg: dict) -> dict:
     ledger = Ledger()
     try:
@@ -80,6 +97,7 @@ def state(cfg: dict) -> dict:
                  "weekly_spent_24h": round(sum(max(0.0, (r.get("weekly_end") or 0) - (r.get("weekly_start") or 0))
                                                for r in model_runs if r.get("weekly_start") is not None), 1)}
         result = {
+            "report": latest_report(ledger, project),
             "proof": proof,
             "now": now, "version": VERSION, "project": cfg["project"], "goal": goal, "usage": usage_state, "runs": runs,
             "running": [r for r in runs if r["status"] == "running"],
@@ -135,7 +153,8 @@ class Handler(BaseHTTPRequestHandler):
                 ledger.trip(project, PAUSE_KIND, "paused from the dashboard")
                 result = {"ok": True}
             elif self.path == "/api/resume":
-                result = {"ok": True, "cleared": ledger.clear_breakers(project, PAUSE_KIND)}
+                # Resume clears every stop (owner pause, auditor pause, breakers): the owner has decided to continue.
+                result = {"ok": True, "cleared": ledger.clear_breakers(project)}
             elif self.path == "/api/comment":
                 number, text = int(body.get("number", 0)), str(body.get("text", "")).strip()[:4000]
                 if not number or not text:

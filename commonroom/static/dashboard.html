@@ -19,7 +19,7 @@ a{color:var(--acc);text-decoration:none}
 .wrap{max-width:1200px;margin:0 auto;padding:14px 16px 70px}
 .acc{color:var(--acc)} .you{color:var(--you)} .dim{color:var(--dim)} .w{color:var(--w)}
 .blk{display:inline-block;padding:0 8px;color:var(--k)}
-.bg-acc{background:var(--acc)} .bg-you{background:var(--you)} .bg-dim{background:var(--dim)}
+.bg-acc{background:var(--acc)} .bg-you{background:var(--you)} .bg-dim{background:var(--dim)} .bg-w{background:var(--w)}
 
 /* Header rows */
 .row1{display:flex;justify-content:space-between;gap:12px;font-size:24px;color:var(--dim)}
@@ -114,6 +114,11 @@ td.t{color:var(--dim);white-space:nowrap}
   <div class="title"><span class="big" id="projBig">Common Room</span><span class="proj" id="proj"></span></div>
   <div class="line"><span class="blk bg-acc">GOAL</span><span id="goalName">-</span><span class="blocks" id="goalBlocks"></span><span class="dim" id="goalMeta"></span></div>
   <div class="line" id="beacon"><span class="blk bg-dim" id="beaconState">CHECKING</span><span id="beaconWhat"></span></div>
+
+  <section id="reportSec" style="margin-top:12px"><h2><span>Status report</span><span class="pg" id="reportWhen">P050</span></h2>
+    <div class="line"><span class="blk bg-dim" id="verdict">NO REPORT YET</span><span id="headline" class="w">The auditor publishes an overview here after its first run.</span></div>
+    <details id="reportFull"><summary class="dim" style="cursor:pointer;list-style:none">▶ Full report</summary><pre class="feed w" id="reportBody" style="color:var(--w);max-height:none;margin-top:6px"></pre></details>
+  </section>
 
   <div class="grid">
     <section id="queueSec"><h2><span>Your queue · <span id="qcount">0</span></span><span class="pg">P201</span></h2><div id="queue"><div class="empty">Loading</div></div></section>
@@ -234,6 +239,11 @@ async function refresh(){
   if(m&&!m.error){const total=m.open_issues+m.closed_issues;$('goalName').textContent=d.goal;blocks($('goalBlocks'),total?m.closed_issues/total:0);
     $('goalMeta').textContent=`${m.closed_issues}/${total} DONE${m.due_on?' · DUE '+m.due_on.slice(0,10):''}`}
   else $('goalName').textContent=d.goal||'no goal set';
+  const rp=d.report;
+  if(rp){const cls={'ON TRACK':'bg-acc','AT RISK':'bg-w','OFF TRACK':'bg-you'}[rp.verdict]||'bg-dim';
+    $('verdict').className='blk '+cls;$('verdict').textContent=rp.verdict;$('headline').textContent=rp.headline;
+    $('reportWhen').textContent='UPDATED '+new Date(rp.updated*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+ago(rp.updated)+' AGO';
+    if(!$('reportFull').open)$('reportBody').textContent=rp.body}
   beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
   const w=d.worker;$('feedHead').textContent=w?`${w.file} · ${w.count} events · updated ${ago(w.updated)} ago`:'No worker activity yet';
   $('feed').textContent=w?w.events.join('\n'):'';const f=$('feed');f.scrollTop=f.scrollHeight;

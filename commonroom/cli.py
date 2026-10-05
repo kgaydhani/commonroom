@@ -291,6 +291,60 @@ def cmd_peek(args) -> int:
     return 0
 
 
+def digest(cfg: dict, hours: float) -> dict:
+    """Everything an auditor needs about the last `hours`, in one structure."""
+    ledger, now = Ledger(), time.time()
+    project, repo, goal = cfg["project"].get("name"), cfg["project"].get("repo"), cfg["goal"].get("milestone")
+    since = now - hours * 3600
+    runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
+    for r in runs:
+        r["minutes"] = round(((r.get("ended_at") or now) - r["started_at"]) / 60, 1)
+        r["weekly_delta"] = (round(r["weekly_end"] - r["weekly_start"], 2)
+                             if r.get("weekly_end") is not None and r.get("weekly_start") is not None else None)
+    last_role = {}
+    for r in ledger.recent_runs(project, limit=500):
+        last_role.setdefault(r["role"], r["started_at"])
+    result = {
+        "window_hours": hours, "now": now, "project": cfg["project"], "goal": goal,
+        "runs": runs,
+        "summary": {"runs": len([r for r in runs if r["role"] != "merge"]),
+                    "merges": len([r for r in runs if r["role"] == "merge"]),
+                    "failed": len([r for r in runs if r["status"] in ("failed", "blocked")]),
+                    "no_output": len([r for r in runs if r["role"] != "merge" and r["status"] != "running" and not r["outputs"]])},
+        "hours_since_last": {role: round((now - t) / 3600, 1) for role, t in last_role.items()},
+        "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
+        "breakers": ledger.open_breakers(project),
+    }
+    ledger.close()
+    if repo:
+        try:
+            if goal:
+                result["milestone"] = board.milestone(repo, goal)
+            issues = board.issues(repo)
+            result["open_issues"] = [{"number": i["number"], "title": i["title"], "labels": [l["name"] for l in i["labels"]],
+                                      "milestone": (i.get("milestone") or {}).get("title")} for i in issues]
+            result["open_prs"] = board.gh(["pr", "list", "--repo", repo, "--state", "open", "--json", "number,title,headRefName,labels"]) or []
+            result["merged_prs"] = board.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "15",
+                                             "--json", "number,title,mergedAt"]) or []
+        except Exception as exc:
+            result["board_error"] = str(exc)[:300]
+    return result
+
+
+def cmd_digest(args) -> int:
+    print(json.dumps(digest(config_mod.load(), args.hours), indent=1, default=str))
+    return 0
+
+
+def cmd_pause(args) -> int:
+    """Stop autonomous work with a reason (auditor or owner). Clear it from the dashboard or with `room breaker reset`."""
+    cfg, ledger = config_mod.load(), Ledger()
+    ledger.trip(cfg["project"].get("name"), args.kind, args.reason)
+    ledger.close()
+    print(f"Autonomy paused ({args.kind}): {args.reason}")
+    return 0
+
+
 def _port_open(port: int) -> bool:
     import socket
     with socket.socket() as s:
@@ -402,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
+    p = sub.add_parser("pause", help="stop autonomous work with a reason"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor"); p.set_defaults(func=cmd_pause)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)

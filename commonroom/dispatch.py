@@ -305,6 +305,12 @@ class Dispatcher:
             choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=owner), *choice
+        # The periodic audit: the frontier model steps back, judges everything, acts, and reports to the owner.
+        audit = self.audit_due()
+        if audit:
+            choice = self.choose(self.roles.get("auditor", ["claude:fable"]), allowed)
+            if choice:
+                return Job("audit", "auditor", reason=audit), *choice
         scout_spec = self.roles.get("scout", ["claude:sonnet"])
         # Research must not starve behind an endless build queue: a ready scout task goes first every few hours.
         if scouting and time.time() - self.last_run_at("scout") > SCOUT_INTERLEAVE:
@@ -336,6 +342,30 @@ class Dispatcher:
 
     def last_run_at(self, role: str) -> float:
         return next((r["started_at"] for r in self.ledger.recent_runs(self.project, limit=200) if r["role"] == role), 0.0)
+
+    def reports_dir(self) -> Path:
+        return Path(self.ledger.path).parent / "reports" / (self.project or "default")
+
+    def audit_due(self) -> str | None:
+        """Every `[audit] every_hours` if anything happened since the last audit (or every 6h regardless)."""
+        audit = self.cfg.get("audit") or {}
+        if not audit or not audit.get("enabled", True):  # opt-in per project via [audit] in room.toml
+            return None
+        every = float(audit.get("every_hours", 1))
+        last = self.last_run_at("auditor")
+        age = time.time() - last
+        if age < every * 3600:
+            return None
+        activity = [r for r in self.ledger.recent_runs(self.project, limit=200)
+                    if r["started_at"] > last and r["role"] not in ("auditor",)]
+        if not activity and age < 6 * 3600:
+            return None
+        # Fable has its own weekly window: keep a quarter of it for the owner.
+        fable = self.ledger.latest_usage("claude").get("seven_day_fable")
+        if fable and fable["used_pct"] > 75:
+            return None
+        hours = round(min(age / 3600, 24), 1) if last else every
+        return f"periodic audit of the last {hours}h ({len(activity)} runs since the previous audit)"
 
     def capability_sweep_due(self) -> str | None:
         """A recurring research sweep, rotating through focus areas, every `[scout] every_hours`."""
@@ -426,8 +456,9 @@ class Dispatcher:
                 self.board.set_labels(job.issue["number"], add=["status:in-progress"], remove=["status:ready", "needs:changes"])
                 labelled = True
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            self._worktree = worktree
             result = run_worker(provider, role, self.prompt(job, branch), worktree, self.ledger, self.log_dir,
-                                model=model, effort="high" if job.role == "director" else None,
+                                model=model, effort="high" if job.role in ("director", "auditor") else None,
                                 stop_check=lambda: self.stop_reason(provider))
             status, outputs, note = self.assess(job, branch, before, started_iso, result)
             self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
@@ -487,7 +518,16 @@ class Dispatcher:
             actions = json.loads(m.group(1)) if m else []
         except ValueError:
             actions = []
-        outputs = [{"kind": "director", "ref": str(a)[:120]} for a in actions]
+        outputs = [{"kind": job.role, "ref": str(a)[:120]} for a in actions]
+        if job.kind == "audit":
+            report = Path(getattr(self, "_worktree", ".")) / ".room-report.md"
+            if report.exists():
+                folder = self.reports_dir()
+                folder.mkdir(parents=True, exist_ok=True)
+                text = report.read_text(encoding="utf-8")
+                (folder / f"{time.strftime('%Y%m%d-%H%M')}.md").write_text(text, encoding="utf-8")
+                (folder / "latest.md").write_text(text, encoding="utf-8")
+                outputs.insert(0, {"kind": "report", "ref": "status report"})
         return ("done" if outputs else "failed"), outputs, tail
 
     def prompt(self, job: Job, branch: str | None) -> str:
@@ -515,6 +555,15 @@ class Dispatcher:
                     f"The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment "
                     f"with `gh pr comment {p['number']} --repo {repo} --body ...` that starts with `[agent:reviewer] REVIEW: APPROVE` "
                     f"or `[agent:reviewer] REVIEW: CHANGES`.")
+        if job.kind == "audit":
+            hours = (self.cfg.get("audit") or {}).get("every_hours", 1)
+            room_py = Path(__file__).resolve().parent.parent / "room.py"
+            return (f"Common Room audit for {repo}. {job.reason}.\n"
+                    f"Start with `python \"{room_py}\" digest --hours {max(1, hours)}`, run from this directory: it lists "
+                    f"runs, merges, failures, spend, the board and usage. Follow your auditor instructions. Write the owner's "
+                    f"status report to `.room-report.md` in this directory; the room publishes it to the dashboard. Prefix "
+                    f"every comment with `[agent:auditor]`. Any repo file change goes through a branch and PR. End with one "
+                    f"line: `ACTIONS: [...]`, a JSON list of short strings naming each concrete change you made.")
         return (f"Common Room triggered a director run for {repo}. Milestone: {self.milestone}.\nTriggers: {job.reason}\n"
                 f"Handle these triggers with your director instructions. Prefix every comment with `[agent:director]`. Any repo "
                 f"file change must go through a branch and PR, never a push to main. End with one line: "

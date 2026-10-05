@@ -173,6 +173,22 @@ class WithLedger(unittest.TestCase):
         job, provider, _ = codex.pick(allowed)
         self.assertEqual((job.issue["number"], provider), (70, "codex"))    # ...unless Claude is held: overflow
 
+    def test_audit_schedule(self):
+        cfg = cfg_with(self.tmp.name)
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.assertIsNone(d.audit_due())                       # opt-in: no [audit] section, no audits
+        cfg["audit"] = {"every_hours": 1}
+        run = self.ledger.start_run("t", "#1", "builder", "claude"); self.ledger.finish_run(run, "done", outputs=[{"kind": "pr", "ref": "PR #2"}])
+        self.assertIn("periodic audit", d.audit_due())         # activity and no audit yet: due
+        a = self.ledger.start_run("t", None, "auditor", "claude"); self.ledger.finish_run(a, "done", outputs=[{"kind": "report", "ref": "x"}])
+        self.assertIsNone(d.audit_due())                       # just audited
+        self.ledger.db.execute("UPDATE runs SET started_at=started_at-7200"); self.ledger.db.commit()
+        self.assertIsNone(d.audit_due())                       # 2h later but nothing happened since: skip (cheap)
+        from commonroom import usage
+        self.ledger.record_usage([usage.observation("claude", "seven_day_fable", 80, time.time() + 3600, "test")])
+        run = self.ledger.start_run("t", "#3", "builder", "claude"); self.ledger.finish_run(run, "done")
+        self.assertIsNone(d.audit_due())                       # Fable weekly above 75%: hold
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
