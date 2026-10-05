@@ -219,6 +219,15 @@ class Dispatcher:
             detail = self.board.pr_detail(pr["number"])
             review, checks = latest_review(detail), checks_state(detail)
             issue_no = int(m.group(1))
+            # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
+            if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
+                issue = next((i for i in everything if i["number"] == issue_no), None)
+                if issue and issue["state"] == "OPEN" and "status:ready" not in labels(issue):
+                    self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
+                    self.board.comment(issue_no, f"PR #{pr['number']} conflicts with main. The next builder run merges "
+                                                 f"origin/main into the branch, resolves the conflicts and reruns the tests.")
+                    actions.append(f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder")
+                continue
             # Research reports (docs only) skip review: CI green is enough.
             if "review:skip" in labels(pr) and checks == "green":
                 review = "APPROVE"
@@ -329,7 +338,10 @@ class Dispatcher:
         for issue in sorted(ready, key=priority):
             # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
             pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
-            choice = self.choose(pinned or builder_spec, allowed)
+            # Large, high-risk and integration work goes to the heavy builder (Opus); routine work to the standard one.
+            heavy = labels(issue) & {"size:L", "risk:high", "builder:heavy"}
+            spec = pinned or (self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec)
+            choice = self.choose(spec, allowed)
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
         for issue in sorted(scouting, key=priority):
@@ -412,7 +424,12 @@ class Dispatcher:
             comments = issue.get("comments") or []
             # Only unanswered: the last word must be the owner's, and new since the last director run.
             last_is_owner = bool(comments) and not (comments[-1].get("body") or "").lstrip().startswith("[")
-            if names & {"owner:human", "kind:suggestion"} and last_is_owner and _after(comments[-1], since):
+            # A brand-new owner suggestion (not one an agent filed) gets the fast lane too.
+            fresh_suggestion = ("kind:suggestion" in names and "triaged" not in names and not comments
+                                and not (issue.get("body") or "").lstrip().startswith("[agent:"))
+            if fresh_suggestion:
+                reasons.append(f"#{issue['number']} is a new owner suggestion: triage it (accept, reject with reasons, or park)")
+            elif names & {"owner:human", "kind:suggestion"} and last_is_owner and _after(comments[-1], since):
                 reasons.append(f"#{issue['number']} has a new owner comment: answer it, accept the delivery, or close the task")
         return "; ".join(reasons) or None
 
@@ -581,7 +598,8 @@ class Dispatcher:
             n = job.issue["number"]
             pr = self.board.pr_for_branch(branch)
             extra = (f"\nA PR already exists for this branch (#{pr['number']}). Read its review comments with "
-                     f"`gh pr view {pr['number']} --repo {repo} --comments`, address every point, and push to the same branch."
+                     f"`gh pr view {pr['number']} --repo {repo} --comments`, address every point, and push to the same branch. If the PR conflicts with main, first merge origin/main into "
+                     f"the branch and resolve the conflicts, then rerun the tests."
                      if pr and pr["state"] == "OPEN" else "")
             if job.role == "scout":
                 return (f"Do the research in GitHub issue #{n} in {repo}. You are on branch `{branch}` in a fresh worktree. "

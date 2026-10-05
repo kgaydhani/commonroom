@@ -189,6 +189,36 @@ class WithLedger(unittest.TestCase):
         run = self.ledger.start_run("t", "#3", "builder", "claude"); self.ledger.finish_run(run, "done")
         self.assertIsNone(d.audit_due())                       # Fable weekly above 75%: hold
 
+    def test_heavy_work_goes_to_opus(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:sonnet"], builder_heavy=["claude:opus"])
+        issues = [issue(80, ["status:ready", "role:builder", "size:L"])]
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "x")}
+        _, provider, model = d.pick(allowed)
+        self.assertEqual((provider, model), ("claude", "opus"))
+        issues[0]["labels"] = [{"name": n} for n in ("status:ready", "role:builder", "size:S")]
+        _, _, model = d.pick(allowed)
+        self.assertEqual(model, "sonnet")
+
+    def test_new_owner_suggestion_gets_fast_lane(self):
+        issues = [issue(90, ["kind:suggestion"], body="worried about sonnet"),
+                  issue(91, ["kind:suggestion"], body="[agent:scout] try X")]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        reason = d.owner_trigger()
+        self.assertIn("#90", reason); self.assertNotIn("#91", reason)   # agent-filed suggestions wait for the slow lane
+
+    def test_conflicting_pr_goes_back_to_builder(self):
+        issues = [issue(95, ["status:review"])]
+        detail = {"number": 96, "headRefName": "i95-x", "mergeable": "CONFLICTING", "commits": [], "comments": [],
+                  "statusCheckRollup": []}
+        fake = FakeBoard(issues, prs=[{"number": 96, "headRefName": "i95-x"}], details={96: detail})
+        fake.comment = lambda n, body: setattr(fake, "commented", n)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertTrue(any("merge conflicts" in a for a in actions))
+        self.assertIn((95, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

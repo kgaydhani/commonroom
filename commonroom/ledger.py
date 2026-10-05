@@ -151,7 +151,7 @@ class Ledger:
         return result
 
     def task_failures(self, project: str | None, task: str) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM runs WHERE project IS ? AND task=? AND status='failed'",
+        return self.db.execute("SELECT COUNT(*) FROM runs WHERE project IS ? AND task=? AND status IN ('failed', 'blocked')",
                                (project, task)).fetchone()[0]
 
     # Breakers --------------------------------------------------------------
