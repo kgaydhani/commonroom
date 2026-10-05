@@ -59,6 +59,19 @@ class UsageParsing(unittest.TestCase):
         self.assertEqual(datetime.fromtimestamp(obs["five_hour"]["resets_at"], ZoneInfo(tz)).hour, 13)
         self.assertEqual(datetime.fromtimestamp(obs["seven_day"]["resets_at"], ZoneInfo(tz)).day, 8)
 
+    def test_usage_limit_messages(self):
+        codex = ('{"type": "error", "message": "You\u2019ve hit your usage limit. Upgrade to Pro, visit '
+                 'https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 8:31 PM."}')
+        when = datetime.fromtimestamp(usage.limit_hit([codex], NOW)).astimezone()
+        self.assertEqual((when.hour, when.minute), (20, 31))
+        self.assertGreater(usage.limit_hit([codex], NOW), NOW)
+        self.assertEqual(usage.limit_hit(["Claude AI usage limit reached|1759700000"], NOW), 1759700000.0)
+        tz = "Europe/London"
+        when = datetime.fromtimestamp(usage.limit_hit(["You've hit your limit · resets 10pm (Europe/London)"], NOW), ZoneInfo(tz))
+        self.assertEqual(when.hour, 22)
+        self.assertEqual(usage.limit_hit(["usage limit reached, no time given"], NOW), NOW + 1800)
+        self.assertIsNone(usage.limit_hit(["tests failed: 3", "rate of fire limit is 4"], NOW))
+
     def test_rejects_garbage(self):
         with self.assertRaises(ValueError):
             usage.observation("claude", "five_hour", float("nan"), None, "x")
@@ -109,10 +122,11 @@ class Gate(unittest.TestCase):
         self.assertFalse(v.allowed); self.assertIn("weekly pace", v.reason)
 
     def test_codex_can_run_dry(self):
-        v = gate.usage_verdict("codex", readings(95, 97, week_elapsed=0.1), config.DEFAULTS["budget"]["codex"], NOW, 600)
+        v = gate.usage_verdict("codex", readings(90, 94, week_elapsed=0.1), config.DEFAULTS["budget"]["codex"], NOW, 600)
         self.assertTrue(v.allowed)
-        v = gate.usage_verdict("codex", readings(100, 97), config.DEFAULTS["budget"]["codex"], NOW, 600)
-        self.assertFalse(v.allowed)
+        # ...but not on the last few points: at 96% Codex refused the job outright (2026-10-05).
+        v = gate.usage_verdict("codex", readings(96, 32), config.DEFAULTS["budget"]["codex"], NOW, 600)
+        self.assertFalse(v.allowed); self.assertIn("nearly empty", v.reason)
 
 
 class LedgerAndBreakers(unittest.TestCase):

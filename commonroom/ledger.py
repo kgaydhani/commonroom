@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS breakers (
     detail TEXT,
     cleared_at REAL
 );
+CREATE TABLE IF NOT EXISTS cooldowns (
+    provider TEXT PRIMARY KEY,
+    until REAL NOT NULL,
+    reason TEXT
+);
 """
 
 
@@ -132,15 +137,17 @@ class Ledger:
                  cost_usd, note, session_id, run_id))
 
     def recent_runs(self, project: str | None = None, limit: int = 20, autonomous: bool | None = None,
-                    finished: bool = False) -> list[dict]:
+                    finished: bool = False, provider: str | None = None) -> list[dict]:
         clauses, params = [], []
         if project is not None:
             clauses.append("project=?"); params.append(project)
+        if provider is not None:
+            clauses.append("provider=?"); params.append(provider)
         if autonomous is not None:
             clauses.append("autonomous=?"); params.append(int(autonomous))
         if finished:
-            # Room-side errors spent no model allowance, so breakers ignore them.
-            clauses.append("status NOT IN ('running', 'room-error')")
+            # Room-side errors, provider usage limits and gate stops say nothing about the work, so breakers ignore them.
+            clauses.append("status NOT IN ('running', 'room-error', 'limited', 'stopped')")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self.db.execute(f"SELECT * FROM runs {where} ORDER BY started_at DESC LIMIT ?", (*params, limit)).fetchall()
         result = []
@@ -173,3 +180,15 @@ class Ledger:
             query += " AND kind=?"; params.append(kind)
         with self.db:
             return self.db.execute(query, params).rowcount
+
+    # Cooldowns: a provider refused work (usage limit hit) and must not be asked again until `until`.
+    def set_cooldown(self, provider: str, until: float, reason: str):
+        with self.db:
+            self.db.execute("INSERT INTO cooldowns (provider, until, reason) VALUES (?,?,?) "
+                            "ON CONFLICT(provider) DO UPDATE SET until=excluded.until, reason=excluded.reason",
+                            (provider, until, reason))
+
+    def cooldown(self, provider: str, now: float | None = None) -> dict | None:
+        row = self.db.execute("SELECT * FROM cooldowns WHERE provider=?", (provider,)).fetchone()
+        now = time.time() if now is None else now
+        return dict(row) if row and row["until"] > now else None

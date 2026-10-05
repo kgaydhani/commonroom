@@ -3,7 +3,7 @@ import time
 import unittest
 from pathlib import Path
 
-from commonroom import config, dispatch, gate
+from commonroom import config, dispatch, gate, usage, workers
 from commonroom.ledger import Ledger
 
 
@@ -241,6 +241,48 @@ class WithLedger(unittest.TestCase):
         issues.append(issue(104, ["status:ready", "role:builder", "provider:codex"], milestone="M1"))
         job, _, _ = codex.pick(allowed)
         self.assertEqual(job.issue["number"], 104)                           # pinned Codex-only work beats parallel routine
+
+    def fresh_readings(self, now):
+        for provider in ("claude", "codex"):
+            self.ledger.record_usage([usage.observation(provider, "five_hour", 5, now + 3600, "test"),
+                                      usage.observation(provider, "seven_day", 5, now + 3 * 86400, "test")], now=now)
+
+    def test_breakers_and_limits_hold_one_provider_only(self):
+        now = time.time()
+        self.fresh_readings(now)
+        cfg = cfg_with(self.tmp.name)
+        for i in range(3):   # Codex refused three jobs: usage limit, not the work's fault
+            run = self.ledger.start_run("t", f"#{i}", "builder", "codex", now=now - 300 + i)
+            self.ledger.finish_run(run, "limited", now=now - 290 + i)
+        v = dispatch.verdicts(self.ledger, cfg, now)
+        self.assertTrue(v["claude"].allowed and v["codex"].allowed)
+        for i in range(3):   # three real empty Codex runs hold Codex, and only Codex
+            run = self.ledger.start_run("t", f"#{i}", "builder", "codex", now=now - 200 + i)
+            self.ledger.finish_run(run, "failed", now=now - 190 + i)
+        v = dispatch.verdicts(self.ledger, cfg, now)
+        self.assertTrue(v["claude"].allowed); self.assertFalse(v["codex"].allowed)
+        self.assertEqual([b["kind"] for b in self.ledger.open_breakers("t")], ["no_output:codex"])
+        self.ledger.clear_breakers("t")
+        self.ledger.set_cooldown("claude", now + 600, "usage limit hit")
+        v = dispatch.verdicts(self.ledger, cfg, now)
+        self.assertFalse(v["claude"].allowed); self.assertIn("resting until", v["claude"].reason)
+        self.assertTrue(dispatch.verdicts(self.ledger, cfg, now + 601)["claude"].allowed)
+        self.ledger.trip("t", "pause", "owner pause")   # an owner pause still holds everyone
+        v = dispatch.verdicts(self.ledger, cfg, now + 601)
+        self.assertFalse(v["claude"].allowed or v["codex"].allowed)
+
+    def test_refused_or_stopped_work_goes_back_without_a_failed_attempt(self):
+        board = FakeBoard([issue(70, ["status:in-progress", "role:builder"])])
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        job = dispatch.Job("build", "builder", issue=board.issues[0], reason="ready")
+        until = time.time() + 900
+        status, outputs, note = d.requeue(job, "codex", workers.WorkerResult(ok=False, limited_until=until))
+        self.assertEqual((status, outputs), ("limited", []))
+        self.assertEqual(self.ledger.cooldown("codex")["until"], until)
+        self.assertIn((70, ("status:ready",), ("status:in-progress",)), board.label_calls)
+        status, _, note = d.requeue(job, "claude", workers.WorkerResult(ok=False, interrupted="breaker open: x"))
+        self.assertEqual(status, "stopped"); self.assertIsNone(self.ledger.cooldown("claude"))
+        self.assertEqual(self.ledger.task_failures("t", "#70"), 0)
 
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]

@@ -8,6 +8,7 @@ from commonroom.usage import WINDOW_SECONDS
 REQUIRED = ("five_hour", "seven_day")
 STALE_MAX_AGE = 3600   # never act on a reading older than this
 STALE_HEADROOM = 30    # percentage points of headroom needed to act on a stale reading
+MIN_START_HEADROOM = 5 # never start a job on the last few points of a window: it would be refused mid-run
 
 
 @dataclass
@@ -50,6 +51,10 @@ def usage_verdict(provider: str, readings: dict[str, dict], policy: dict, now: f
         return Verdict(False, f"{provider}: weekly reserve reached ({week['used_pct']:.0f}% used, {reserve_w}% kept back)", detail)
     if 100 - session["used_pct"] <= reserve_5:
         return Verdict(False, f"{provider}: 5-hour reserve reached ({session['used_pct']:.0f}% used, {reserve_5}% kept back)", detail)
+    for name, row in (("weekly", week), ("5-hour", session)):
+        # Even when running a provider dry, a job started on the last few points fails at once.
+        if 100 - row["used_pct"] < MIN_START_HEADROOM:
+            return Verdict(False, f"{provider}: {name} window nearly empty ({row['used_pct']:.0f}% used)", detail)
 
     if policy.get("pace") and week.get("resets_at") and session.get("resets_at"):
         weekly_allowed = (100 - reserve_w) * _fraction(now, week["resets_at"], "seven_day") + policy.get("weekly_slack", 0)

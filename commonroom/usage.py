@@ -98,6 +98,47 @@ def _ui_reset(text: str, now: float) -> float:
     raise ValueError("Claude reset format changed")
 
 
+LIMIT_PATTERNS = (r"hit your usage limit", r"usage limit reached", r"hit your limit", r"(5-hour|weekly|session) limit reached")
+
+
+def _clock_time(label: str, now: float, tz: str | None = None) -> float | None:
+    """'8:31 PM' or '10pm' -> the next such time after `now`, in `tz` or the machine's local zone."""
+    label = label.strip().upper().replace(" ", "")
+    local = datetime.fromtimestamp(now, ZoneInfo(tz)) if tz else datetime.fromtimestamp(now).astimezone()
+    for fmt in ("%I:%M%p", "%I%p"):
+        try:
+            parsed = datetime.strptime(label, fmt)
+        except ValueError:
+            continue
+        result = local.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+        if result.timestamp() <= now:
+            result += timedelta(days=1)
+        return result.timestamp()
+    return None
+
+
+def limit_hit(texts: list[str], now: float, fallback: float = 1800) -> float | None:
+    """If a worker stopped because its provider's usage limit was hit, when to try again (epoch seconds).
+
+    Codex: "You've hit your usage limit ... try again at 8:31 PM."  Claude: "Claude AI usage limit reached|<epoch>"
+    or "You've hit your limit · resets 10pm (Europe/London)". None means this was not a usage-limit stop."""
+    text = " ".join(t for t in texts if t).replace("\\u2019", "'").replace("’", "'")
+    if not any(re.search(p, text, re.I) for p in LIMIT_PATTERNS):
+        return None
+    epoch = re.search(r"limit reached\|(\d{10})", text, re.I)
+    if epoch:
+        return float(epoch[1])
+    clock = re.search(r"(?:try again at|resets(?: at)?)\s+(\d{1,2}(?::\d{2})?\s?[ap]m)(?:\s*\(([\w/+-]+)\))?", text, re.I)
+    if clock:
+        try:
+            when = _clock_time(clock[1], now, clock[2])
+        except Exception:
+            when = None
+        if when:
+            return when
+    return now + fallback
+
+
 def parse_claude_screen(text: str, now: float) -> list[dict]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     result, current = [], None

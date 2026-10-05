@@ -317,7 +317,9 @@ def digest(cfg: dict, hours: float) -> dict:
         "summary": {"runs": len([r for r in runs if r["role"] != "merge"]),
                     "merges": len([r for r in runs if r["role"] == "merge"]),
                     "failed": len([r for r in runs if r["status"] in ("failed", "blocked")]),
-                    "no_output": len([r for r in runs if r["role"] != "merge" and r["status"] != "running" and not r["outputs"]])},
+                    "no_output": len([r for r in runs if r["role"] != "merge" and not r["outputs"]
+                                      and r["status"] not in ("running", "room-error", "limited", "stopped")]),
+                    "limited": len([r for r in runs if r["status"] == "limited"])},
         "hours_since_last": {role: round((now - t) / 3600, 1) for role, t in last_role.items()},
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
         "breakers": ledger.open_breakers(project),

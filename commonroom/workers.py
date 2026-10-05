@@ -34,6 +34,8 @@ class WorkerResult:
     cost_usd: float | None = None
     errors: list[str] = field(default_factory=list)
     log: str | None = None
+    interrupted: str | None = None      # the room stopped it (gate closed, breaker, timeout)
+    limited_until: float | None = None  # the provider refused: usage limit hit, retry after this time
 
 
 def load_role(project_root: str | Path, name: str) -> Role:
@@ -119,6 +121,8 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
             reason = stop_check() if stop_check else None
             if reason or time.monotonic() > deadline:
                 result.errors.append(reason or f"timed out after {timeout:.0f}s")
+                if reason:
+                    result.interrupted = reason
                 _kill(process)
                 break
             try:
@@ -178,6 +182,8 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
         _kill(process)
     if process.returncode not in (0, None):
         result.ok = False
+    if not result.ok:
+        result.limited_until = usage.limit_hit(result.errors + [result.final_text or ""], time.time())
     return result
 
 

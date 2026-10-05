@@ -149,14 +149,22 @@ def owner_comments(issue: dict) -> list[dict]:
 def verdicts(ledger: Ledger, cfg: dict, now: float | None = None) -> dict[str, gate.Verdict]:
     now = time.time() if now is None else now
     project = cfg["project"].get("name")
-    runs = ledger.recent_runs(project, limit=cfg["breakers"]["no_output_runs"], autonomous=True, finished=True)
-    breaker, trip = gate.breaker_verdict(ledger.open_breakers(project), runs, cfg["breakers"]["no_output_runs"])
-    if trip:
-        ledger.trip(project, trip["kind"], trip["detail"], now=now)
+    n = cfg["breakers"]["no_output_runs"]
     result = {}
     for provider in ("claude", "codex"):
+        # A provider that keeps producing nothing is held on its own; the other keeps working.
+        # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
+        runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider)
+        mine = [b for b in ledger.open_breakers(project) if ":" not in b["kind"] or b["kind"].endswith(":" + provider)]
+        breaker, trip = gate.breaker_verdict(mine, runs, n)
+        if trip:
+            ledger.trip(project, f"{trip['kind']}:{provider}", trip["detail"], now=now)
         v = gate.usage_verdict(provider, ledger.latest_usage(provider), config_mod.budget(cfg, provider), now,
                                cfg["freshness_seconds"])
+        cool = ledger.cooldown(provider, now)
+        if v.allowed and cool:
+            v = gate.Verdict(False, f"{provider}: {cool['reason']}; resting until "
+                                    f"{time.strftime('%H:%M', time.localtime(cool['until']))}", v.detail)
         result[provider] = v if (not v.allowed or breaker.allowed) else gate.Verdict(False, breaker.reason, v.detail)
     return result
 
@@ -502,9 +510,12 @@ class Dispatcher:
             result = run_worker(provider, role, self.prompt(job, branch), worktree, self.ledger, self.log_dir,
                                 model=model, effort="high" if job.role in ("director", "auditor") else None,
                                 stop_check=lambda: self.stop_reason(provider))
-            if provider == "codex" and job.kind == "build":
-                self.publish_sandboxed_work(job, worktree, branch, result)
-            status, outputs, note = self.assess(job, branch, before, started_iso, result)
+            if result.limited_until or result.interrupted:
+                status, outputs, note = self.requeue(job, provider, result)
+            else:
+                if provider == "codex" and job.kind == "build":
+                    self.publish_sandboxed_work(job, worktree, branch, result)
+                status, outputs, note = self.assess(job, branch, before, started_iso, result)
             self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
                                    note, session_id=result.session_id)
             self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
@@ -525,6 +536,19 @@ class Dispatcher:
             self.cleanup_worktree(worktree)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def requeue(self, job: Job, provider: str, result) -> tuple[str, list, str]:
+        """The provider refused (usage limit) or the room stopped the worker. Neither is the task's fault:
+        put it back untouched, without counting a failed attempt, and rest the provider until its limit resets."""
+        if result.limited_until:
+            self.ledger.set_cooldown(provider, result.limited_until, "usage limit hit")
+            status = "limited"
+            note = f"{provider} usage limit hit; resting until {time.strftime('%H:%M', time.localtime(result.limited_until))}"
+        else:
+            status, note = "stopped", f"stopped by the room: {result.interrupted}"
+        if job.issue:
+            self.board.set_labels(job.issue["number"], add=["status:ready"], remove=["status:in-progress"])
+        return status, [], note
 
     def preserve_work(self, job: Job, worktree: Path, branch: str | None):
         """Never throw work away: uncommitted changes on a build branch are committed as WIP and pushed
