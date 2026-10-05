@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import time
 
 OWNER_LABEL = "owner:human"
 READY_LABEL = "status:ready"
@@ -12,7 +13,20 @@ READY_LABEL = "status:ready"
 def gh(args: list[str], timeout: float = 30) -> object:
     if not shutil.which("gh"):
         raise RuntimeError("GitHub CLI (gh) not found")
-    done = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+    # GitHub has transient failures (GraphQL "Something went wrong", 5xx, rate limits): retry with backoff.
+    for attempt in range(4):
+        try:
+            done = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+        except subprocess.TimeoutExpired:
+            if attempt == 3:
+                raise
+            time.sleep(2 ** attempt * 2)
+            continue
+        transient = any(s in (done.stderr or "") for s in ("Something went wrong", "502", "503", "504", "timeout",
+                                                             "rate limit", "connection reset", "EOF"))
+        if done.returncode == 0 or not transient or attempt == 3:
+            break
+        time.sleep(2 ** attempt * 2)
     if done.returncode != 0:
         raise RuntimeError(done.stderr.strip() or f"gh {' '.join(args)} failed")
     out = done.stdout.strip()

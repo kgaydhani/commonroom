@@ -174,7 +174,14 @@ def cmd_run(args) -> int:
     started = time.time()
     try:
         while True:
-            report = dispatcher.run_once()
+            try:
+                report = dispatcher.run_once()
+            except Exception as exc:  # one bad pass (GitHub hiccup, git race) must not stop the room
+                import traceback
+                print(f"{datetime.now():%H:%M:%S}{tag} pass failed, continuing: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
+                traceback.print_exc()
+                time.sleep(30)
+                continue
             if stop_file.exists() and stop_file.stat().st_mtime > started:
                 print(f"{datetime.now():%H:%M:%S}{tag} stop requested; exiting between jobs", flush=True)
                 return 0
