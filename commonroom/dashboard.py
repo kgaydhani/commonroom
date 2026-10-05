@@ -135,18 +135,17 @@ function renderQueue(q){const el=$('queue');
  const typing=document.activeElement&&document.activeElement.tagName=='INPUT'&&el.contains(document.activeElement)&&document.activeElement.value;
  if(typing)return; // don't redraw while you're mid-sentence
  const status=i=>{const last=i.comments[i.comments.length-1];if(!last)return'';if(last.who=='agent')return' <span class="tag go">reply waiting</span>';
-  return /^done/i.test(last.body)?' <span class="tag">done, awaiting check</span>':' <span class="tag">sent, awaiting reply</span>'};
+  return ' <span class="tag">sent, the director will reply or close it</span>'};
  el.innerHTML=q.map(i=>`<details data-n="${i.number}" ${openItems.has(i.number)?'open':''} style="border-top:1px solid var(--line);padding:6px 0">
   <summary><b>#${i.number}</b> ${esc(i.title.replace(/^\\[You\\]\\s*/,''))} <span class="muted">due ${esc(i.due||'-')}</span>${status(i)}</summary>
   <pre style="max-height:180px;margin:6px 0">${esc(i.brief)}</pre>
   ${i.comments.map(c=>`<div style="font-size:13px;margin:4px 0"><b class="${c.who=='you'?'':'go'}">${c.who=='you'?'You':'Room'}:</b> ${esc(c.body)}</div>`).join('')}
-  <form data-n="${i.number}" style="margin-top:6px"><input name="text" placeholder="Answer, question, or what you delivered"><button name="act" value="send" title="Send a message: an answer or a question">Send</button><button name="act" value="done" title="I've finished this. The director checks it and closes it">Done</button></form>
-  <div class="muted" style="font-size:12px">Send = message. Done = finished (one press is enough; it closes once the director has checked it).</div>
+  <form data-n="${i.number}" style="margin-top:6px"><input name="text" placeholder="Answer, question, or what you delivered"><button>Send</button></form>
+  <div class="muted" style="font-size:12px">If your reply completes the task, the director checks it and closes it. Otherwise it answers.</div>
   <a href="${esc(i.url)}" target="_blank" class="muted" style="font-size:12px">open on GitHub</a></details>`).join('');
  el.querySelectorAll('details').forEach(x=>x.ontoggle=()=>{const n=+x.dataset.n;x.open?openItems.add(n):openItems.delete(n)});
- el.querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const act=e.submitter?e.submitter.value:'send';let t=f.text.value.trim();
-  if(act=='send'&&!t){f.text.placeholder='Write something first';return}
-  if(act=='done')t='done'+(t?': '+t:'');
+ el.querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const t=f.text.value.trim();
+  if(!t){f.text.placeholder='Write something first';return}
   const btns=f.querySelectorAll('button');btns.forEach(b=>b.disabled=true);
   const res=await post('/api/comment',{number:+f.dataset.n,text:t});btns.forEach(b=>b.disabled=false);
   if(res.error){alert(res.error);return}
