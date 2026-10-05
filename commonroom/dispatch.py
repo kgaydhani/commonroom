@@ -445,14 +445,20 @@ class Dispatcher:
     def refresh_readings(self, now: float):
         """Re-read stale meters without inference. Failures just leave the reading stale (the gate holds)."""
         limit = self.cfg["freshness_seconds"] * 0.6
+        failed = getattr(self, "_probe_failed", {})
+        self._probe_failed = failed
         for provider, reader in (("codex", usage.codex_limits), ("claude", usage.claude_screen_limits)):
             rows = self.ledger.latest_usage(provider)
             if rows and all(now - r["observed_at"] < limit for r in rows.values()):
                 continue
+            if now - failed.get(provider, 0) < 1800:
+                continue  # a probe that just failed will fail again; workers' own events keep readings fresh
             try:
                 self.ledger.record_usage(reader())
+                failed.pop(provider, None)
             except Exception as exc:
-                self.log(f"   {provider} meter refresh failed: {str(exc)[:160]}")
+                failed[provider] = now
+                self.log(f"   {provider} meter refresh failed (retrying in 30 min): {str(exc)[:160]}")
 
     def run_once(self) -> dict:
         self.refresh_readings(time.time())
