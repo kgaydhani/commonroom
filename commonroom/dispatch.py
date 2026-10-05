@@ -45,6 +45,15 @@ def dependencies(body: str | None) -> set[int]:
     return deps
 
 
+def find_bash() -> str | None:
+    """Git for Windows' bash. Checked before PATH, which can hold WSL's bash.exe and which is minimal under Task Scheduler."""
+    import shutil
+    for candidate in (r"C:\Program Files\Git\bin\bash.exe", r"C:\Program Files\Git\usr\bin\bash.exe", shutil.which("bash")):
+        if candidate and Path(candidate).exists() and "system32" not in candidate.lower():
+            return candidate
+    return None
+
+
 def git(args: list[str], cwd: Path) -> str:
     done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
     if done.returncode != 0:
@@ -233,10 +242,17 @@ class Dispatcher:
         command = (self.cfg.get("deploy") or {}).get("after_merge")
         if not command or not self.root:
             return []
-        done = subprocess.run(["bash", "-lc", command], cwd=self.root, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=900)
-        tail = (done.stdout + done.stderr).strip().splitlines()[-1:] or [""]
-        return [f"deploy {'ok' if done.returncode == 0 else 'FAILED'}: {tail[0][:160]}"]
+        # A failed deploy is reported, never fatal: the merge already happened and the loop must keep going.
+        try:
+            bash = find_bash()
+            if not bash:
+                return ["deploy FAILED: Git bash not found"]
+            done = subprocess.run([bash, "-lc", command], cwd=self.root, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=900)
+            tail = (done.stdout + done.stderr).strip().splitlines()[-1:] or [""]
+            return [f"deploy {'ok' if done.returncode == 0 else 'FAILED'}: {tail[0][:160]}"]
+        except Exception as exc:
+            return [f"deploy FAILED: {type(exc).__name__}: {str(exc)[:160]}"]
 
     # Choosing work ---------------------------------------------------------------------------------
     def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
