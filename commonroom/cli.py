@@ -309,7 +309,9 @@ def cmd_services(args) -> int:
     logs.mkdir(parents=True, exist_ok=True)
     flags = 0
     if os.name == "nt":
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        # CREATE_NO_WINDOW gives the service a hidden console that its children inherit. DETACHED_PROCESS would
+        # make a shell's child allocate a fresh, visible console (Windows Terminal pops up).
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
     for name, spec in services.items():
         if spec.get("port") and _port_open(int(spec["port"])):
             print(f"{name}: already running on :{spec['port']}")
