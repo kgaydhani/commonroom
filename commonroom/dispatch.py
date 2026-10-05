@@ -291,7 +291,9 @@ class Dispatcher:
                 issue = min(scouting, key=lambda i: i["number"])
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
         for issue in sorted(ready, key=lambda i: i["number"]):
-            choice = choose_provider(builder_spec, allowed)
+            # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
+            pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
+            choice = choose_provider(pinned or builder_spec, allowed)
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
         for issue in sorted(scouting, key=lambda i: i["number"]):
