@@ -219,6 +219,31 @@ class WithLedger(unittest.TestCase):
         self.assertTrue(any("merge conflicts" in a for a in actions))
         self.assertIn((95, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
 
+    def test_red_ci_goes_back_to_builder_and_infra_cancellations_rerun(self):
+        issues = [issue(65, ["status:review"]), issue(66, ["status:review"])]
+        red = {"number": 85, "headRefName": "i65-x", "mergeable": "MERGEABLE", "commits": [], "comments": [],
+               "statusCheckRollup": [{"name": "Fast tests", "conclusion": "FAILURE", "detailsUrl": "https://github.com/o/t/actions/runs/11/job/1"},
+                                     {"name": "Slow simulation tests", "conclusion": "SUCCESS"}]}
+        stuck = {"number": 86, "headRefName": "i66-y", "mergeable": "MERGEABLE", "commits": [], "comments": [],
+                 "statusCheckRollup": [{"name": "Fast tests", "conclusion": "SUCCESS"},
+                                       {"name": "Slow simulation tests", "conclusion": "CANCELLED", "detailsUrl": "https://github.com/o/t/actions/runs/22/job/2"}]}
+        fake = FakeBoard(issues, prs=[{"number": 85, "headRefName": "i65-x"}, {"number": 86, "headRefName": "i66-y"}],
+                         details={85: red, 86: stuck})
+        fake.comments, fake.reruns = [], []
+        fake.comment = lambda n, body: fake.comments.append((n, body))
+        fake.rerun_ci = lambda run_id: fake.reruns.append(run_id) or 1
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertIn((65, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+        self.assertIn("Fast tests", fake.comments[0][1])
+        self.assertEqual(fake.reruns, ["22"])                                  # the cancelled run is rerun, not blamed
+        self.assertFalse(any(n == 66 for n, *_ in fake.label_calls))
+        self.assertFalse(hasattr(fake, "merged"))
+        issues[0]["comments"] = [{"body": "[room] CI is red on PR #85"}] * 3   # third strike: the director looks
+        issues[0]["labels"] = [{"name": "status:review"}]
+        d.housekeeping()
+        self.assertIn((65, ("status:blocked", "needs:director"), ("status:review",)), fake.label_calls)
+
     def test_codex_takes_second_routine_build_in_parallel(self):
         cfg = cfg_with(self.tmp.name)
         cfg["roles"].update(builder=["claude:sonnet", "codex"], builder_heavy=["claude:opus"])

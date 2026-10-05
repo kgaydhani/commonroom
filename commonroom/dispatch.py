@@ -113,6 +113,14 @@ class GitHubBoard:
     def merge(self, number: int):
         board_mod.gh(["pr", "merge", str(number), "--repo", self.repo, "--squash", "--delete-branch"])
 
+    def rerun_ci(self, run_id: str) -> int | None:
+        """Rerun a workflow run's failed or cancelled jobs. Returns the attempt that was rerun, or None if capped."""
+        attempt = (board_mod.gh(["run", "view", run_id, "--repo", self.repo, "--json", "attempt"]) or {}).get("attempt", 1)
+        if attempt >= CI_RERUNS + 1:
+            return None
+        board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
+        return attempt
+
 
 # PR state ----------------------------------------------------------------------------------------
 def latest_review(detail: dict) -> str | None:
@@ -140,6 +148,22 @@ def checks_state(detail: dict) -> str:
     if all(s in ("SUCCESS", "NEUTRAL", "SKIPPED") for s in states):
         return "green"
     return "pending"
+
+
+INFRA_CONCLUSIONS = {"CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
+CI_RERUNS = 2          # infrastructure cancellations are rerun at most this many times per run
+CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this often before the director steps in
+
+
+def failed_checks(detail: dict) -> list[dict]:
+    return [c for c in detail.get("statusCheckRollup") or []
+            if (c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "ACTION_REQUIRED", *INFRA_CONCLUSIONS)]
+
+
+def ci_infra_only(detail: dict) -> bool:
+    """Red only because CI never really ran (runner outage, timeout, cancellation): rerun, don't blame the builder."""
+    failed = failed_checks(detail)
+    return bool(failed) and all((c.get("conclusion") or c.get("state") or "").upper() in INFRA_CONCLUSIONS for c in failed)
 
 
 def owner_comments(issue: dict) -> list[dict]:
@@ -241,6 +265,10 @@ class Dispatcher:
                                                  f"origin/main into the branch, resolves the conflicts and reruns the tests.")
                     actions.append(f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder")
                 continue
+            # Red CI: rerun what never really ran; send real failures back to the builder (never let a PR sit red).
+            if checks == "red" and not self.dry_run:
+                actions += self.handle_red_ci(pr, detail, issue_no, everything)
+                continue
             # Research reports (docs only) skip review: CI green is enough.
             if "review:skip" in labels(pr) and checks == "green":
                 review = "APPROVE"
@@ -300,6 +328,36 @@ class Dispatcher:
             return [f"deploy FAILED twice: {tail[0][:120]} (full log: {log_path})"]
         except Exception as exc:
             return [f"deploy FAILED: {type(exc).__name__}: {str(exc)[:160]}"]
+
+    def handle_red_ci(self, pr: dict, detail: dict, issue_no: int, everything: list[dict]) -> list[str]:
+        failed = failed_checks(detail)
+        if ci_infra_only(detail):
+            runs = {m.group(1) for c in failed if (m := re.search(r"/actions/runs/(\d+)", c.get("detailsUrl") or ""))}
+            done = []
+            for run_id in sorted(runs):
+                try:
+                    attempt = self.board.rerun_ci(run_id)
+                except Exception as exc:
+                    done.append(f"PR #{pr['number']}: CI rerun failed: {str(exc)[:100]}")
+                    continue
+                if attempt:
+                    done.append(f"PR #{pr['number']}: CI was cancelled/timed out (not a test failure); rerun attempt {attempt + 1}")
+            return done
+        issue = next((i for i in everything if i["number"] == issue_no), None)
+        # Only once the builder has finished (status:review); a builder still pushing will retrigger CI itself.
+        if not issue or issue["state"] != "OPEN" or "status:review" not in labels(issue):
+            return []
+        names = ", ".join(sorted({c.get("name") or c.get("context") or "check" for c in failed}))
+        bounces = sum(1 for c in issue.get("comments") or [] if "CI is red" in (c.get("body") or ""))
+        if bounces >= CI_BOUNCES:
+            self.board.set_labels(issue_no, add=["status:blocked", "needs:director"], remove=["status:review"])
+            self.board.comment(issue_no, f"CI is red again on PR #{pr['number']} ({names}) after {bounces} fixes. Escalating to the director.")
+            return [f"PR #{pr['number']} still red after {bounces} fixes; #{issue_no} escalated"]
+        self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
+        self.board.comment(issue_no, f"CI is red on PR #{pr['number']}: {names}. Read the failure with "
+                                     f"`gh pr checks {pr['number']}` and `gh run view <run id> --log-failed`, fix it on the same "
+                                     f"branch, and run `bash tools/test.sh` before pushing.")
+        return [f"PR #{pr['number']} CI red ({names}); #{issue_no} back to its builder"]
 
     # Choosing work ---------------------------------------------------------------------------------
     def choose(self, spec: list[str], allowed: dict[str, gate.Verdict], exclude: str | None = None):
@@ -685,7 +743,8 @@ class Dispatcher:
             pr = self.board.pr_for_branch(branch)
             extra = (f"\nA PR already exists for this branch (#{pr['number']}). Read its review comments with "
                      f"`gh pr view {pr['number']} --repo {repo} --comments`, address every point, and push to the same branch. If the PR conflicts with main, first merge origin/main into "
-                     f"the branch and resolve the conflicts, then rerun the tests."
+                     f"the branch and resolve the conflicts, then rerun the tests. If its CI is red (`gh pr checks {pr['number']} --repo {repo}`), "
+                     f"read the failing log (`gh run view <run id> --repo {repo} --log-failed`) and fix that first."
                      if pr and pr["state"] == "OPEN" else "")
             if job.role == "scout":
                 return (f"Do the research in GitHub issue #{n} in {repo}. You are on branch `{branch}` in a fresh worktree. "
