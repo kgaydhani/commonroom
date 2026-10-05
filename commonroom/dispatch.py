@@ -31,6 +31,12 @@ OWNER_COOLDOWN = 300
 SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
 
 
+def priority(issue: dict) -> tuple:
+    """prio:high first, prio:low last, otherwise oldest first."""
+    names = labels(issue)
+    return (0 if "prio:high" in names else 2 if "prio:low" in names else 1, issue["number"])
+
+
 def slug(title: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].strip("-")
 
@@ -318,15 +324,15 @@ class Dispatcher:
         if scouting and time.time() - self.last_run_at("scout") > SCOUT_INTERLEAVE:
             choice = self.choose(scout_spec, allowed)
             if choice:
-                issue = min(scouting, key=lambda i: i["number"])
+                issue = min(scouting, key=priority)
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
-        for issue in sorted(ready, key=lambda i: i["number"]):
+        for issue in sorted(ready, key=priority):
             # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
             pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
             choice = self.choose(pinned or builder_spec, allowed)
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
-        for issue in sorted(scouting, key=lambda i: i["number"]):
+        for issue in sorted(scouting, key=priority):
             choice = self.choose(scout_spec, allowed)
             if choice:
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
