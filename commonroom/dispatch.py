@@ -342,8 +342,9 @@ class Dispatcher:
             # Work only Codex can do (pinned, e.g. image generation) comes before routine parallel builds.
             # Codex shouldn't idle while there's a queue: it takes the second routine task in parallel,
             # leaving the top-priority one for Claude, and never the heavy (Opus) work.
+            # Codex's sandbox can't render (no Godot windows, no browser), so visual and perf work stays with Claude.
             routine = [i for i in sorted(ready, key=priority)
-                       if not labels(i) & {"size:L", "risk:high", "builder:heavy"}
+                       if not labels(i) & {"size:L", "risk:high", "builder:heavy", "kind:perf", "kind:art", "needs:render"}
                        and not any(l.startswith("provider:") for l in labels(i))]
             if len(routine) >= 2 and allowed.get("codex") and allowed["codex"].allowed:
                 return Job("build", "builder", issue=routine[1], reason=f"#{routine[1]['number']} is ready (parallel Codex build)"), "codex", None
