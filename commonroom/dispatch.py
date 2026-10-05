@@ -9,6 +9,7 @@ One pass (`run_once`):
 from __future__ import annotations
 
 import calendar
+import os
 import json
 import re
 import subprocess
@@ -198,6 +199,7 @@ class Dispatcher:
         self.milestone = cfg["goal"].get("milestone")
         self.roles = cfg.get("roles") or {}
         self.log_dir = Path(ledger.path).parent / "logs" / (self.project or "default")
+        self._provider = None
 
     # Housekeeping (no model) -----------------------------------------------------------------------
     def housekeeping(self) -> list[str]:
@@ -446,7 +448,7 @@ class Dispatcher:
         if self.dry_run:
             return {"status": "dry-run"}
         git(["fetch", "--quiet", "origin"], self.root)
-        worktree, branch = self.prepare_worktree(job)
+        worktree, branch = self.prepare_worktree(job, provider)
         run_id, labelled = None, False
         try:
             before = self.remote_head(branch)
@@ -456,10 +458,12 @@ class Dispatcher:
                 self.board.set_labels(job.issue["number"], add=["status:in-progress"], remove=["status:ready", "needs:changes"])
                 labelled = True
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            self._worktree = worktree
+            self._worktree, self._provider = worktree, provider
             result = run_worker(provider, role, self.prompt(job, branch), worktree, self.ledger, self.log_dir,
                                 model=model, effort="high" if job.role in ("director", "auditor") else None,
                                 stop_check=lambda: self.stop_reason(provider))
+            if provider == "codex" and job.kind == "build":
+                self.publish_sandboxed_work(job, worktree, branch, result)
             status, outputs, note = self.assess(job, branch, before, started_iso, result)
             self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
                                    note, session_id=result.session_id)
@@ -480,6 +484,22 @@ class Dispatcher:
             self.cleanup_worktree(worktree)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def publish_sandboxed_work(self, job: Job, worktree: Path, branch: str, result):
+        """Codex's sandbox keeps .git read-only, so the room commits, pushes and opens the PR for its changes."""
+        changes = git(["status", "--porcelain"], worktree)
+        if not changes or re.search(r"STATUS:\s*BLOCKED", result.final_text or "", re.I):
+            return
+        text = result.final_text or ""
+        title = (re.search(r"^PR_TITLE:\s*(.+)$", text, re.M) or [None, f"#{job.issue['number']}: {job.issue['title']}"])[1].strip()
+        body = text.split("PR_BODY:", 1)[1].strip() if "PR_BODY:" in text else text.strip()
+        body = re.sub(r"\n?STATUS:\s*(DONE|BLOCKED)\s*$", "", body).strip()
+        git(["add", "-A"], worktree)
+        git(["commit", "-q", "-m", f"{title}\n\nBuilt by Codex in a sandbox; committed and pushed by Common Room."], worktree)
+        git(["push", "-q", "-u", "origin", branch], worktree)
+        if not self.board.pr_for_branch(branch):
+            board_mod.gh(["pr", "create", "--repo", self.cfg["project"]["repo"], "--head", branch, "--base", "main",
+                          "--title", title[:200], "--body", f"Closes #{job.issue['number']}\n\n{body}\n\n_Built by Codex; published by Common Room._"])
 
     def assess(self, job: Job, branch: str | None, before: str | None, started_iso: str, result) -> tuple[str, list, str]:
         tail = (result.final_text or "").strip()[-600:]
@@ -544,6 +564,14 @@ class Dispatcher:
                         f"`git push -u origin {branch}`, and open a PR whose body says `Closes #{n}` and summarises the findings. "
                         f"Open any `kind:suggestion` issues the deliverable asks for. Prefix comments with `[agent:scout]`.\n"
                         f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
+            if self._provider == "codex":
+                return (f"Implement GitHub issue #{n} in {repo} (read it with `gh issue view {n} --repo {repo} --comments`). "
+                        f"You are on branch `{branch}` in a fresh checkout of origin/main. Follow your builder instructions and "
+                        f"AGENTS.md, **except for git**: your sandbox keeps .git read-only, so do not commit, push or open a PR. "
+                        f"Leave your changes in the working tree, and Common Room will commit, push and open the PR for you. "
+                        f"Run the tests yourself before finishing.{extra}\n"
+                        f"Finish with: a line `PR_TITLE: <short title>`, then `PR_BODY:` followed by each acceptance criterion and "
+                        f"how you verified it, plus anything unverified. Make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
             return (f"Implement GitHub issue #{n} in {repo}. You are already on branch `{branch}` in a fresh worktree "
                     f"based on origin/main. Follow your builder instructions and AGENTS.md. Push with "
                     f"`git push -u origin {branch}`. Prefix any issue or PR comment you write with `[agent:builder]`.{extra}\n"
@@ -571,28 +599,39 @@ class Dispatcher:
                 f"created, closed or relabelled, PRs merged or bounced, owner tasks assigned). An empty list means you changed nothing.")
 
     # Worktrees -------------------------------------------------------------------------------------
-    def prepare_worktree(self, job: Job) -> tuple[Path, str | None]:
+    def prepare_worktree(self, job: Job, provider: str | None = None) -> tuple[Path, str | None]:
         base = self.root / ".claude" / "worktrees"
         base.mkdir(parents=True, exist_ok=True)
+        # Codex's sandbox can only write inside its folder, and a worktree keeps its git metadata in the main
+        # repo's .git, so Codex gets a self-contained clone (objects borrowed from the main repo via --reference).
+        clone = provider == "codex"
         if job.kind == "build":
             n = job.issue["number"]
             branch = self.find_branch(n) or f"i{n}-{slug(job.issue['title'])}"
-            path = base / branch
-            self.cleanup_worktree(path)
-            if self.remote_head(branch):
-                git(["worktree", "add", "-B", branch, str(path), f"origin/{branch}"], self.root)
-            else:
-                git(["worktree", "add", "-B", branch, str(path), "origin/main"], self.root)
+            start = f"origin/{branch}" if self.remote_head(branch) else "origin/main"
+            path = base / (f"codex-{branch}" if clone else branch)
+            self.checkout(path, start, branch, clone)
             return path, branch
         if job.kind == "review":
             branch = job.pr["headRefName"]
-            path = base / f"review-{job.pr['number']}"
-            self.cleanup_worktree(path)
-            git(["worktree", "add", "--detach", str(path), f"origin/{branch}"], self.root)
+            path = base / f"{'codex-' if clone else ''}review-{job.pr['number']}"
+            self.checkout(path, f"origin/{branch}", None, clone)
             return path, branch
-        path = base / f"director-{int(time.time())}"
-        git(["worktree", "add", "--detach", str(path), "origin/main"], self.root)
+        path = base / f"{'codex-' if clone else ''}{job.role}-{int(time.time())}"
+        self.checkout(path, "origin/main", None, clone)
         return path, None
+
+    def checkout(self, path: Path, start: str, branch: str | None, clone: bool):
+        self.cleanup_worktree(path)
+        if not clone:
+            if branch:
+                git(["worktree", "add", "-B", branch, str(path), start], self.root)
+            else:
+                git(["worktree", "add", "--detach", str(path), start], self.root)
+            return
+        url = git(["remote", "get-url", "origin"], self.root)
+        git(["clone", "--quiet", "--reference", str(self.root), url, str(path)], self.root)
+        git(["checkout", "--quiet", "-B", branch, start] if branch else ["checkout", "--quiet", "--detach", start], path)
 
     def find_branch(self, number: int) -> str | None:
         out = git(["branch", "-r", "--list", f"origin/i{number}-*"], self.root)
@@ -609,7 +648,10 @@ class Dispatcher:
             return None
 
     def cleanup_worktree(self, path: Path):
-        if path.exists():
+        if path.exists() and (path / ".git").is_dir():  # a self-contained clone (Codex jobs)
+            import shutil, stat
+            shutil.rmtree(path, onerror=lambda f, p, _: (os.chmod(p, stat.S_IWRITE), f(p)))
+        elif path.exists():
             try:
                 git(["worktree", "remove", "--force", str(path)], self.root)
             except RuntimeError:
