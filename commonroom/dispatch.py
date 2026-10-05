@@ -487,9 +487,28 @@ class Dispatcher:
                     pass
             raise
         finally:
+            self.preserve_work(job, worktree, branch)
             self.cleanup_worktree(worktree)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def preserve_work(self, job: Job, worktree: Path, branch: str | None):
+        """Never throw work away: uncommitted changes on a build branch are committed as WIP and pushed
+        before the working copy is deleted, so the next attempt continues from them."""
+        if job.kind != "build" or not branch or not worktree.exists() or self.dry_run:
+            return
+        try:
+            if not git(["status", "--porcelain"], worktree):
+                return
+            git(["add", "-A"], worktree)
+            git(["commit", "-q", "-m", "WIP: unfinished work preserved by Common Room\n\nThe worker stopped before "
+                 "finishing; the next attempt continues from this commit."], worktree)
+            git(["push", "-q", "-u", "origin", branch], worktree)
+            if job.issue:
+                self.board.comment(job.issue["number"], f"Unfinished work was preserved on branch `{branch}`. "
+                                                        f"The next attempt continues from it.")
+        except Exception as exc:
+            self.log(f"   could not preserve work on {branch}: {str(exc)[:160]}")
 
     def publish_sandboxed_work(self, job: Job, worktree: Path, branch: str, result):
         """Codex's sandbox keeps .git read-only, so the room commits, pushes and opens the PR for its changes."""
@@ -575,7 +594,11 @@ class Dispatcher:
                         f"You are on branch `{branch}` in a fresh checkout of origin/main. Follow your builder instructions and "
                         f"AGENTS.md, **except for git**: your sandbox keeps .git read-only, so do not commit, push or open a PR. "
                         f"Leave your changes in the working tree, and Common Room will commit, push and open the PR for you. "
-                        f"Run the tests yourself before finishing.{extra}\n"
+                        f"Your sandbox also can't run Git Bash or render Godot windows, so run the tests by calling Godot "
+                        f"directly: `\"$GODOT\" --headless --path game -s res://tests/run_tests.gd` (GODOT is "
+                        f"D:/Dev/tools/godot/Godot_v4.7.2-stable_win64_console.exe). CI and the reviewer cover full runs and "
+                        f"visual checks. If something in the sandbox is impossible, finish the rest and say what's left; your "
+                        f"partial work is kept, not discarded.{extra}\n"
                         f"Finish with: a line `PR_TITLE: <short title>`, then `PR_BODY:` followed by each acceptance criterion and "
                         f"how you verified it, plus anything unverified. Make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
             return (f"Implement GitHub issue #{n} in {repo}. You are already on branch `{branch}` in a fresh worktree "
