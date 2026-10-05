@@ -16,6 +16,8 @@ DEFAULTS = {
     },
     "freshness_seconds": 600,
     "breakers": {"no_output_runs": 3, "task_failures": 2},
+    # A second Claude slot builds in parallel only when the queue is deep and weekly use is well under pace.
+    "parallel": {"claude_slots": 2, "min_ready": 3, "min_pace_headroom": 15},
     "director_share_max": 0.15,
     "board": {"ready_cap": 15},
     "checks": {},

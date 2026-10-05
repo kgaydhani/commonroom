@@ -160,14 +160,16 @@ def cmd_run(args) -> int:
         return 2
     ledger = Ledger()
     name = cfg['project'].get('name') or 'default'
-    tag = f" [{args.provider}]" if args.provider else ""
-    # One dispatcher per provider (or one for all): each has its own lock so Claude and Codex work in parallel.
-    lock = ledger.path.parent / f"{name}{'-' + args.provider if args.provider else ''}.lock"
+    slot = getattr(args, "slot", 1) or 1
+    suffix = (f"-{args.provider}" if args.provider else "") + (f"-{slot}" if slot > 1 else "")
+    tag = f" [{suffix[1:]}]" if suffix else ""
+    # One dispatcher per provider and slot (or one for all): each has its own lock, so they work in parallel.
+    lock = ledger.path.parent / f"{name}{suffix}.lock"
     if not args.dry_run and not acquire_lock(lock):
         print(f"another dispatcher holds {lock}; exiting")
         ledger.close()
         return 0
-    dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, only_provider=args.provider,
+    dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, only_provider=args.provider, slot=slot,
                             log=lambda line: print(f"{datetime.now():%H:%M:%S}{tag} {line}", flush=True))
     # `room stop` writes a timestamp; every dispatcher started before it exits between jobs.
     stop_file = ledger.path.parent / f"{name}.stop"
@@ -445,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
-    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
     p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
     p = sub.add_parser("pause", help="stop autonomous work with a reason"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor"); p.set_defaults(func=cmd_pause)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)

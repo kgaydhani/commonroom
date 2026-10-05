@@ -286,6 +286,35 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(status, "stopped"); self.assertIsNone(self.ledger.cooldown("claude"))
         self.assertEqual(self.ledger.task_failures("t", "#70"), 0)
 
+    def test_claims_are_exclusive(self):
+        first = self.ledger.start_run("t", "#5", "builder", "claude", exclusive=True)
+        self.assertIsNotNone(first)
+        self.assertIsNone(self.ledger.start_run("t", "#5", "builder", "codex", exclusive=True))
+        self.assertEqual(self.ledger.running_tasks("t"), {"#5"})
+        self.ledger.finish_run(first, "done")
+        self.assertIsNotNone(self.ledger.start_run("t", "#5", "builder", "codex", exclusive=True))
+        old = self.ledger.start_run("t", "#6", "builder", "claude", now=time.time() - 3 * 3600)   # crashed long ago
+        self.assertIsNotNone(self.ledger.start_run("t", "#6", "builder", "claude", exclusive=True))
+
+    def test_second_claude_slot_only_with_deep_queue_and_pace_headroom(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:sonnet"], builder_heavy=["claude:opus"])
+        issues = [issue(n, ["status:ready", "role:builder", "prio:high"] + (["builder:heavy"] if n == 79 else []))
+                  for n in (64, 70, 72, 79)]
+        slot2 = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="claude", slot=2)
+        roomy = {"claude": gate.Verdict(True, "ok", {"weekly_pace": 50, "weekly_used": 9}), "codex": gate.Verdict(False, "dry")}
+        self.assertIsNone(slot2.pick(roomy))                                   # slot 1 idle: it takes the top task itself
+        self.ledger.start_run("t", "#64", "builder", "claude", exclusive=True)  # slot 1 busy on #64
+        job, provider, model = slot2.pick(roomy)
+        self.assertEqual((job.kind, job.issue["number"], model), ("build", 70, "sonnet"))
+        tight = {"claude": gate.Verdict(True, "ok", {"weekly_pace": 50, "weekly_used": 40}), "codex": gate.Verdict(False, "dry")}
+        self.assertIsNone(slot2.pick(tight))                                   # under 15 points of pace headroom
+        issues.pop(); issues.pop()
+        self.assertIsNone(slot2.pick(roomy))                                   # 2 ready besides the running one: too shallow
+        cfg["parallel"]["claude_slots"] = 1
+        issues.append(issue(80, ["status:ready", "role:builder"])); issues.append(issue(81, ["status:ready", "role:builder"]))
+        self.assertIsNone(slot2.pick(roomy))                                   # slot disabled by config
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

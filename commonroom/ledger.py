@@ -116,15 +116,30 @@ class Ledger:
     # Runs ------------------------------------------------------------------
     def start_run(self, project: str | None, task: str | None, role: str, provider: str, model: str | None = None,
                   effort: str | None = None, autonomous: bool = True, session_id: str | None = None,
-                  now: float | None = None) -> str:
+                  now: float | None = None, exclusive: bool = False) -> str | None:
+        """With `exclusive`, claim the task atomically across dispatchers: None if it is already running."""
         run_id = uuid.uuid4().hex[:12]
+        now_ts = time.time() if now is None else now
         with self.db:
+            if exclusive:
+                if self.db.in_transaction:
+                    self.db.commit()
+                self.db.execute("BEGIN IMMEDIATE")  # write lock first: two dispatchers can't both pass the check
+                # A worker never runs past an hour; older 'running' rows are crashed dispatchers, not claims.
+                if self.db.execute("SELECT 1 FROM runs WHERE project IS ? AND task=? AND status='running' AND started_at>?",
+                                   (project, task, now_ts - 7200)).fetchone():
+                    return None
             self.db.execute(
                 "INSERT INTO runs (id, project, task, role, provider, model, effort, autonomous, started_at, status, session_id) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, project, task, role, provider, model, effort, int(autonomous),
-                 time.time() if now is None else now, "running", session_id))
+                (run_id, project, task, role, provider, model, effort, int(autonomous), now_ts, "running", session_id))
         return run_id
+
+    def running_tasks(self, project: str | None, now: float | None = None) -> set[str]:
+        now = time.time() if now is None else now
+        rows = self.db.execute("SELECT task FROM runs WHERE project IS ? AND status='running' AND started_at>? AND task IS NOT NULL",
+                               (project, now - 7200)).fetchall()
+        return {r["task"] for r in rows}
 
     def finish_run(self, run_id: str, status: str, outputs: list[dict] | None = None, input_tokens: int | None = None,
                    output_tokens: int | None = None, cost_usd: float | None = None, note: str | None = None,

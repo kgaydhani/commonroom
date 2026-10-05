@@ -32,9 +32,10 @@ SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at mo
 
 
 def priority(issue: dict) -> tuple:
-    """prio:high first, prio:low last, otherwise oldest first."""
+    """prio:top (foundation work others build on, e.g. a milestone plan) first, then prio:high, prio:low last,
+    otherwise oldest first."""
     names = labels(issue)
-    return (0 if "prio:high" in names else 2 if "prio:low" in names else 1, issue["number"])
+    return (-1 if "prio:top" in names else 0 if "prio:high" in names else 2 if "prio:low" in names else 1, issue["number"])
 
 
 def slug(title: str) -> str:
@@ -205,8 +206,10 @@ class Job:
 
 
 class Dispatcher:
-    def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False, only_provider: str | None = None):
+    def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False, only_provider: str | None = None,
+                 slot: int = 1):
         self.cfg, self.ledger, self.log, self.dry_run = cfg, ledger, log, dry_run
+        self.slot = slot  # slot 2+ is an extra parallel worker for the same provider (builds only)
         # With one dispatcher per provider, each takes only jobs whose policy choice is its own provider.
         self.only_provider = only_provider
         self.project = cfg["project"].get("name")
@@ -305,12 +308,51 @@ class Dispatcher:
             return None
         return choice
 
+    def ready_builds(self, open_now: list[dict]) -> list[dict]:
+        running = self.ledger.running_tasks(self.project)
+        return [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)
+                and f"#{i['number']}" not in running
+                and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
+                     or any(l.startswith("provider:") for l in labels(i)))]
+
+    def build_spec(self, issue: dict) -> list[str]:
+        builder_spec = self.roles.get("builder", ["claude:sonnet"])
+        # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
+        pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
+        # Large, high-risk and integration work goes to the heavy builder (Opus); routine work to the standard one.
+        heavy = labels(issue) & {"size:L", "risk:high", "builder:heavy"}
+        return pinned or (self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec)
+
+    def pick_extra(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
+        """An extra slot for the same provider: builds only (no reviews, director or audits, which slot 1 owns),
+        only while slot 1 is busy, the queue is deep, and weekly use sits well under the pace line."""
+        par = self.cfg.get("parallel") or {}
+        provider = self.only_provider or "claude"
+        v = allowed.get(provider)
+        if self.slot > int(par.get(f"{provider}_slots", 1)) or not v or not v.allowed:
+            return None
+        pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
+        if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15):
+            return None
+        busy = any(r["provider"] == provider and r["status"] == "running" for r in self.ledger.recent_runs(self.project, limit=20))
+        ready = sorted(self.ready_builds(self.board.open_issues(None)), key=priority)
+        if not busy or len(ready) < par.get("min_ready", 3):
+            return None
+        for issue in ready:
+            choice = self.choose(self.build_spec(issue), {provider: v})
+            if choice:
+                return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
+        return None
+
     def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
+        if self.slot > 1:
+            return self.pick_extra(allowed)
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         issue_labels = None
+        running = self.ledger.running_tasks(self.project)
         for pr in self.board.open_prs():
             m = BRANCH.match(pr["headRefName"])
-            if not m or "review:skip" in labels(pr):
+            if not m or "review:skip" in labels(pr) or f"PR #{pr['number']}" in running:
                 continue
             detail = self.board.pr_detail(pr["number"])
             if latest_review(detail) is None and checks_state(detail) != "red":
@@ -324,9 +366,7 @@ class Dispatcher:
                 if choice:
                     return Job("review", "reviewer", pr=detail, reason=f"PR #{pr['number']} awaits {'high-risk ' if high_risk else ''}review"), *choice
         open_now = self.board.open_issues(None)
-        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)
-                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
-                      or any(l.startswith("provider:") for l in labels(i)))]
+        ready = self.ready_builds(open_now)
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i)]
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
@@ -363,12 +403,7 @@ class Dispatcher:
             if take and allowed.get("codex") and allowed["codex"].allowed:
                 return Job("build", "builder", issue=take, reason=f"#{take['number']} is ready (parallel Codex build)"), "codex", None
         for issue in sorted(ready, key=priority):
-            # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
-            pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
-            # Large, high-risk and integration work goes to the heavy builder (Opus); routine work to the standard one.
-            heavy = labels(issue) & {"size:L", "risk:high", "builder:heavy"}
-            spec = pinned or (self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec)
-            choice = self.choose(spec, allowed)
+            choice = self.choose(self.build_spec(issue), allowed)
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
         for issue in sorted(scouting, key=priority):
@@ -497,13 +532,21 @@ class Dispatcher:
         self.log(f"-> {job.kind} {task or ''} with {provider}{':' + model if model else ''} ({job.reason})")
         if self.dry_run:
             return {"status": "dry-run"}
-        git(["fetch", "--quiet", "origin"], self.root)
-        worktree, branch = self.prepare_worktree(job, provider)
-        run_id, labelled = None, False
+        # Claim first, atomically: parallel dispatchers must never work the same task twice.
+        run_id = self.ledger.start_run(self.project, task, job.role, provider, model or role.model, exclusive=bool(task))
+        if run_id is None:
+            self.log(f"   {task} is already being worked on; skipped")
+            return {"status": "skipped", "outputs": [], "note": "already running"}
+        try:
+            git(["fetch", "--quiet", "origin"], self.root)
+            worktree, branch = self.prepare_worktree(job, provider)
+        except Exception as exc:
+            self.ledger.finish_run(run_id, "room-error", [], note=f"{type(exc).__name__}: {exc}"[:800])
+            raise
+        labelled = False
         try:
             before = self.remote_head(branch)
             weekly_start = self.weekly_used()
-            run_id = self.ledger.start_run(self.project, task, job.role, provider, model or role.model)
             if job.issue:
                 self.board.set_labels(job.issue["number"], add=["status:in-progress"], remove=["status:ready", "needs:changes"])
                 labelled = True
@@ -784,7 +827,7 @@ class Dispatcher:
 
     def run_once(self) -> dict:
         self.refresh_readings(time.time())
-        report = {"housekeeping": self.housekeeping() if self.only_provider in (None, "claude") else []}
+        report = {"housekeeping": self.housekeeping() if self.only_provider in (None, "claude") and self.slot == 1 else []}
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()
