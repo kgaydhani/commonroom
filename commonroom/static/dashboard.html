@@ -3,159 +3,139 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Common Room</title>
+<title>P100 Common Room</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=VT323&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
 <style>
-/* Retro game menu style: JRPG windows, pixel type. Purely visual; layout and behaviour unchanged. */
-:root{
-  --night:#06071a; --win1:#2b318f; --win2:#151a5c; --win3:#0e1247; --edge:#f2f2ff; --edge2:#8c93ff; --shadow:#020317;
-  --ink:#f4f4ff; --muted:#aeb3e6; --faint:#7177b8;
-  --cursor:#ffd84a; --hp:#5ff07a; --mp:#5fc8ff; --warn:#ffa53d; --ko:#ff5a5a; --quest:#ffd84a;
-  --pixel:"Silkscreen","Courier New",monospace; --term:"VT323","Courier New",monospace;
-}
-*{box-sizing:border-box}
-html{background:var(--night)}
-body{margin:0;color:var(--ink);font:400 19px/1.35 var(--term);min-height:100vh;
-  background-color:var(--night);
-  background-image:radial-gradient(#ffffff22 1px,transparent 1.2px),radial-gradient(#8c93ff1a 1px,transparent 1.2px);
-  background-size:46px 46px,23px 23px;background-position:0 0,11px 17px;-webkit-font-smoothing:none}
-a{color:var(--mp)}
-.wrap{max-width:1240px;margin:0 auto;padding:18px 18px 40px}
+/* Teletext (Ceefax P100). Eight hard colours on black, no boxes, colour bars as structure.
+   Purely visual: same sections, same behaviour as before. */
+:root{--k:#000;--r:#ff2a2a;--g:#2bff2b;--y:#ffff2b;--b:#2a2aff;--m:#ff2bff;--c:#2bffff;--w:#ffffff;--dim:#9a9a9a;
+  --tt:"VT323","Courier New",monospace}
+*{box-sizing:border-box;border-radius:0!important}
+html,body{background:var(--k)}
+body{margin:0;color:var(--w);font:400 22px/1.15 var(--tt);-webkit-font-smoothing:none}
+a{color:var(--c);text-decoration:none}
+.wrap{max-width:1200px;margin:0 auto;padding:14px 16px 70px}
+.y{color:var(--y)} .c{color:var(--c)} .g{color:var(--g)} .m{color:var(--m)} .rd{color:var(--r)} .dim{color:var(--dim)}
+.blk{display:inline-block;padding:0 8px;color:var(--k);font-weight:400}
+.bg-g{background:var(--g)} .bg-y{background:var(--y)} .bg-c{background:var(--c)} .bg-m{background:var(--m)} .bg-r{background:var(--r);color:var(--w)} .bg-b{background:var(--b);color:var(--y)} .bg-w{background:var(--w)}
+@keyframes flash{50%{visibility:hidden}} .flash{animation:flash 1s steps(1) infinite}
 
-/* The JRPG window */
-section,.beacon{background:linear-gradient(180deg,var(--win1) 0%,var(--win2) 55%,var(--win3) 100%);
-  border:3px solid var(--edge);border-radius:6px;box-shadow:0 0 0 3px var(--shadow),inset 0 0 0 2px var(--edge2),6px 6px 0 3px #00000088;padding:16px 18px}
+/* Header rows */
+.row1{display:flex;justify-content:space-between;gap:12px;font-size:24px}
+.title{background:var(--b);color:var(--y);margin:6px 0 8px;padding:2px 12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.title .big{font-size:40px;line-height:1;transform:scaleY(1.35);transform-origin:center;padding:6px 0;text-transform:uppercase;letter-spacing:.02em}
+.title .proj{color:var(--c);font-size:20px}
+.line{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:4px 0}
+.blocks{display:inline-flex;gap:3px;vertical-align:middle}
+.blocks i{display:inline-block;width:12px;height:16px;background:#1a1a1a}
+.blocks i.on{background:var(--y)}
 
-/* Header */
-header{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:6px 0 14px}
-.mark{font:700 28px/1 var(--pixel);letter-spacing:.04em;color:var(--cursor);text-shadow:3px 3px 0 #b3401a,6px 6px 0 var(--shadow);text-transform:uppercase}
-.mark small{display:block;font:400 18px/1.4 var(--term);letter-spacing:.06em;color:var(--muted);text-shadow:none;margin-top:8px;text-transform:none}
-.goal{min-width:260px;flex:1;max-width:460px}
-.goal .label{font:400 11px var(--pixel);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
-.goal .name{font:400 22px var(--term);margin:2px 0 6px}
-.track{height:14px;background:#000;border:2px solid var(--edge);border-radius:2px;padding:2px}
-.track>i{display:block;height:100%;background:repeating-linear-gradient(90deg,var(--cursor) 0 8px,#c99a12 8px 10px)}
-
-/* Beacon */
-.beacon{display:flex;align-items:center;gap:14px;min-width:300px;padding:12px 16px}
-.dot{width:16px;height:16px;flex:none;background:var(--faint);box-shadow:0 0 0 2px #000}
-.working .dot{background:var(--hp);animation:blink 1s steps(1) infinite}
-.idle .dot{background:var(--cursor)} .held .dot{background:var(--warn)} .stopped .dot{background:var(--ko)}
-@keyframes blink{50%{opacity:.25}}
-.beacon .state{font:700 20px/1 var(--pixel);letter-spacing:.06em;text-transform:uppercase}
-.beacon .state::before{content:"\25B6  ";color:var(--cursor)}
-.working .state{color:var(--hp)} .idle .state{color:var(--cursor)} .held .state{color:var(--warn)} .stopped .state{color:var(--ko)}
-.beacon .what{font:400 18px/1.25 var(--term);color:var(--muted);margin-top:6px;max-width:440px}
-
-/* Layout (unchanged) */
-.grid{display:grid;gap:18px;margin-top:14px;grid-template-columns:minmax(0,1fr) 370px}
+/* Layout */
+.grid{display:grid;gap:18px 28px;margin-top:14px;grid-template-columns:minmax(0,1fr) 400px}
 .side{display:grid;gap:18px;align-content:start}
 .full{grid-column:1/-1}
-@media (max-width:920px){.grid{grid-template-columns:1fr}.beacon{min-width:0;width:100%}}
-h2{margin:0 0 12px;font:700 13px/1 var(--pixel);letter-spacing:.12em;text-transform:uppercase;color:var(--cursor);display:flex;align-items:center;gap:10px}
-h2 .count{font:700 12px var(--pixel);color:var(--night);background:var(--cursor);padding:2px 7px;border-radius:2px;letter-spacing:0}
-.muted{color:var(--muted)} .mono{font-family:var(--term);font-size:18px}
+@media (max-width:920px){.grid{grid-template-columns:1fr}}
+section{background:none;border:0;padding:0;scroll-margin-top:10px}
+h2{margin:0 0 8px;padding:1px 10px;font:400 26px/1.1 var(--tt);text-transform:uppercase;color:var(--k);display:flex;justify-content:space-between;align-items:center}
+h2 .pg{font-size:20px}
+#queueSec h2{background:var(--m)} #proofSec h2{background:var(--c)} #usageSec h2{background:var(--g)}
+#liveSec h2{background:var(--y)} #runsSec h2{background:var(--w)} #boardSec h2{background:var(--r);color:var(--w)} #ctrlSec h2{background:var(--b);color:var(--y)}
 
-/* Queue: the hero window */
-#queueSec{align-self:start;box-shadow:0 0 0 3px var(--shadow),inset 0 0 0 2px var(--cursor),6px 6px 0 3px #00000088}
-.task{border-top:2px dashed #ffffff26;padding:12px 0}
-.task:first-of-type{border-top:0;padding-top:4px}
+/* Queue */
+.task{padding:4px 0 6px}
 .task summary{list-style:none;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .task summary::-webkit-details-marker{display:none}
-.task summary::before{content:"\25B6";color:transparent;font-size:14px;width:12px}
-.task summary:hover::before,.task[open] summary::before{color:var(--cursor)}
-.task .num{font:400 18px var(--term);color:var(--faint)}
-.task .title{font:400 22px/1.15 var(--term);flex:1;min-width:200px}
-.chip{font:400 17px/1 var(--term);padding:3px 7px;border:2px solid var(--edge2);border-radius:2px;color:var(--muted);white-space:nowrap;background:#0b0e3a}
-.chip.due{color:var(--cursor);border-color:var(--cursor)}
-.chip.reply{color:var(--night);background:var(--quest);border-color:var(--quest);font-weight:700}
-.chip.reply::before{content:"! "}
-.chip.sent{color:var(--mp);border-color:var(--mp)}
-.brief{font:400 18px/1.3 var(--term);color:#dfe2ff;background:#0a0d36;border:2px solid var(--edge2);border-radius:2px;padding:10px 12px;margin:10px 0;white-space:pre-wrap;max-height:240px;overflow:auto}
-.msg{font:400 18px/1.3 var(--term);margin:6px 0;padding-left:10px;border-left:3px solid var(--edge2)}
-.msg.room{border-left-color:var(--hp)} .msg b{font:700 11px var(--pixel);margin-right:6px}
-.msg.room b{color:var(--hp)} .msg.you b{color:var(--mp)}
-form.reply{display:flex;gap:8px;margin-top:10px}
-input,button{font:400 19px var(--term);border-radius:2px;border:2px solid var(--edge);background:#0a0d36;color:var(--ink);padding:8px 12px}
-input{flex:1;min-width:0} input::placeholder{color:var(--faint)} input:focus{outline:none;border-color:var(--cursor);box-shadow:0 0 0 2px #00000088}
-button{cursor:pointer;font:700 13px var(--pixel);letter-spacing:.06em;text-transform:uppercase;background:var(--cursor);color:#1b1500;border-color:var(--edge);box-shadow:3px 3px 0 #000}
-button:hover{filter:brightness(1.1)} button:active{transform:translate(2px,2px);box-shadow:1px 1px 0 #000} button:disabled{opacity:.5;cursor:default}
-button.ghost{background:#0a0d36;color:var(--ink)}
-.hint{font:400 16px var(--term);color:var(--faint);margin-top:6px}
-.empty{font:400 20px var(--term);color:var(--muted);padding:6px 0}
+.task summary::before{content:"\25B6";color:var(--k)}
+.task summary:hover::before,.task[open] summary::before{color:var(--y)}
+.task .num{color:var(--c)}
+.task .title2{flex:1;min-width:200px;font-size:24px}
+.task .due{color:var(--y)}
+.reply-waiting{background:var(--m);color:var(--k);padding:0 6px}
+.sent{color:var(--c)}
+.brief{color:var(--c);white-space:pre-wrap;margin:6px 0 6px 22px;max-height:260px;overflow:auto;font-size:20px;line-height:1.15}
+.msg{margin:4px 0 4px 22px;font-size:21px} .msg.you b{color:var(--c)} .msg.room b{color:var(--g)} .msg b{font-weight:400;margin-right:8px}
+form.reply{display:flex;gap:10px;margin:8px 0 0 22px}
+input{flex:1;min-width:0;font:400 22px var(--tt);background:var(--k);color:var(--w);border:0;border-bottom:3px solid var(--y);padding:4px 2px;outline:none}
+input::placeholder{color:var(--dim)} input:focus{border-bottom-color:var(--c)}
+button{font:400 22px var(--tt);border:0;padding:2px 14px;cursor:pointer;background:var(--y);color:var(--k);text-transform:uppercase}
+button:hover{background:var(--c)} button:disabled{opacity:.5;cursor:default}
+button.alt{background:var(--r);color:var(--w)}
+.hint{color:var(--dim);font-size:19px;margin:4px 0 0 22px}
+.empty{color:var(--dim);padding:4px 0}
 
-/* Proof = stats screen */
-.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.stat{background:#0a0d36;border:2px solid var(--edge2);border-radius:2px;padding:8px 10px}
-.stat .v{font:400 38px/.9 var(--term)}
-.stat .k{font:400 16px var(--term);text-transform:uppercase;color:var(--muted);margin-top:4px;letter-spacing:.04em}
-.stat.good .v{color:var(--hp)} .stat.warn .v{color:var(--warn)}
+/* Proof: dotted leaders, double-height numbers */
+.lead{display:flex;align-items:baseline;gap:8px;margin:2px 0}
+.lead .k{white-space:nowrap}
+.lead .fill{flex:1;border-bottom:3px dotted #555;transform:translateY(-6px)}
+.lead .v{font-size:34px;line-height:1;transform:scaleY(1.2)}
 
-/* Allowance = HP / MP bars */
-.prov{margin-bottom:12px}
-.prov .head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-.prov .name{font:700 14px var(--pixel);letter-spacing:.08em;text-transform:uppercase}
-.verdict{font:700 11px var(--pixel);letter-spacing:.06em;padding:2px 7px;border-radius:2px;border:2px solid currentColor}
-.verdict.go{color:var(--hp)} .verdict.hold{color:var(--warn)}
-.why{font:400 16px/1.2 var(--term);color:var(--faint);margin:3px 0 6px}
-.bar{position:relative;height:14px;background:#000;border:2px solid var(--edge);border-radius:2px;margin:4px 0 2px}
-.bar>i{position:absolute;inset:1px auto 1px 1px;background:repeating-linear-gradient(90deg,var(--hp) 0 6px,#2a9a3d 6px 8px)}
-.prov:nth-child(2) .bar>i{background:repeating-linear-gradient(90deg,var(--mp) 0 6px,#2b7fb0 6px 8px)}
-.bar>b{position:absolute;top:-5px;bottom:-5px;width:3px;background:var(--cursor);box-shadow:0 0 0 1px #000}
-.barlabel{font:400 16px var(--term);color:var(--muted);display:flex;justify-content:space-between}
+/* Allowance: mosaic bars */
+.prov{margin-bottom:10px}
+.prov .head{display:flex;justify-content:space-between;align-items:baseline}
+.prov .why{color:var(--dim);font-size:19px;margin:0 0 4px}
+.bar{position:relative;height:16px;background:repeating-linear-gradient(90deg,#1a1a1a 0 10px,var(--k) 10px 12px);margin:2px 0}
+.bar>i{position:absolute;inset:0 auto 0 0;background:repeating-linear-gradient(90deg,var(--g) 0 10px,var(--k) 10px 12px)}
+.prov.codex .bar>i{background:repeating-linear-gradient(90deg,var(--c) 0 10px,var(--k) 10px 12px)}
+.bar>b{position:absolute;top:-4px;bottom:-4px;width:4px;background:var(--y)}
+.barlabel{display:flex;justify-content:space-between;font-size:19px;color:var(--dim)}
 
-/* Live feed = message log; runs = battle log */
-pre.feed{margin:0;font:400 18px/1.25 var(--term);color:#c8ffd0;white-space:pre-wrap;max-height:300px;overflow:auto;background:#000;border:2px solid var(--edge2);border-radius:2px;padding:10px 12px}
-.feedhead{font:400 17px var(--term);color:var(--muted);margin-bottom:8px}
-table{width:100%;border-collapse:collapse;font:400 18px/1.25 var(--term)}
-td{padding:6px 8px;border-top:2px dashed #ffffff1f;vertical-align:top}
-tr:first-child td{border-top:0}
-td.t{color:var(--muted);white-space:nowrap}
-.role{font:700 11px var(--pixel);letter-spacing:.06em;text-transform:uppercase}
-.st{font:700 11px var(--pixel);text-transform:uppercase;letter-spacing:.06em}
-.st.done{color:var(--hp)} .st.running{color:var(--cursor)} .st.failed,.st.blocked{color:var(--ko)} .st.room-error{color:var(--faint)}
-.out{color:var(--ink)} .out.none{color:var(--ko)}
+/* Live feed and runs */
+.feedhead{color:var(--dim);font-size:19px;margin-bottom:4px}
+pre.feed{margin:0;font:400 20px/1.15 var(--tt);color:var(--g);white-space:pre-wrap;max-height:300px;overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:21px}
+td{padding:1px 10px 3px 0;vertical-align:top}
+td.t{color:var(--dim);white-space:nowrap}
+.st.done{color:var(--g)} .st.running{color:var(--y)} .st.failed,.st.blocked{color:var(--r)} .st.room-error{color:var(--dim)}
+.out.none{color:var(--r)}
+.role{color:var(--c);text-transform:uppercase}
 
 /* Board */
-.cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
 @media (max-width:920px){.cols{grid-template-columns:1fr 1fr}}
-.col h3{margin:0 0 8px;font:700 12px var(--pixel);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
-.card{background:#0a0d36;border:2px solid var(--edge2);border-radius:2px;padding:6px 9px;margin-bottom:8px;font:400 17px/1.2 var(--term)}
-.card .n{color:var(--faint);margin-right:6px}
-.col.prog .card{border-color:var(--hp)} .col.review .card{border-color:var(--mp)} .col.blocked .card{opacity:.65}
+.col h3{margin:0 0 4px;padding:0 6px;font:400 22px var(--tt);text-transform:uppercase;color:var(--k);display:inline-block}
+.col.ready h3{background:var(--g)} .col.prog h3{background:var(--y)} .col.review h3{background:var(--c)} .col.blocked h3{background:var(--r);color:var(--w)}
+.card{font-size:20px;line-height:1.1;margin:3px 0}
+.card .n{color:var(--c);margin-right:6px}
+.col.blocked .card{color:var(--dim)}
 
-/* Footer */
-.foot{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}
-.foot form{display:flex;gap:8px}
-.breaker{color:var(--ko);font:400 18px var(--term);margin-top:8px}
+/* Controls */
+.ctrl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:end}
+.ctrl form{display:flex;gap:10px}
+.breaker{color:var(--r);margin-top:6px}
+
+/* Fastext bar */
+.fastext{position:fixed;left:0;right:0;bottom:0;background:var(--k);display:flex;justify-content:center;gap:28px;padding:6px 10px;font-size:24px;border-top:2px solid #222}
+.fastext a{text-transform:uppercase}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <div class="mark">Common Room<small id="proj">loading</small></div>
-    <div class="goal"><div class="label">Goal</div><div class="name" id="goalName">-</div><div class="track"><i id="goalBar" style="width:0%"></i></div><div class="label" id="goalMeta" style="margin-top:6px"></div></div>
-    <div class="beacon idle" id="beacon"><div class="dot"></div><div><div class="state" id="beaconState">Checking</div><div class="what" id="beaconWhat"></div></div></div>
-  </header>
+  <div class="row1"><span class="y">P100</span><span class="c">COMMON ROOM</span><span id="clock">--- -- --- --:--</span></div>
+  <div class="title"><span class="big" id="projBig">Common Room</span><span class="proj" id="proj"></span></div>
+  <div class="line"><span class="blk bg-y">GOAL</span><span id="goalName">-</span><span class="blocks" id="goalBlocks"></span><span class="c" id="goalMeta"></span></div>
+  <div class="line" id="beacon"><span class="blk bg-y" id="beaconState">CHECKING</span><span id="beaconWhat"></span></div>
 
   <div class="grid">
-    <section id="queueSec"><h2>Your queue <span class="count" id="qcount">0</span></h2><div id="queue"><div class="empty">Loading</div></div></section>
+    <section id="queueSec"><h2><span>Your queue · <span id="qcount">0</span></span><span class="pg">P201</span></h2><div id="queue"><div class="empty">Loading</div></div></section>
     <div class="side">
-      <section><h2>Proof, last 24h</h2><div class="stats" id="proof"></div></section>
-      <section><h2>Allowance</h2><div id="usage"></div></section>
+      <section id="proofSec"><h2><span>Proof · last 24h</span><span class="pg">P300</span></h2><div id="proof"></div></section>
+      <section id="usageSec"><h2><span>Allowance</span><span class="pg">P400</span></h2><div id="usage"></div></section>
     </div>
-    <section class="full"><h2>Live</h2><div class="feedhead" id="feedHead"></div><pre class="feed" id="feed"></pre></section>
-    <section class="full"><h2>Recent runs</h2><table id="runs"></table></section>
-    <section class="full"><h2>Board</h2><div class="cols" id="board"></div></section>
-    <section class="full foot">
-      <form id="suggest"><input name="title" placeholder="Suggest something. The director judges it on its merits"><button>Suggest</button></form>
-      <div><button class="ghost" id="pause">Pause autonomy</button></div>
-      <div id="breakers" class="full"></div>
+    <section class="full" id="liveSec"><h2><span>Live</span><span class="pg">P500</span></h2><div class="feedhead" id="feedHead"></div><pre class="feed" id="feed"></pre></section>
+    <section class="full" id="runsSec"><h2><span>Recent runs</span><span class="pg">P600</span></h2><table id="runs"></table></section>
+    <section class="full" id="boardSec"><h2><span>Board</span><span class="pg">P700</span></h2><div class="cols" id="board"></div></section>
+    <section class="full" id="ctrlSec"><h2><span>Suggestions and control</span><span class="pg">P800</span></h2>
+      <div class="ctrl">
+        <form id="suggest"><input name="title" placeholder="Suggest something. The director judges it on its merits"><button>Suggest</button></form>
+        <div><button class="alt" id="pause">Pause autonomy</button></div>
+      </div>
+      <div id="breakers"></div>
     </section>
   </div>
 </div>
+<nav class="fastext"><a href="#queueSec" class="rd">Queue</a><a href="#runsSec" class="g">Runs</a><a href="#boardSec" class="y">Board</a><a href="#usageSec" class="c">Usage</a></nav>
 <script>
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -164,31 +144,36 @@ const clock=t=>t?new Date(t*1000).toLocaleString([],{weekday:'short',hour:'2-dig
 const roleName={builder:'Builder',reviewer:'Reviewer',director:'Director',scout:'Scout',merge:'Merge',analyst:'Analyst',playtester:'Playtester'};
 let pageVersion=null; const openItems=new Set();
 
+function tick(){const d=new Date();$('clock').textContent=d.toLocaleDateString([],{weekday:'short',day:'2-digit',month:'short'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+setInterval(tick,1000);tick();
+
+function blocks(el,frac,n=20){el.innerHTML=Array.from({length:n},(_,i)=>`<i class="${i<Math.round(frac*n)?'on':''}"></i>`).join('')}
+
 function beacon(d){
-  const run=d.running[0], b=$('beacon');
+  const run=d.running[0];
   const paused=d.breakers.find(b=>b.kind=='paused_by_owner'), breaker=d.breakers.find(b=>b.kind!='paused_by_owner');
   const allHeld=Object.values(d.usage).every(v=>!v.allowed);
-  let cls='idle',state='Idle',what='Nothing ready to run. Waiting for the next task or trigger.';
-  if(run){cls='working';state=d.running.length>1?`Working ×${d.running.length}`:'Working';
-    what=d.running.map(r=>`${roleName[r.role]||r.role} on ${esc(r.task||'-')} · ${esc(r.provider)} ${esc(r.model||'')} · ${ago(r.started_at)}`).join('<br>')}
-  else if(breaker){cls='stopped';state='Stopped';what=esc(breaker.detail)}
-  else if(paused){cls='held';state='Paused';what='Autonomy paused from the dashboard.'}
-  else if(allHeld){cls='held';state='Held';what=esc(Object.values(d.usage).map(v=>v.reason).join(' · '))}
-  b.className='beacon '+cls;$('beaconState').textContent=state;$('beaconWhat').innerHTML=what;
+  let label='IDLE',cls='bg-y',what='<span class="y">Nothing ready to run. Waiting for the next task or trigger.</span>';
+  if(run){label=d.running.length>1?`NOW ×${d.running.length}`:'NOW';cls='bg-g';
+    what=d.running.map(r=>`<span class="g">${esc((roleName[r.role]||r.role).toUpperCase())} ON ${esc(r.task||'-')}</span> <span class="dim">· ${esc(r.provider)} ${esc(r.model||'')} ·</span> <span class="g">${ago(r.started_at)}</span>`).join(' &nbsp;|&nbsp; ')+' <span class="g flash">█</span>'}
+  else if(breaker){label='STOPPED';cls='bg-r';what=`<span class="rd">${esc(breaker.detail)}</span>`}
+  else if(paused){label='PAUSED';cls='bg-r';what='<span class="rd">Autonomy paused from this page.</span>'}
+  else if(allHeld){label='HELD';cls='bg-m';what=`<span class="m">${esc(Object.values(d.usage).map(v=>v.reason).join(' · '))}</span>`}
+  $('beaconState').className='blk '+cls;$('beaconState').textContent=label;$('beaconWhat').innerHTML=what;
 }
 
 function renderQueue(q){
   const el=$('queue');
-  if(!q||q.error||!q.length){$('qcount').textContent='0';el.innerHTML=q&&q.error?`<div class="empty" style="color:var(--rust)">${esc(q.error)}</div>`:'<div class="empty">Nothing needs you right now.</div>';return}
+  if(!q||q.error||!q.length){$('qcount').textContent='0';el.innerHTML=q&&q.error?`<div class="rd">${esc(q.error)}</div>`:'<div class="empty">Nothing needs you right now.</div>';return}
   $('qcount').textContent=q.length;
   const a=document.activeElement;
   if(a&&a.tagName=='INPUT'&&el.contains(a)&&a.value)return; // don't redraw while you're mid-sentence
   const status=i=>{const last=i.comments[i.comments.length-1];if(!last)return'';
-    return last.who=='agent'?'<span class="chip reply">reply waiting</span>':'<span class="chip sent">sent · with the director</span>'};
+    return last.who=='agent'?'<span class="reply-waiting flash">! REPLY WAITING</span>':'<span class="sent">SENT · WITH THE DIRECTOR</span>'};
   el.innerHTML=q.map(i=>`<details class="task" data-n="${i.number}" ${openItems.has(i.number)?'open':''}>
-    <summary><span class="num">#${i.number}</span><span class="title">${esc(i.title.replace(/^\[You\]\s*/,''))}</span>${i.due?`<span class="chip due">due ${esc(i.due)}</span>`:''}${status(i)}</summary>
+    <summary><span class="num">#${i.number}</span><span class="title2">${esc(i.title.replace(/^\[You\]\s*/,''))}</span>${i.due?`<span class="due">DUE ${esc(i.due)}</span>`:''}${status(i)}</summary>
     <div class="brief">${esc(i.brief)}</div>
-    ${i.comments.map(c=>`<div class="msg ${c.who=='you'?'you':'room'}"><b>${c.who=='you'?'You':'Room'}</b> ${esc(c.body)}</div>`).join('')}
+    ${i.comments.map(c=>`<div class="msg ${c.who=='you'?'you':'room'}"><b>${c.who=='you'?'YOU':'ROOM'}</b>${esc(c.body)}</div>`).join('')}
     <form class="reply" data-n="${i.number}"><input name="text" placeholder="Answer, question, or what you delivered"><button>Send</button></form>
     <div class="hint">If your reply completes the task, the director checks it and closes it. Otherwise it answers. <a href="${esc(i.url)}" target="_blank">GitHub</a></div>
   </details>`).join('');
@@ -199,26 +184,25 @@ function renderQueue(q){
     const res=await post('/api/comment',{number:+f.dataset.n,text:t});btn.disabled=false;
     if(res.error){alert(res.error);return}
     f.text.value='';document.activeElement&&document.activeElement.blur();
-    f.insertAdjacentHTML('beforebegin',`<div class="msg you"><b>You</b> ${esc(t)} <span class="chip sent">sent</span></div>`);
+    f.insertAdjacentHTML('beforebegin',`<div class="msg you"><b>YOU</b>${esc(t)} <span class="sent">SENT</span></div>`);
     setTimeout(refresh,1500)});
 }
 
 function renderProof(p){
   const rate=p.runs_24h?Math.round(100*p.productive_24h/p.runs_24h):0;
-  $('proof').innerHTML=[
-    ['good',p.merged_24h,'merged'],[rate>=70?'good':'warn',p.runs_24h?rate+'%':'-','runs with output'],
-    ['',p.runs_24h,'model runs'],['',ago(p.last_merge_at),'since last merge'],
-  ].map(([c,v,k])=>`<div class="stat ${c}"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join('')
-  +`<div class="stat" style="grid-column:1/-1"><div class="k">Claude weekly spent by autonomous runs: <span class="mono" style="color:var(--ink)">${p.weekly_spent_24h}%</span> · failures: <span class="mono" style="color:${p.failed_24h?'var(--rust)':'var(--ink)'}">${p.failed_24h}</span></div></div>`;
+  const row=(k,v,cls)=>`<div class="lead"><span class="k">${k}</span><span class="fill"></span><span class="v ${cls}">${esc(v)}</span></div>`;
+  $('proof').innerHTML=row('MERGED',p.merged_24h,'g')+row('RUNS WITH OUTPUT',p.runs_24h?rate+'%':'-',rate>=70?'g':'y')
+    +row('MODEL RUNS',p.runs_24h,'w')+row('SINCE LAST MERGE',ago(p.last_merge_at),'c')
+    +row('CLAUDE WEEKLY SPENT',p.weekly_spent_24h+'%','y')+row('FAILURES',p.failed_24h,p.failed_24h?'rd':'g');
 }
 
 function renderUsage(u){
   let h='';
   for(const [p,v] of Object.entries(u)){
-    h+=`<div class="prov"><div class="head"><span class="name">${p}</span><span class="verdict ${v.allowed?'go':'hold'}">${v.allowed?'GO':'HOLD'}</span></div><div class="why">${esc(v.reason)}</div>`;
+    h+=`<div class="prov ${p}"><div class="head"><span class="${p=='claude'?'g':'c'}">${p.toUpperCase()}</span><span class="blk ${v.allowed?'bg-g':'bg-m'}">${v.allowed?'GO':'HOLD'}</span></div><div class="why">${esc(v.reason)}</div>`;
     for(const w of ['five_hour','seven_day']){const x=v.windows[w];if(!x)continue;const cap=w=='seven_day'?v.detail.weekly_pace:v.detail.five_hour_cap;
       h+=`<div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i>${cap!=null?`<b style="left:${Math.min(100,cap)}%" title="pace limit"></b>`:''}</div>
-          <div class="barlabel"><span>${w=='five_hour'?'5-hour':'Weekly'} ${x.used_pct.toFixed(0)}%</span><span>resets ${clock(x.resets_at)}</span></div>`}
+          <div class="barlabel"><span>${w=='five_hour'?'5-HOUR':'WEEKLY'} ${x.used_pct.toFixed(0)}%</span><span>RESETS ${clock(x.resets_at).toUpperCase()}</span></div>`}
     h+='</div>'}
   $('usage').innerHTML=h;
 }
@@ -226,39 +210,36 @@ function renderUsage(u){
 function renderRuns(runs){
   $('runs').innerHTML=runs.map(r=>`<tr>
     <td class="t">${clock(r.started_at)}</td>
-    <td><span class="role">${esc(roleName[r.role]||r.role)}</span><br><span class="muted mono" style="font-size:11px">${esc(r.provider)} ${esc(r.model||'')}</span></td>
-    <td class="mono">${esc(r.task||'')}</td>
-    <td><span class="st ${esc(r.status)}">${esc(r.status)}</span></td>
-    <td class="out ${r.outputs.length?'':'none'}">${r.outputs.length?r.outputs.map(o=>esc(o.ref)).join('<br>'):(r.status=='running'?'<span class="muted">in progress</span>':'no output')}</td>
-    <td class="t">${r.weekly_end!=null&&r.weekly_start!=null?'+'+(r.weekly_end-r.weekly_start).toFixed(1)+'% wk':''}${r.cost_usd?'<br>~$'+r.cost_usd.toFixed(2):''}</td></tr>`).join('');
+    <td><span class="role">${esc(roleName[r.role]||r.role)}</span> <span class="dim">${esc(r.provider)} ${esc(r.model||'')}</span></td>
+    <td class="c">${esc(r.task||'')}</td>
+    <td><span class="st ${esc(r.status)}">${esc(r.status).toUpperCase()}</span></td>
+    <td class="out ${r.outputs.length?'':'none'}">${r.outputs.length?r.outputs.map(o=>esc(o.ref)).join(', '):(r.status=='running'?'<span class="y">IN PROGRESS</span>':'NO OUTPUT')}</td>
+    <td class="t">${r.weekly_end!=null&&r.weekly_start!=null?'+'+(r.weekly_end-r.weekly_start).toFixed(1)+'% wk':''}${r.cost_usd?' ~$'+r.cost_usd.toFixed(2):''}</td></tr>`).join('');
 }
 
 function renderBoard(items){
-  if(!items||items.error){$('board').innerHTML=`<span class="muted">${esc(items&&items.error||'')}</span>`;return}
+  if(!items||items.error){$('board').innerHTML=`<span class="dim">${esc(items&&items.error||'')}</span>`;return}
   const machine=items.filter(i=>!i.labels.includes('owner:human'));
-  const col=(name,cls,test)=>{const xs=machine.filter(test);
-    return `<div class="col ${cls}"><h3>${name} · ${xs.length}</h3>${xs.map(i=>`<div class="card"><span class="n">#${i.number}</span>${esc(i.title)}</div>`).join('')||'<div class="muted" style="font-size:13px">-</div>'}</div>`};
   const has=(i,l)=>i.labels.includes(l);
-  $('board').innerHTML=
-    col('Ready','ready',i=>has(i,'status:ready'))+
-    col('In progress','prog',i=>has(i,'status:in-progress'))+
-    col('In review','review',i=>has(i,'status:review'))+
-    col('Blocked','blocked',i=>has(i,'status:blocked'));
+  const col=(name,cls,test)=>{const xs=machine.filter(test);
+    return `<div class="col ${cls}"><h3>${name} ${xs.length}</h3>${xs.map(i=>`<div class="card"><span class="n">#${i.number}</span>${esc(i.title)}</div>`).join('')||'<div class="dim">-</div>'}</div>`};
+  $('board').innerHTML=col('Ready','ready',i=>has(i,'status:ready'))+col('In progress','prog',i=>has(i,'status:in-progress'))
+    +col('In review','review',i=>has(i,'status:review'))+col('Blocked','blocked',i=>has(i,'status:blocked'));
 }
 
 async function refresh(){
   let d;try{const r=await fetch('/api/state',{cache:'no-store'});d=await r.json()}catch(e){return}
   if(pageVersion===null)pageVersion=d.version;else if(d.version!==pageVersion){location.reload();return}
-  $('proj').textContent=(d.project.name||'')+' · '+(d.project.repo||'');
+  $('projBig').textContent=(d.project.name||'Common Room')+' studio';$('proj').textContent=d.project.repo||'';
   const m=d.milestone;
-  if(m&&!m.error){const total=m.open_issues+m.closed_issues;$('goalName').textContent=d.goal;$('goalBar').style.width=(total?100*m.closed_issues/total:0)+'%';
-    $('goalMeta').textContent=`${m.closed_issues}/${total} done${m.due_on?' · due '+m.due_on.slice(0,10):''}`}
+  if(m&&!m.error){const total=m.open_issues+m.closed_issues;$('goalName').textContent=d.goal;blocks($('goalBlocks'),total?m.closed_issues/total:0);
+    $('goalMeta').textContent=`${m.closed_issues}/${total} DONE${m.due_on?' · DUE '+m.due_on.slice(0,10):''}`}
   else $('goalName').textContent=d.goal||'no goal set';
   beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
   const w=d.worker;$('feedHead').textContent=w?`${w.file} · ${w.count} events · updated ${ago(w.updated)} ago`:'No worker activity yet';
   $('feed').textContent=w?w.events.join('\n'):'';const f=$('feed');f.scrollTop=f.scrollHeight;
   const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';
-  $('breakers').innerHTML=d.breakers.filter(b=>b.kind!='paused_by_owner').map(b=>`<div class="breaker">Stopped: ${esc(b.kind)}: ${esc(b.detail)}</div>`).join('');
+  $('breakers').innerHTML=d.breakers.filter(b=>b.kind!='paused_by_owner').map(b=>`<div class="breaker">STOPPED: ${esc(b.kind)}: ${esc(b.detail)}</div>`).join('');
 }
 async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Room':'1'},body:JSON.stringify(body||{})});return r.json()}
 $('pause').onclick=async()=>{await post($('pause').dataset.paused?'/api/resume':'/api/pause');refresh()};
