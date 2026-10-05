@@ -354,32 +354,13 @@ def _port_open(port: int) -> bool:
 
 def cmd_services(args) -> int:
     """Start the project's long-running services if they aren't up: the dashboard, plus anything in [services]."""
-    import subprocess
+    from commonroom import services
     cfg = config_mod.load()
-    root = cfg.get("_root")
-    if not root:
+    if not cfg.get("_root"):
         print("No room.toml found; run inside a project")
         return 2
-    room_py = str(Path(__file__).resolve().parent.parent / "room.py")
-    services = {"dashboard": {"command": [sys.executable, room_py, "dashboard"], "port": 8770}}
-    for name, spec in (cfg.get("services") or {}).items():
-        services[name] = {"command": spec["command"], "port": spec.get("port")}
-    logs = Ledger().path.parent / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    flags = 0
-    if os.name == "nt":
-        # CREATE_NO_WINDOW gives the service a hidden console that its children inherit. DETACHED_PROCESS would
-        # make a shell's child allocate a fresh, visible console (Windows Terminal pops up).
-        flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-    for name, spec in services.items():
-        if spec.get("port") and _port_open(int(spec["port"])):
-            print(f"{name}: already running on :{spec['port']}")
-            continue
-        log = open(logs / f"service-{name}.log", "a", encoding="utf-8")
-        command = spec["command"]
-        subprocess.Popen(command, cwd=root, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                         shell=isinstance(command, str), creationflags=flags, close_fds=True)
-        print(f"{name}: started" + (f" on :{spec['port']}" if spec.get("port") else ""))
+    for line in services.ensure(cfg, Ledger().path.parent / "logs"):
+        print(line)
     return 0
 
 

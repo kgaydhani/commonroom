@@ -280,7 +280,9 @@ class Dispatcher:
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write(f"--- attempt {attempt}, exit {done.returncode}\n{done.stdout}\n{done.stderr}\n")
                 if done.returncode == 0:
-                    return [f"deploy ok{' (after a retry)' if attempt == 2 else ''}"]
+                    from commonroom import services
+                    restarted = services.restart_after_deploy(self.cfg, log_dir)
+                    return [f"deploy ok{' (after a retry)' if attempt == 2 else ''}" + (f"; {', '.join(restarted)}" if restarted else "")]
             tail = (done.stdout + done.stderr).strip().splitlines()[-1:] or [""]
             return [f"deploy FAILED twice: {tail[0][:120]} (full log: {log_path})"]
         except Exception as exc:
