@@ -23,10 +23,10 @@ Written in response to [postmortem-v1.md](postmortem-v1.md).
 | Gate | Reserves, weekly pacing, a cap on 5-hour burn rate, and breakers for no output and repeated failure | v2.0 |
 | CLI | `room status`, `room usage`, `room gate`, `room tap`, `room probe` | v2.0 |
 | Board | GitHub Issues and milestones. Labels: `kind:*`, `role:*`, `owner:human`, `size:*`, `status:*`. Cap on WIP in `status:ready` | v2.0 (by convention) |
-| Dispatcher | `room run`: picks the top ready task whose role passes the gate, launches the worker, records the run, comments on the issue | v2.1 |
-| Workers | `claude -p --agent <role> -w <branch> --output-format stream-json …` and `codex exec …`. Session IDs are recorded so any run can be reopened | v2.1 |
+| Dispatcher | `room run`: picks the top ready task whose role passes the gate, launches the worker, records the run, comments on the issue | built 2026-10-05 |
+| Workers | `claude -p` (with the role prompt appended and no MCP) and `codex exec`, each in a dispatcher-made worktree. Session IDs are recorded so any run can be reopened | built 2026-10-05 |
 | Director | An Opus session. It runs interactively with the owner, or headless only on triggers: the milestone has no ready tasks, a PR is ready to merge, or something escalated. Capped at 15% of spend, and each run must change the board or merge something | v2.1 |
-| Dashboard | Local page: usage and pace, what's running now, outputs, the owner's queue, approvals | v2.2 |
+| Dashboard | `room dashboard` at http://127.0.0.1:8770: usage against pace, live worker activity, runs with spend and output, the owner's queue, board, pause/resume, suggestion box | built 2026-10-05 |
 
 ## How the owner takes part
 There are two channels, and they mean different things.
