@@ -70,7 +70,17 @@ def state(cfg: dict) -> dict:
             usage_state[provider] = {"allowed": v.allowed, "reason": v.reason, "detail": v.detail,
                                      "windows": ledger.latest_usage(provider)}
         runs = ledger.recent_runs(project, limit=25)
+        day = [r for r in ledger.recent_runs(project, limit=400) if r["started_at"] >= now - 86400]
+        model_runs = [r for r in day if r["role"] != "merge" and r["status"] != "room-error"]
+        merges = [r for r in day if r["role"] == "merge"]
+        proof = {"merged_24h": len(merges), "runs_24h": len(model_runs),
+                 "productive_24h": sum(1 for r in model_runs if r["outputs"]),
+                 "failed_24h": sum(1 for r in model_runs if r["status"] in ("failed", "blocked")),
+                 "last_merge_at": max((r["started_at"] for r in merges), default=None),
+                 "weekly_spent_24h": round(sum(max(0.0, (r.get("weekly_end") or 0) - (r.get("weekly_start") or 0))
+                                               for r in model_runs if r.get("weekly_start") is not None), 1)}
         result = {
+            "proof": proof,
             "now": now, "version": VERSION, "project": cfg["project"], "goal": goal, "usage": usage_state, "runs": runs,
             "running": [r for r in runs if r["status"] == "running"],
             "breakers": ledger.open_breakers(project),
@@ -79,87 +89,16 @@ def state(cfg: dict) -> dict:
         if repo:
             result["milestone"] = cached("milestone", 60, lambda: board.milestone(repo, goal) if goal else None)
             result["owner_queue"] = cached("owner", 30, lambda: owner_queue(repo))
-            result["board"] = cached("board", 60, lambda: [
-                {"number": i["number"], "title": i["title"], "labels": [l["name"] for l in i["labels"]]}
-                for i in board.issues(repo, milestone=goal)] if goal else [])
+            result["board"] = cached("board", 45, lambda: [
+                {"number": i["number"], "title": i["title"], "labels": [l["name"] for l in i["labels"]],
+                 "milestone": (i.get("milestone") or {}).get("title")}
+                for i in board.issues(repo)])
         return result
     finally:
         ledger.close()
 
 
-PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Common Room</title><style>
-:root{--bg:#f6f5f1;--card:#fff;--ink:#1f1e1b;--muted:#6b6a64;--line:#e3e1d9;--go:#1d9e75;--hold:#ba7517;--stop:#c0392b;--bar:#d9d6cc}
-@media (prefers-color-scheme:dark){:root{--bg:#1c1c1a;--card:#262624;--ink:#ecebe6;--muted:#a3a29b;--line:#3a3936;--bar:#3a3936}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,sans-serif}
-main{max-width:1100px;margin:0 auto;padding:16px;display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-section{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
-h1{font-size:20px;margin:16px auto 0;max-width:1100px;padding:0 16px;font-weight:600}h2{font-size:14px;margin:0 0 8px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.wide{grid-column:1/-1}.muted{color:var(--muted)}.go{color:var(--go)}.hold{color:var(--hold)}.stop{color:var(--stop)}
-.bar{position:relative;height:10px;background:var(--bar);border-radius:5px;margin:4px 0 10px}.bar>i{position:absolute;inset:0 auto 0 0;border-radius:5px;background:var(--ink)}
-.bar>b{position:absolute;top:-3px;bottom:-3px;width:2px;background:var(--hold)}
-pre{margin:0;white-space:pre-wrap;font:12px/1.45 ui-monospace,Consolas,monospace;max-height:340px;overflow:auto}
-table{width:100%;border-collapse:collapse;font-size:13px}td{padding:4px 6px;border-top:1px solid var(--line);vertical-align:top}
-button,input{font:inherit;padding:6px 10px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--ink)}button{cursor:pointer}
-form{display:flex;gap:8px}form input{flex:1;min-width:0}.tag{font-size:11px;padding:1px 6px;border-radius:6px;border:1px solid var(--line);margin-right:4px;white-space:nowrap}
-</style></head><body><h1 id="title">Common Room</h1><main>
-<section><h2>Goal</h2><div id="goal" class="muted">loading</div></section>
-<section><h2>Allowance</h2><div id="usage"></div></section>
-<section class="wide"><h2>Working now</h2><div id="now" class="muted"></div><pre id="tail"></pre></section>
-<section><h2>Your queue</h2><div id="queue"></div></section>
-<section><h2>Suggest something</h2><form id="suggest"><input name="title" placeholder="One-line idea for the director to judge" required><button>Send</button></form>
-<p class="muted" style="font-size:13px">Room channel: judged on its merits and may be rejected. Binding decisions belong in the executive session.</p>
-<div style="margin-top:10px"><button id="pause">Pause autonomy</button> <span id="breakers"></span></div></section>
-<section class="wide"><h2>Board</h2><div id="board"></div></section>
-<section class="wide"><h2>Recent runs (spend vs output)</h2><table id="runs"></table></section>
-</main><script>
-const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const ago=t=>{const s=Math.max(0,Date.now()/1000-t);return s<90?Math.round(s)+'s':s<5400?Math.round(s/60)+'m':(s/3600).toFixed(1)+'h'};
-const clock=t=>t?new Date(t*1000).toLocaleString([], {weekday:'short',hour:'2-digit',minute:'2-digit'}):'?';
-let pageVersion=null;
-async function refresh(){let d;try{const r=await fetch('/api/state',{cache:'no-store'});d=await r.json()}catch(e){return} // server restarting: try again next tick
- if(pageVersion===null)pageVersion=d.version;else if(d.version!==pageVersion){location.reload();return} // new dashboard deployed
- $('title').textContent='Common Room: '+(d.project.name||'');
- const m=d.milestone;$('goal').innerHTML=m&&!m.error?`<b>${esc(d.goal)}</b><br>${m.closed_issues}/${m.open_issues+m.closed_issues} issues done${m.due_on?' · due '+m.due_on.slice(0,10):''}`:esc(d.goal||'no goal set');
- let u='';for(const [p,v] of Object.entries(d.usage)){u+=`<div><b>${p}</b> <span class="${v.allowed?'go':'hold'}">${v.allowed?'GO':'HOLD'}</span> <span class="muted" style="font-size:13px">${esc(v.reason)}</span></div>`;
-  for(const w of ['five_hour','seven_day']){const x=v.windows[w];if(!x)continue;const cap=w=='seven_day'?v.detail.weekly_pace:v.detail.five_hour_cap;
-   u+=`<div class="muted" style="font-size:12px">${w=='five_hour'?'5-hour':'weekly'} ${x.used_pct.toFixed(0)}% · resets ${clock(x.resets_at)} · read ${ago(x.observed_at)} ago</div><div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i>${cap!=null?`<b style="left:${Math.min(100,cap)}%" title="pace limit"></b>`:''}</div>`}}
- $('usage').innerHTML=u;
- const run=d.running[0];$('now').innerHTML=run?`<b>${esc(run.role)}</b> on ${esc(run.task||'-')} with ${esc(run.provider)} ${esc(run.model||'')} · started ${ago(run.started_at)} ago`:'Nothing running.';
- $('tail').textContent=d.worker?`${d.worker.file} · ${d.worker.count} events · last update ${ago(d.worker.updated)} ago\\n`+d.worker.events.join('\\n'):'';
- renderQueue(d.owner_queue);
- $('board').innerHTML=(d.board||[]).map(i=>`<div>#${i.number} ${esc(i.title)} ${(i.labels||[]).filter(l=>/^(status|needs|owner):/.test(l)).map(l=>`<span class="tag">${esc(l)}</span>`).join('')}</div>`).join('')||'<span class="muted">empty</span>';
- $('runs').innerHTML=d.runs.map(r=>`<tr><td>${clock(r.started_at)}</td><td>${esc(r.role)}<br><span class="muted">${esc(r.provider)} ${esc(r.model||'')}</span></td><td>${esc(r.task||'')}</td><td class="${r.status=='done'?'go':r.status=='running'?'':'stop'}">${esc(r.status)}</td><td>${r.outputs.map(o=>esc(o.ref)).join('<br>')||'<span class="stop">no output</span>'}</td><td class="muted">${r.weekly_end!=null&&r.weekly_start!=null?'+'+(r.weekly_end-r.weekly_start).toFixed(1)+'% wk':''}${r.cost_usd?'<br>~$'+r.cost_usd.toFixed(2):''}</td></tr>`).join('');
- const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';
- $('breakers').innerHTML=d.breakers.map(b=>`<div class="stop" style="font-size:13px">${esc(b.kind)}: ${esc(b.detail)}</div>`).join('');}
-const openItems=new Set();
-function renderQueue(q){const el=$('queue');
- if(!q||q.error||!q.length){el.innerHTML=q&&q.error?`<span class="stop">${esc(q.error)}</span>`:'<span class="muted">Nothing assigned to you.</span>';return}
- const typing=document.activeElement&&document.activeElement.tagName=='INPUT'&&el.contains(document.activeElement)&&document.activeElement.value;
- if(typing)return; // don't redraw while you're mid-sentence
- const status=i=>{const last=i.comments[i.comments.length-1];if(!last)return'';if(last.who=='agent')return' <span class="tag go">reply waiting</span>';
-  return ' <span class="tag">sent, the director will reply or close it</span>'};
- el.innerHTML=q.map(i=>`<details data-n="${i.number}" ${openItems.has(i.number)?'open':''} style="border-top:1px solid var(--line);padding:6px 0">
-  <summary><b>#${i.number}</b> ${esc(i.title.replace(/^\\[You\\]\\s*/,''))} <span class="muted">due ${esc(i.due||'-')}</span>${status(i)}</summary>
-  <pre style="max-height:180px;margin:6px 0">${esc(i.brief)}</pre>
-  ${i.comments.map(c=>`<div style="font-size:13px;margin:4px 0"><b class="${c.who=='you'?'':'go'}">${c.who=='you'?'You':'Room'}:</b> ${esc(c.body)}</div>`).join('')}
-  <form data-n="${i.number}" style="margin-top:6px"><input name="text" placeholder="Answer, question, or what you delivered"><button>Send</button></form>
-  <div class="muted" style="font-size:12px">If your reply completes the task, the director checks it and closes it. Otherwise it answers.</div>
-  <a href="${esc(i.url)}" target="_blank" class="muted" style="font-size:12px">open on GitHub</a></details>`).join('');
- el.querySelectorAll('details').forEach(x=>x.ontoggle=()=>{const n=+x.dataset.n;x.open?openItems.add(n):openItems.delete(n)});
- el.querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const t=f.text.value.trim();
-  if(!t){f.text.placeholder='Write something first';return}
-  const btns=f.querySelectorAll('button');btns.forEach(b=>b.disabled=true);
-  const res=await post('/api/comment',{number:+f.dataset.n,text:t});btns.forEach(b=>b.disabled=false);
-  if(res.error){alert(res.error);return}
-  f.text.value='';document.activeElement&&document.activeElement.blur();
-  f.insertAdjacentHTML('beforebegin',`<div style="font-size:13px;margin:4px 0"><b>You:</b> ${esc(t)} <span class="go">sent</span></div>`);
-  setTimeout(refresh,1500)})}
-async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Room':'1'},body:JSON.stringify(body||{})});return r.json()}
-$('pause').onclick=async()=>{await post($('pause').dataset.paused?'/api/resume':'/api/pause');refresh()};
-$('suggest').onsubmit=async e=>{e.preventDefault();const t=e.target.title.value.trim();if(!t)return;const res=await post('/api/suggest',{title:t});e.target.title.value=res.url?'':t;alert(res.url?'Filed: '+res.url:'Failed: '+res.error)};
-refresh();setInterval(refresh,10000);
-</script></body></html>"""
+PAGE = (Path(__file__).with_name("static") / "dashboard.html").read_text(encoding="utf-8")
 
 
 class Handler(BaseHTTPRequestHandler):

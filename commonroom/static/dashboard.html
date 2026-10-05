@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Common Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0e0e0b; --panel:#16160f; --panel2:#1c1b14; --line:#2d2b21; --line2:#3b3829;
+  --ink:#ebe4d0; --muted:#9a927a; --faint:#6c6655;
+  --gold:#d8b85b; --ember:#e3773b; --blue:#86a7c6; --moss:#a2bb6a; --rust:#c9553d;
+  --display:"Big Shoulders Display",Impact,"Arial Narrow",sans-serif;
+  --sans:"IBM Plex Sans",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{background:var(--bg)}
+body{margin:0;color:var(--ink);font:15px/1.5 var(--sans);min-height:100vh;
+  background:
+    radial-gradient(1100px 520px at 78% -8%, rgba(216,184,91,.10), transparent 60%),
+    radial-gradient(900px 600px at -10% 110%, rgba(134,167,198,.07), transparent 60%),
+    var(--bg)}
+a{color:var(--blue)}
+.wrap{max-width:1240px;margin:0 auto;padding:18px 18px 40px}
+
+/* Header */
+header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:6px 0 16px;border-bottom:1px solid var(--line)}
+.mark{font:800 34px/0.9 var(--display);letter-spacing:.08em;text-transform:uppercase;color:var(--gold)}
+.mark small{display:block;font:500 12px/1.6 var(--mono);letter-spacing:.14em;color:var(--muted);margin-top:6px}
+.goal{min-width:260px;flex:1;max-width:460px}
+.goal .label{font:600 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.goal .name{font:600 16px var(--sans);margin:2px 0 6px}
+.track{height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.track>i{display:block;height:100%;background:linear-gradient(90deg,var(--gold),var(--ember))}
+
+/* Beacon */
+.beacon{display:flex;align-items:center;gap:14px;padding:12px 16px;border:1px solid var(--line2);border-radius:14px;background:var(--panel);min-width:300px}
+.dot{width:16px;height:16px;border-radius:50%;flex:none;position:relative;background:var(--faint)}
+.dot::after{content:"";position:absolute;inset:-6px;border-radius:50%;border:2px solid currentColor;opacity:0}
+.working .dot{background:var(--moss);color:var(--moss)} .working .dot::after{animation:pulse 1.8s ease-out infinite}
+.idle .dot{background:var(--gold)} .held .dot{background:var(--ember)} .stopped .dot{background:var(--rust)}
+@keyframes pulse{0%{opacity:.7;transform:scale(.6)}100%{opacity:0;transform:scale(1.5)}}
+.beacon .state{font:800 22px/1 var(--display);letter-spacing:.08em;text-transform:uppercase}
+.working .state{color:var(--moss)} .idle .state{color:var(--gold)} .held .state{color:var(--ember)} .stopped .state{color:var(--rust)}
+.beacon .what{font-size:13px;color:var(--muted);margin-top:4px;max-width:420px}
+
+/* Layout */
+.grid{display:grid;gap:16px;margin-top:18px;grid-template-columns:minmax(0,1fr) 360px}
+.side{display:grid;gap:16px;align-content:start}
+.full{grid-column:1/-1}
+@media (max-width:920px){.grid{grid-template-columns:1fr}.beacon{min-width:0;width:100%}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+h2{margin:0 0 12px;font:800 15px/1 var(--display);letter-spacing:.16em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:10px}
+h2 .count{font:500 12px var(--mono);color:var(--bg);background:var(--muted);border-radius:10px;padding:2px 8px;letter-spacing:0}
+.muted{color:var(--muted)} .mono{font-family:var(--mono)}
+
+/* Queue: the hero */
+#queueSec{align-self:start;border-color:rgba(227,119,59,.45);box-shadow:inset 0 3px 0 var(--ember)}
+#queueSec h2{color:var(--ember)} #queueSec h2 .count{background:var(--ember)}
+.task{border-top:1px solid var(--line);padding:12px 0}
+.task:first-of-type{border-top:0;padding-top:4px}
+.task summary{list-style:none;cursor:pointer;display:flex;gap:12px;align-items:baseline;flex-wrap:wrap}
+.task summary::-webkit-details-marker{display:none}
+.task .num{font:500 13px var(--mono);color:var(--faint)}
+.task .title{font:600 17px/1.35 var(--sans);flex:1;min-width:200px}
+.chip{font:500 11px/1 var(--mono);letter-spacing:.04em;padding:4px 8px;border-radius:20px;border:1px solid var(--line2);color:var(--muted);white-space:nowrap}
+.chip.due{color:var(--gold);border-color:rgba(216,184,91,.4)}
+.chip.reply{color:var(--bg);background:var(--moss);border-color:var(--moss)}
+.chip.sent{color:var(--blue);border-color:rgba(134,167,198,.4)}
+.brief{font:13px/1.55 var(--mono);color:var(--muted);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin:10px 0;white-space:pre-wrap;max-height:220px;overflow:auto}
+.msg{font-size:14px;margin:6px 0;padding-left:10px;border-left:2px solid var(--line2)}
+.msg.room{border-left-color:var(--moss)} .msg b{font-weight:600}
+.msg.room b{color:var(--moss)} .msg.you b{color:var(--blue)}
+form.reply{display:flex;gap:8px;margin-top:10px}
+input,button{font:inherit;border-radius:10px;border:1px solid var(--line2);background:var(--panel2);color:var(--ink);padding:9px 12px}
+input{flex:1;min-width:0} input:focus{outline:none;border-color:var(--gold)}
+button{cursor:pointer;font-weight:600;background:var(--gold);color:#1a1608;border-color:var(--gold)}
+button:hover{filter:brightness(1.08)} button:disabled{opacity:.5;cursor:default}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line2)}
+.hint{font-size:12px;color:var(--faint);margin-top:6px}
+.empty{color:var(--muted);font-size:15px;padding:6px 0}
+
+/* Proof */
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.stat .v{font:800 30px/1 var(--display);letter-spacing:.02em}
+.stat .k{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-top:4px}
+.stat.good .v{color:var(--moss)} .stat.warn .v{color:var(--ember)}
+
+/* Allowance */
+.prov{margin-bottom:12px}
+.prov .head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.prov .name{font:800 16px var(--display);letter-spacing:.1em;text-transform:uppercase}
+.verdict{font:600 11px var(--mono);letter-spacing:.06em;padding:3px 8px;border-radius:12px}
+.verdict.go{background:rgba(162,187,106,.15);color:var(--moss)} .verdict.hold{background:rgba(227,119,59,.15);color:var(--ember)}
+.why{font-size:12px;color:var(--faint);margin:3px 0 6px}
+.bar{position:relative;height:8px;background:var(--line);border-radius:4px;margin:4px 0 2px}
+.bar>i{position:absolute;inset:0 auto 0 0;border-radius:4px;background:var(--ink)}
+.bar>b{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--gold)}
+.barlabel{font:11px var(--mono);color:var(--muted);display:flex;justify-content:space-between}
+
+/* Live + runs */
+pre.feed{margin:0;font:12px/1.6 var(--mono);color:#cfc8b1;white-space:pre-wrap;max-height:300px;overflow:auto;background:#0b0b08;border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.feedhead{font:12px var(--mono);color:var(--muted);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td{padding:8px 8px;border-top:1px solid var(--line);vertical-align:top}
+tr:first-child td{border-top:0}
+td.t{font:12px var(--mono);color:var(--muted);white-space:nowrap}
+.role{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.st{font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.st.done{color:var(--moss)} .st.running{color:var(--gold)} .st.failed,.st.blocked{color:var(--rust)} .st.room-error{color:var(--faint)}
+.out{color:var(--ink)} .out.none{color:var(--rust)}
+
+/* Board */
+.cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:920px){.cols{grid-template-columns:1fr 1fr}}
+.col h3{margin:0 0 8px;font:800 13px var(--display);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;margin-bottom:8px;font-size:13px}
+.card .n{font:12px var(--mono);color:var(--faint);margin-right:6px}
+.col.prog .card{border-color:rgba(162,187,106,.5)} .col.review .card{border-color:rgba(134,167,198,.45)} .col.blocked .card{opacity:.7}
+
+/* Footer */
+.foot{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}
+.foot form{display:flex;gap:8px}
+.breaker{color:var(--rust);font-size:13px;margin-top:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="mark">Common Room<small id="proj">loading</small></div>
+    <div class="goal"><div class="label">Goal</div><div class="name" id="goalName">-</div><div class="track"><i id="goalBar" style="width:0%"></i></div><div class="label" id="goalMeta" style="margin-top:6px"></div></div>
+    <div class="beacon idle" id="beacon"><div class="dot"></div><div><div class="state" id="beaconState">Checking</div><div class="what" id="beaconWhat"></div></div></div>
+  </header>
+
+  <div class="grid">
+    <section id="queueSec"><h2>Your queue <span class="count" id="qcount">0</span></h2><div id="queue"><div class="empty">Loading</div></div></section>
+    <div class="side">
+      <section><h2>Proof, last 24h</h2><div class="stats" id="proof"></div></section>
+      <section><h2>Allowance</h2><div id="usage"></div></section>
+    </div>
+    <section class="full"><h2>Live</h2><div class="feedhead" id="feedHead"></div><pre class="feed" id="feed"></pre></section>
+    <section class="full"><h2>Recent runs</h2><table id="runs"></table></section>
+    <section class="full"><h2>Board</h2><div class="cols" id="board"></div></section>
+    <section class="full foot">
+      <form id="suggest"><input name="title" placeholder="Suggest something. The director judges it on its merits and may push back"><button>Suggest</button></form>
+      <div><button class="ghost" id="pause">Pause autonomy</button></div>
+      <div id="breakers" class="full"></div>
+    </section>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ago=t=>{if(!t)return'-';const s=Math.max(0,Date.now()/1000-t);return s<90?Math.round(s)+'s':s<5400?Math.round(s/60)+'m':(s/3600).toFixed(1)+'h'};
+const clock=t=>t?new Date(t*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'?';
+const roleName={builder:'Builder',reviewer:'Reviewer',director:'Director',scout:'Scout',merge:'Merge',analyst:'Analyst',playtester:'Playtester'};
+let pageVersion=null; const openItems=new Set();
+
+function beacon(d){
+  const run=d.running[0], b=$('beacon');
+  const paused=d.breakers.find(b=>b.kind=='paused_by_owner'), breaker=d.breakers.find(b=>b.kind!='paused_by_owner');
+  const allHeld=Object.values(d.usage).every(v=>!v.allowed);
+  let cls='idle',state='Idle',what='Nothing ready to run. Waiting for the next task or trigger.';
+  if(run){cls='working';state='Working';what=`${roleName[run.role]||run.role} on ${esc(run.task||'-')} · ${esc(run.provider)} ${esc(run.model||'')} · ${ago(run.started_at)}`}
+  else if(breaker){cls='stopped';state='Stopped';what=esc(breaker.detail)}
+  else if(paused){cls='held';state='Paused';what='Autonomy paused from the dashboard.'}
+  else if(allHeld){cls='held';state='Held';what=esc(Object.values(d.usage).map(v=>v.reason).join(' · '))}
+  b.className='beacon '+cls;$('beaconState').textContent=state;$('beaconWhat').innerHTML=what;
+}
+
+function renderQueue(q){
+  const el=$('queue');
+  if(!q||q.error||!q.length){$('qcount').textContent='0';el.innerHTML=q&&q.error?`<div class="empty" style="color:var(--rust)">${esc(q.error)}</div>`:'<div class="empty">Nothing needs you right now.</div>';return}
+  $('qcount').textContent=q.length;
+  const a=document.activeElement;
+  if(a&&a.tagName=='INPUT'&&el.contains(a)&&a.value)return; // don't redraw while you're mid-sentence
+  const status=i=>{const last=i.comments[i.comments.length-1];if(!last)return'';
+    return last.who=='agent'?'<span class="chip reply">reply waiting</span>':'<span class="chip sent">sent · with the director</span>'};
+  el.innerHTML=q.map(i=>`<details class="task" data-n="${i.number}" ${openItems.has(i.number)?'open':''}>
+    <summary><span class="num">#${i.number}</span><span class="title">${esc(i.title.replace(/^\[You\]\s*/,''))}</span>${i.due?`<span class="chip due">due ${esc(i.due)}</span>`:''}${status(i)}</summary>
+    <div class="brief">${esc(i.brief)}</div>
+    ${i.comments.map(c=>`<div class="msg ${c.who=='you'?'you':'room'}"><b>${c.who=='you'?'You':'Room'}</b> ${esc(c.body)}</div>`).join('')}
+    <form class="reply" data-n="${i.number}"><input name="text" placeholder="Answer, question, or what you delivered"><button>Send</button></form>
+    <div class="hint">If your reply completes the task, the director checks it and closes it. Otherwise it answers. <a href="${esc(i.url)}" target="_blank">GitHub</a></div>
+  </details>`).join('');
+  el.querySelectorAll('details').forEach(x=>x.ontoggle=()=>{const n=+x.dataset.n;x.open?openItems.add(n):openItems.delete(n)});
+  el.querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const t=f.text.value.trim();
+    if(!t){f.text.placeholder='Write something first';return}
+    const btn=f.querySelector('button');btn.disabled=true;
+    const res=await post('/api/comment',{number:+f.dataset.n,text:t});btn.disabled=false;
+    if(res.error){alert(res.error);return}
+    f.text.value='';document.activeElement&&document.activeElement.blur();
+    f.insertAdjacentHTML('beforebegin',`<div class="msg you"><b>You</b> ${esc(t)} <span class="chip sent">sent</span></div>`);
+    setTimeout(refresh,1500)});
+}
+
+function renderProof(p){
+  const rate=p.runs_24h?Math.round(100*p.productive_24h/p.runs_24h):0;
+  $('proof').innerHTML=[
+    ['good',p.merged_24h,'merged'],[rate>=70?'good':'warn',p.runs_24h?rate+'%':'-','runs with output'],
+    ['',p.runs_24h,'model runs'],['',ago(p.last_merge_at),'since last merge'],
+  ].map(([c,v,k])=>`<div class="stat ${c}"><div class="v">${esc(v)}</div><div class="k">${esc(k)}</div></div>`).join('')
+  +`<div class="stat" style="grid-column:1/-1"><div class="k">Claude weekly spent by autonomous runs: <span class="mono" style="color:var(--ink)">${p.weekly_spent_24h}%</span> · failures: <span class="mono" style="color:${p.failed_24h?'var(--rust)':'var(--ink)'}">${p.failed_24h}</span></div></div>`;
+}
+
+function renderUsage(u){
+  let h='';
+  for(const [p,v] of Object.entries(u)){
+    h+=`<div class="prov"><div class="head"><span class="name">${p}</span><span class="verdict ${v.allowed?'go':'hold'}">${v.allowed?'GO':'HOLD'}</span></div><div class="why">${esc(v.reason)}</div>`;
+    for(const w of ['five_hour','seven_day']){const x=v.windows[w];if(!x)continue;const cap=w=='seven_day'?v.detail.weekly_pace:v.detail.five_hour_cap;
+      h+=`<div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i>${cap!=null?`<b style="left:${Math.min(100,cap)}%" title="pace limit"></b>`:''}</div>
+          <div class="barlabel"><span>${w=='five_hour'?'5-hour':'Weekly'} ${x.used_pct.toFixed(0)}%</span><span>resets ${clock(x.resets_at)}</span></div>`}
+    h+='</div>'}
+  $('usage').innerHTML=h;
+}
+
+function renderRuns(runs){
+  $('runs').innerHTML=runs.map(r=>`<tr>
+    <td class="t">${clock(r.started_at)}</td>
+    <td><span class="role">${esc(roleName[r.role]||r.role)}</span><br><span class="muted mono" style="font-size:11px">${esc(r.provider)} ${esc(r.model||'')}</span></td>
+    <td class="mono">${esc(r.task||'')}</td>
+    <td><span class="st ${esc(r.status)}">${esc(r.status)}</span></td>
+    <td class="out ${r.outputs.length?'':'none'}">${r.outputs.length?r.outputs.map(o=>esc(o.ref)).join('<br>'):(r.status=='running'?'<span class="muted">in progress</span>':'no output')}</td>
+    <td class="t">${r.weekly_end!=null&&r.weekly_start!=null?'+'+(r.weekly_end-r.weekly_start).toFixed(1)+'% wk':''}${r.cost_usd?'<br>~$'+r.cost_usd.toFixed(2):''}</td></tr>`).join('');
+}
+
+function renderBoard(items){
+  if(!items||items.error){$('board').innerHTML=`<span class="muted">${esc(items&&items.error||'')}</span>`;return}
+  const machine=items.filter(i=>!i.labels.includes('owner:human'));
+  const col=(name,cls,test)=>{const xs=machine.filter(test);
+    return `<div class="col ${cls}"><h3>${name} · ${xs.length}</h3>${xs.map(i=>`<div class="card"><span class="n">#${i.number}</span>${esc(i.title)}</div>`).join('')||'<div class="muted" style="font-size:13px">-</div>'}</div>`};
+  const has=(i,l)=>i.labels.includes(l);
+  $('board').innerHTML=
+    col('Ready','ready',i=>has(i,'status:ready'))+
+    col('In progress','prog',i=>has(i,'status:in-progress'))+
+    col('In review','review',i=>has(i,'status:review'))+
+    col('Blocked','blocked',i=>has(i,'status:blocked'));
+}
+
+async function refresh(){
+  let d;try{const r=await fetch('/api/state',{cache:'no-store'});d=await r.json()}catch(e){return}
+  if(pageVersion===null)pageVersion=d.version;else if(d.version!==pageVersion){location.reload();return}
+  $('proj').textContent=(d.project.name||'')+' · '+(d.project.repo||'');
+  const m=d.milestone;
+  if(m&&!m.error){const total=m.open_issues+m.closed_issues;$('goalName').textContent=d.goal;$('goalBar').style.width=(total?100*m.closed_issues/total:0)+'%';
+    $('goalMeta').textContent=`${m.closed_issues}/${total} done${m.due_on?' · due '+m.due_on.slice(0,10):''}`}
+  else $('goalName').textContent=d.goal||'no goal set';
+  beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
+  const w=d.worker;$('feedHead').textContent=w?`${w.file} · ${w.count} events · updated ${ago(w.updated)} ago`:'No worker activity yet';
+  $('feed').textContent=w?w.events.join('\n'):'';const f=$('feed');f.scrollTop=f.scrollHeight;
+  const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';
+  $('breakers').innerHTML=d.breakers.filter(b=>b.kind!='paused_by_owner').map(b=>`<div class="breaker">Stopped: ${esc(b.kind)}: ${esc(b.detail)}</div>`).join('');
+}
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Room':'1'},body:JSON.stringify(body||{})});return r.json()}
+$('pause').onclick=async()=>{await post($('pause').dataset.paused?'/api/resume':'/api/pause');refresh()};
+$('suggest').onsubmit=async e=>{e.preventDefault();const t=e.target.title.value.trim();if(!t)return;const res=await post('/api/suggest',{title:t});
+  if(res.url){e.target.title.value='';e.target.title.placeholder='Filed. The director will triage it'}else alert('Failed: '+res.error)};
+refresh();setInterval(refresh,8000);
+</script>
+</body>
+</html>
