@@ -165,11 +165,13 @@ class Handler(BaseHTTPRequestHandler):
                 _cache.pop("owner", None)
                 result = {"ok": True}
             elif self.path == "/api/suggest":
-                title = str(body.get("title", "")).strip()[:200]
-                if not title:
-                    raise ValueError("Write a one-line idea first")
+                text = str(body.get("title", "")).strip()[:8000]
+                if not text:
+                    raise ValueError("Write your idea first")
+                # The full text goes in the body; the title is a short lead-in (titles get truncated).
+                title = text if len(text) <= 90 else text[:90].rsplit(" ", 1)[0] + "…"
                 args = ["issue", "create", "--repo", self.cfg["project"]["repo"], "--title", title, "--label", "kind:suggestion",
-                        "--body", "_Owner suggestion from the dashboard (room channel). The director triages it: accept, reject with reasons, or park._"]
+                        "--body", text + "\n\n_Owner suggestion from the dashboard (room channel). The director triages it: accept, reject with reasons, or park._"]
                 if self.cfg["goal"].get("milestone"):
                     args += ["--milestone", self.cfg["goal"]["milestone"]]
                 result = {"url": board.gh(args)}
