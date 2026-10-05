@@ -208,6 +208,8 @@ class Dispatcher:
                 if issue and "status:ready" not in labels(issue):
                     self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
                     actions.append(f"PR #{pr['number']} needs changes; issue #{issue_no} back to ready")
+        if any(a.startswith("merged") for a in actions) and not self.dry_run:
+            actions += self.deploy()
         for issue in everything:
             names = labels(issue)
             if issue["state"] != "OPEN" or "status:blocked" not in names or names & {"needs:director", "owner:human"}:
@@ -218,6 +220,16 @@ class Dispatcher:
                     self.board.set_labels(issue["number"], add=["status:ready"], remove=["status:blocked"])
                 actions.append(f"unblocked #{issue['number']} (dependencies {sorted(deps)} closed)")
         return actions
+
+    def deploy(self) -> list[str]:
+        """After merges: run the project's `[deploy] after_merge` command in the main checkout (e.g. re-export the web build)."""
+        command = (self.cfg.get("deploy") or {}).get("after_merge")
+        if not command or not self.root:
+            return []
+        done = subprocess.run(["bash", "-lc", command], cwd=self.root, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=900)
+        tail = (done.stdout + done.stderr).strip().splitlines()[-1:] or [""]
+        return [f"deploy {'ok' if done.returncode == 0 else 'FAILED'}: {tail[0][:160]}"]
 
     # Choosing work ---------------------------------------------------------------------------------
     def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
