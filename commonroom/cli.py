@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 
 from commonroom import board, config as config_mod, gate, usage
+from commonroom.dispatch import Dispatcher, verdicts
 from commonroom.ledger import Ledger
 
 PROVIDERS = ("claude", "codex")
@@ -28,21 +29,6 @@ def _clock(ts: float | None) -> str:
 
 def _project_name(cfg: dict) -> str | None:
     return cfg["project"].get("name")
-
-
-def verdicts(ledger: Ledger, cfg: dict, now: float | None = None) -> dict[str, gate.Verdict]:
-    now = time.time() if now is None else now
-    result = {}
-    project = _project_name(cfg)
-    runs = ledger.recent_runs(project, limit=cfg["breakers"]["no_output_runs"], autonomous=True, finished=True)
-    breaker, trip = gate.breaker_verdict(ledger.open_breakers(project), runs, cfg["breakers"]["no_output_runs"])
-    if trip:
-        ledger.trip(project, trip["kind"], trip["detail"], now=now)
-    for provider in PROVIDERS:
-        v = gate.usage_verdict(provider, ledger.latest_usage(provider), config_mod.budget(cfg, provider), now,
-                               cfg["freshness_seconds"])
-        result[provider] = v if (v.allowed is False or breaker.allowed) else gate.Verdict(False, breaker.reason, v.detail)
-    return result
 
 
 # Commands ---------------------------------------------------------------------
@@ -165,6 +151,52 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_run(args) -> int:
+    cfg = config_mod.load()
+    if not cfg.get("_root"):
+        print("No room.toml found; run inside a project")
+        return 2
+    ledger = Ledger()
+    dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, log=lambda line: print(f"{datetime.now():%H:%M:%S} {line}", flush=True))
+    try:
+        while True:
+            report = dispatcher.run_once()
+            if not args.loop:
+                return 0
+            # Idle passes are cheap (no model calls); wait longer when nothing could run.
+            time.sleep(args.interval if report.get("job") is None else 5)
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        ledger.close()
+
+
+def desktop_window(label: str) -> str | None:
+    label = label.lower()
+    if "5-hour" in label or "session" in label:
+        return "five_hour"
+    if label.startswith("weekly"):
+        return "seven_day" if "all models" in label else "seven_day_" + label.split()[-1]
+    return None
+
+
+def cmd_ingest(args) -> int:
+    """Record readings from the desktop app's usage tool (JSON on stdin) - the director's own meter."""
+    data = json.loads(sys.stdin.buffer.read().decode("utf-8"))
+    observations = []
+    for w in (data.get("plan") or data).get("windows", []):
+        window = desktop_window(w.get("label", ""))
+        if not window or w.get("percentUsed") is None:
+            continue
+        resets = datetime.fromisoformat(w["resetsAt"].replace("Z", "+00:00")).timestamp() if w.get("resetsAt") else None
+        observations.append(usage.observation("claude", window, w["percentUsed"], resets, "desktop"))
+    ledger = Ledger()
+    ledger.record_usage(observations)
+    ledger.close()
+    print("recorded: " + ", ".join(f"{o['window']} {o['used_pct']:.0f}%" for o in observations))
+    return 0
+
+
 def cmd_breaker(args) -> int:
     cfg, ledger = config_mod.load(), Ledger()
     project = _project_name(cfg)
@@ -190,6 +222,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
+    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     args = parser.parse_args(argv)
     return args.func(args)

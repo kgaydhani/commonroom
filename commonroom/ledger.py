@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS runs (
     output_tokens INTEGER,
     cost_usd REAL,
     outputs TEXT NOT NULL DEFAULT '[]',
-    note TEXT
+    note TEXT,
+    weekly_start REAL,
+    weekly_end REAL
 );
 CREATE INDEX IF NOT EXISTS runs_recent ON runs (project, started_at);
 CREATE TABLE IF NOT EXISTS breakers (
@@ -64,6 +66,10 @@ class Ledger:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
+        for name in ("weekly_start", "weekly_end"):
+            if name not in columns:
+                self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} REAL")
 
     def close(self):
         self.db.close()
