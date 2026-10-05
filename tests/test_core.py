@@ -75,8 +75,16 @@ class Gate(unittest.TestCase):
         r = readings(20, 30); del r["seven_day"]
         self.assertFalse(self.verdict(r).allowed)
 
-    def test_stale_reading_holds(self):
-        self.assertIn("old", self.verdict(readings(20, 30, age=3600)).reason)
+    def test_stale_reading_far_from_limits_is_allowed(self):
+        v = self.verdict(readings(12, 2, age=13 * 60))
+        self.assertTrue(v.allowed); self.assertIn("far from limits", v.reason)
+
+    def test_stale_reading_near_limits_holds(self):
+        v = self.verdict(readings(70, 30, five_elapsed=0.99, age=13 * 60))
+        self.assertFalse(v.allowed); self.assertIn("too close", v.reason)
+
+    def test_very_old_reading_holds(self):
+        self.assertIn("old", self.verdict(readings(20, 30, age=7200)).reason)
 
     def test_reset_since_reading_holds(self):
         r = readings(20, 30); r["five_hour"]["resets_at"] = NOW - 1

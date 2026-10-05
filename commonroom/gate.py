@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from commonroom.usage import WINDOW_SECONDS
 
 REQUIRED = ("five_hour", "seven_day")
+STALE_MAX_AGE = 3600   # never act on a reading older than this
+STALE_HEADROOM = 30    # percentage points of headroom needed to act on a stale reading
 
 
 @dataclass
@@ -23,14 +25,21 @@ def _fraction(now: float, resets_at: float, window: str) -> float:
 def usage_verdict(provider: str, readings: dict[str, dict], policy: dict, now: float, freshness: float) -> Verdict:
     """`readings` maps window name to the latest ledger row for that window."""
     detail = {}
+    stale_note = ""
     for window in REQUIRED:
         row = readings.get(window)
         if row is None:
             return Verdict(False, f"{provider}: no {window} reading yet", detail)
-        if now - row["observed_at"] > freshness:
-            return Verdict(False, f"{provider}: {window} reading is {int((now - row['observed_at']) // 60)} min old", detail)
         if row.get("resets_at") and row["resets_at"] <= now:
             return Verdict(False, f"{provider}: {window} has reset since the last reading; waiting for a fresh one", detail)
+        age = now - row["observed_at"]
+        if age > freshness:
+            # A stale reading far from every limit is still safe to act on: nothing burns 30 points unseen.
+            reserve = policy["reserve_5h"] if window == "five_hour" else policy["reserve_weekly"]
+            headroom = (100 - reserve) - row["used_pct"]
+            if age > STALE_MAX_AGE or headroom < STALE_HEADROOM:
+                return Verdict(False, f"{provider}: {window} reading is {int(age // 60)} min old and too close to its limit to trust", detail)
+            stale_note = f" (reading {int(age // 60)} min old, but far from limits)"
 
     week, session = readings["seven_day"], readings["five_hour"]
     reserve_w, reserve_5 = policy["reserve_weekly"], policy["reserve_5h"]
@@ -51,7 +60,7 @@ def usage_verdict(provider: str, readings: dict[str, dict], policy: dict, now: f
         if session["used_pct"] > burst_allowed:
             return Verdict(False, f"{provider}: 5-hour burn cap ({session['used_pct']:.0f}% used, {burst_allowed:.0f}% allowed so far this window)", detail)
 
-    return Verdict(True, f"{provider}: allowed", detail)
+    return Verdict(True, f"{provider}: allowed{stale_note}", detail)
 
 
 def breaker_verdict(open_breakers: list[dict], recent_finished_autonomous: list[dict], no_output_runs: int) -> tuple[Verdict, dict | None]:
