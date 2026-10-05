@@ -284,22 +284,36 @@ class Dispatcher:
             return {"status": "dry-run"}
         git(["fetch", "--quiet", "origin"], self.root)
         worktree, branch = self.prepare_worktree(job)
-        before = self.remote_head(branch)
-        weekly_start = self.weekly_used()
-        run_id = self.ledger.start_run(self.project, task, job.role, provider, model or role.model)
-        if job.issue:
-            self.board.set_labels(job.issue["number"], add=["status:in-progress"], remove=["status:ready", "needs:changes"])
-        started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        result = run_worker(provider, role, self.prompt(job, branch), worktree, self.ledger, self.log_dir,
-                            model=model, effort="high" if job.role == "director" else None,
-                            stop_check=lambda: self.stop_reason(provider))
-        status, outputs, note = self.assess(job, branch, before, started_iso, result)
-        self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
-                               note, session_id=result.session_id)
-        self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
-                               (weekly_start, self.weekly_used(), run_id))
-        self.ledger.db.commit()
-        self.cleanup_worktree(worktree)
+        run_id, labelled = None, False
+        try:
+            before = self.remote_head(branch)
+            weekly_start = self.weekly_used()
+            run_id = self.ledger.start_run(self.project, task, job.role, provider, model or role.model)
+            if job.issue:
+                self.board.set_labels(job.issue["number"], add=["status:in-progress"], remove=["status:ready", "needs:changes"])
+                labelled = True
+            started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            result = run_worker(provider, role, self.prompt(job, branch), worktree, self.ledger, self.log_dir,
+                                model=model, effort="high" if job.role == "director" else None,
+                                stop_check=lambda: self.stop_reason(provider))
+            status, outputs, note = self.assess(job, branch, before, started_iso, result)
+            self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
+                                   note, session_id=result.session_id)
+            self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
+                                   (weekly_start, self.weekly_used(), run_id))
+            self.ledger.db.commit()
+        except Exception as exc:
+            # A room-side error is not a model failure: put the task back and record the error honestly.
+            if run_id:
+                self.ledger.finish_run(run_id, "room-error", [], note=f"{type(exc).__name__}: {exc}"[:800])
+            if labelled:
+                try:
+                    self.board.set_labels(job.issue["number"], add=["status:ready"], remove=["status:in-progress"])
+                except Exception:
+                    pass
+            raise
+        finally:
+            self.cleanup_worktree(worktree)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
 

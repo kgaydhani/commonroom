@@ -15,7 +15,10 @@ def gh(args: list[str], timeout: float = 30) -> object:
     done = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8", timeout=timeout)
     if done.returncode != 0:
         raise RuntimeError(done.stderr.strip() or f"gh {' '.join(args)} failed")
-    return json.loads(done.stdout) if done.stdout.strip() else None
+    out = done.stdout.strip()
+    if not out:
+        return None
+    return json.loads(out) if out[0] in "[{" else out
 
 
 def issues(repo: str, label: str | None = None, milestone: str | None = None, state: str = "open", limit: int = 200) -> list[dict]:

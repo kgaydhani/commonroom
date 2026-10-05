@@ -197,6 +197,60 @@ def cmd_ingest(args) -> int:
     return 0
 
 
+def describe_event(provider: str, line: str) -> list[str]:
+    """One worker stream line -> readable lines (tool calls, text, results)."""
+    try:
+        e = json.loads(line)
+    except ValueError:
+        return [line.strip()[:200]] if line.strip() else []
+    out, kind = [], e.get("type")
+    if kind == "assistant":
+        for b in (e.get("message") or {}).get("content") or []:
+            if b.get("type") == "text" and b["text"].strip():
+                out.append("say  " + b["text"].strip().replace(chr(10), " ")[:220])
+            elif b.get("type") == "tool_use":
+                out.append(f"tool {b['name']} " + json.dumps(b.get("input"))[:180])
+    elif kind == "user":
+        for b in (e.get("message") or {}).get("content") or []:
+            if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error"):
+                c = b.get("content"); c = c if isinstance(c, str) else json.dumps(c)
+                out.append("  !! " + c.replace(chr(10), " ")[:200])
+    elif kind == "result":
+        out.append(f"done is_error={e.get('is_error')} turns={e.get('num_turns')} cost~${e.get('total_cost_usd')}")
+    elif kind == "item.completed":
+        item = e.get("item") or {}
+        if item.get("type") == "agent_message":
+            out.append("say  " + item.get("text", "")[:220].replace(chr(10), " "))
+        elif item.get("type") == "command_execution":
+            out.append("cmd  " + str(item.get("command"))[:180] + f"  (exit {item.get('exit_code')})")
+        elif item.get("type") == "file_change":
+            out.append("edit " + json.dumps(item.get("changes"))[:180])
+    elif kind in ("turn.failed", "error"):
+        out.append("  !! " + json.dumps(e)[:220])
+    return out
+
+
+def cmd_peek(args) -> int:
+    cfg = config_mod.load()
+    folder = Ledger().path.parent / "logs" / (cfg["project"].get("name") or "default")
+    logs = sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not logs:
+        print("no worker logs yet")
+        return 0
+    path = logs[-1 - args.back]
+    provider = "codex" if "-codex-" in path.name else "claude"
+    lines = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        rec = json.loads(raw)
+        if rec["channel"] == "out":
+            lines += describe_event(provider, rec["line"])
+        elif rec["line"].strip():
+            lines.append("err  " + rec["line"].strip()[:200])
+    print(f"{path.name} ({len(lines)} events)")
+    print(chr(10).join(lines[-args.lines:]))
+    return 0
+
+
 def cmd_breaker(args) -> int:
     cfg, ledger = config_mod.load(), Ledger()
     project = _project_name(cfg)
@@ -223,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
     sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     args = parser.parse_args(argv)

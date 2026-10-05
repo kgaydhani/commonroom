@@ -139,7 +139,8 @@ class Ledger:
         if autonomous is not None:
             clauses.append("autonomous=?"); params.append(int(autonomous))
         if finished:
-            clauses.append("status!='running'")
+            # Room-side errors spent no model allowance, so breakers ignore them.
+            clauses.append("status NOT IN ('running', 'room-error')")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self.db.execute(f"SELECT * FROM runs {where} ORDER BY started_at DESC LIMIT ?", (*params, limit)).fetchall()
         result = []
