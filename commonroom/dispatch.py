@@ -27,6 +27,7 @@ STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 DIRECTOR_COOLDOWN = 3600
 OWNER_COOLDOWN = 300
+SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
 
 
 def slug(title: str) -> str:
@@ -78,7 +79,7 @@ class GitHubBoard:
 
     def open_prs(self) -> list[dict]:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
-                             "--json", "number,headRefName,url,title"]) or []
+                             "--json", "number,headRefName,url,title,labels"]) or []
 
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
@@ -88,6 +89,9 @@ class GitHubBoard:
         prs = board_mod.gh(["pr", "list", "--repo", self.repo, "--head", branch, "--state", "all",
                             "--json", "number,state,url,headRefName"]) or []
         return prs[0] if prs else None
+
+    def label_pr(self, number: int, name: str):
+        board_mod.gh(["pr", "edit", str(number), "--repo", self.repo, "--add-label", name])
 
     def merge(self, number: int):
         board_mod.gh(["pr", "merge", str(number), "--repo", self.repo, "--squash", "--delete-branch"])
@@ -196,6 +200,9 @@ class Dispatcher:
             detail = self.board.pr_detail(pr["number"])
             review, checks = latest_review(detail), checks_state(detail)
             issue_no = int(m.group(1))
+            # Research reports (docs only) skip review: CI green is enough.
+            if "review:skip" in labels(pr) and checks == "green":
+                review = "APPROVE"
             if review == "APPROVE" and checks == "green":
                 if not self.dry_run:
                     self.board.merge(pr["number"])
@@ -234,37 +241,86 @@ class Dispatcher:
     # Choosing work ---------------------------------------------------------------------------------
     def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
+        issue_labels = None
         for pr in self.board.open_prs():
             m = BRANCH.match(pr["headRefName"])
-            if not m:
+            if not m or "review:skip" in labels(pr):
                 continue
             detail = self.board.pr_detail(pr["number"])
             if latest_review(detail) is None and checks_state(detail) != "red":
+                if issue_labels is None:
+                    issue_labels = {i["number"]: labels(i) for i in self.board.all_issues()}
+                # Codex (the smaller subscription) is spent where independence matters most: high-risk changes.
+                high_risk = "risk:high" in issue_labels.get(int(m.group(1)), set())
+                spec = self.roles.get("reviewer_high_risk" if high_risk else "reviewer", builder_spec)
                 built_by = self.last_provider(f"#{m.group(1)}", "builder")
-                choice = choose_provider(builder_spec, allowed, exclude=built_by) or choose_provider(builder_spec, allowed)
+                choice = choose_provider(spec, allowed, exclude=built_by) or choose_provider(spec, allowed)
                 if choice:
-                    return Job("review", "reviewer", pr=detail, reason=f"PR #{pr['number']} awaits review"), *choice
-        if self.milestone:
-            ready = [i for i in self.board.open_issues(self.milestone)
-                     if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)]
-        else:
-            ready = []
+                    return Job("review", "reviewer", pr=detail, reason=f"PR #{pr['number']} awaits {'high-risk ' if high_risk else ''}review"), *choice
+        open_now = self.board.open_issues(None)
+        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)
+                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone)]
+        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i)]
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
         if owner:
             choice = choose_provider(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=owner), *choice
+        scout_spec = self.roles.get("scout", ["claude:sonnet"])
+        # Research must not starve behind an endless build queue: a ready scout task goes first every few hours.
+        if scouting and time.time() - self.last_run_at("scout") > SCOUT_INTERLEAVE:
+            choice = choose_provider(scout_spec, allowed)
+            if choice:
+                issue = min(scouting, key=lambda i: i["number"])
+                return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
         for issue in sorted(ready, key=lambda i: i["number"]):
             choice = choose_provider(builder_spec, allowed)
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
+        for issue in sorted(scouting, key=lambda i: i["number"]):
+            choice = choose_provider(scout_spec, allowed)
+            if choice:
+                return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
+        sweep = self.capability_sweep_due()
+        if sweep and choose_provider(scout_spec, allowed):
+            issue = self.create_sweep_issue(sweep)
+            if issue:
+                return Job("build", "scout", issue=issue, reason=f"scheduled capability sweep: {sweep}"), *choose_provider(scout_spec, allowed)
         trigger = self.director_trigger()
         if trigger:
             choice = choose_provider(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=trigger), *choice
         return None
+
+    def last_run_at(self, role: str) -> float:
+        return next((r["started_at"] for r in self.ledger.recent_runs(self.project, limit=200) if r["role"] == role), 0.0)
+
+    def capability_sweep_due(self) -> str | None:
+        """A recurring research sweep, rotating through focus areas, every `[scout] every_hours`."""
+        scout = self.cfg.get("scout") or {}
+        every, focus = scout.get("every_hours", 24), scout.get("focus") or []
+        if not focus or time.time() - self.last_run_at("scout") < every * 3600:
+            return None
+        sweeps = sum(1 for r in self.ledger.recent_runs(self.project, limit=500) if r["role"] == "scout")
+        return focus[sweeps % len(focus)]
+
+    def create_sweep_issue(self, focus: str) -> dict | None:
+        if self.dry_run:
+            return {"number": 0, "title": f"Capability sweep: {focus}", "labels": []}
+        today = time.strftime("%Y-%m-%d")
+        body = (f"Scheduled capability sweep ({today}). Focus: **{focus}**.\n\n"
+                "Find tools, repos, MCP servers, techniques or references that are free (or already paid for), available on "
+                "this machine (docs/environment.md), and would make the game better or the studio faster, cheaper or more capable. "
+                "Be ambitious, but separate the proven from the hyped.\n\n## Deliverable\n"
+                f"- `docs/scouting/{today}-{slug(focus)}.md`: each finding with evidence links, what it would change, cost and risk, "
+                "and a proposed experiment with a pass/fail test.\n"
+                "- Up to 3 `kind:suggestion` issues for the best experiments. The director decides on them.")
+        url = board_mod.gh(["issue", "create", "--repo", self.cfg["project"]["repo"], "--title", f"Capability sweep: {focus}",
+                            "--body", body, "--label", "kind:research", "--label", "role:scout", "--label", "status:ready"])
+        number = int(str(url).rstrip("/").rsplit("/", 1)[1])
+        return {"number": number, "title": f"Capability sweep: {focus}", "labels": [{"name": "role:scout"}], "body": body}
 
     def owner_trigger(self) -> str | None:
         """New owner comments on owner tasks or suggestions, answered within minutes rather than the hourly cooldown."""
@@ -360,6 +416,8 @@ class Dispatcher:
             after = self.remote_head(branch)
             if pr and pr["state"] == "OPEN" and after and after != before:
                 self.board.set_labels(n, add=["status:review"], remove=["status:in-progress"])
+                if job.role == "scout" and hasattr(self.board, "label_pr"):
+                    self.board.label_pr(pr["number"], "review:skip")
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
             if blocked:
                 self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
@@ -397,6 +455,12 @@ class Dispatcher:
             extra = (f"\nA PR already exists for this branch (#{pr['number']}). Read its review comments with "
                      f"`gh pr view {pr['number']} --repo {repo} --comments`, address every point, and push to the same branch."
                      if pr and pr["state"] == "OPEN" else "")
+            if job.role == "scout":
+                return (f"Do the research in GitHub issue #{n} in {repo}. You are on branch `{branch}` in a fresh worktree. "
+                        f"Follow your scout instructions. Commit your report under docs/scouting/, push with "
+                        f"`git push -u origin {branch}`, and open a PR whose body says `Closes #{n}` and summarises the findings. "
+                        f"Open any `kind:suggestion` issues the deliverable asks for. Prefix comments with `[agent:scout]`.\n"
+                        f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
             return (f"Implement GitHub issue #{n} in {repo}. You are already on branch `{branch}` in a fresh worktree "
                     f"based on origin/main. Follow your builder instructions and AGENTS.md. Push with "
                     f"`git push -u origin {branch}`. Prefix any issue or PR comment you write with `[agent:builder]`.{extra}\n"

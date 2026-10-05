@@ -31,9 +31,9 @@ class FakeBoard:
         self.merged = n
 
 
-def issue(n, labels, body="", state="OPEN", comments=()):
+def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
     return {"number": n, "title": f"Issue {n}", "labels": [{"name": l} for l in labels], "body": body,
-            "state": state, "comments": list(comments)}
+            "state": state, "comments": list(comments), "milestone": {"title": milestone} if milestone else None}
 
 
 def cfg_with(root):
@@ -124,6 +124,30 @@ class WithLedger(unittest.TestCase):
         self.ledger.finish_run(run, "done", outputs=[{"kind": "director", "ref": "answered #41"}])
         job, _, _ = d.pick(allowed)
         self.assertEqual(job.kind, "build")  # answered; back to building
+
+    def test_high_risk_review_goes_to_codex_routine_to_claude(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(reviewer=["claude:sonnet"], reviewer_high_risk=["codex", "claude:opus"])
+        detail = {"number": 9, "headRefName": "i50-x", "commits": [{"committedDate": "2026-10-05T12:00:00Z"}], "comments": [],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        issues = [issue(50, ["status:review", "risk:high"])]
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues, prs=[{"number": 9, "headRefName": "i50-x"}], details={9: detail}), log=lambda *_: None)
+        job, provider, _ = d.pick(allowed)
+        self.assertEqual((job.kind, provider), ("review", "codex"))
+        issues[0]["labels"] = [{"name": "status:review"}]
+        job, provider, model = d.pick(allowed)
+        self.assertEqual((job.kind, provider, model), ("review", "claude", "sonnet"))
+
+    def test_scout_interleaves_with_builds(self):
+        issues = [issue(60, ["status:ready", "role:builder"]), issue(61, ["status:ready", "role:scout"], milestone="M1")]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        job, _, _ = d.pick(allowed)
+        self.assertEqual((job.role, job.issue["number"]), ("scout", 61))  # never scouted: research goes first
+        run = self.ledger.start_run("t", "#61", "scout", "claude"); self.ledger.finish_run(run, "done", outputs=[{"kind": "pr", "ref": "PR #70"}])
+        job, _, _ = d.pick(allowed)
+        self.assertEqual((job.role, job.issue["number"]), ("builder", 60))  # scouted recently: builds first
 
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
