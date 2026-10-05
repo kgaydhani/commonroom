@@ -261,6 +261,8 @@ class WithLedger(unittest.TestCase):
             self.ledger.finish_run(run, "failed", now=now - 190 + i)
         v = dispatch.verdicts(self.ledger, cfg, now)
         self.assertTrue(v["claude"].allowed); self.assertFalse(v["codex"].allowed)
+        self.assertEqual(self.ledger.open_breakers("t"), [])                  # views never record a trip
+        dispatch.verdicts(self.ledger, cfg, now, trip=True)                    # the dispatcher does
         self.assertEqual([b["kind"] for b in self.ledger.open_breakers("t")], ["no_output:codex"])
         self.ledger.clear_breakers("t")
         self.ledger.set_cooldown("claude", now + 600, "usage limit hit")

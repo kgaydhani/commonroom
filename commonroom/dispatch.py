@@ -146,7 +146,9 @@ def owner_comments(issue: dict) -> list[dict]:
 
 
 # Policy ------------------------------------------------------------------------------------------
-def verdicts(ledger: Ledger, cfg: dict, now: float | None = None) -> dict[str, gate.Verdict]:
+def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = False) -> dict[str, gate.Verdict]:
+    """Only the dispatcher records breaker trips (`trip=True`). Views (status, dashboard) are read-only, so a
+    long-running view on old code can never re-trip a breaker the current code would not."""
     now = time.time() if now is None else now
     project = cfg["project"].get("name")
     n = cfg["breakers"]["no_output_runs"]
@@ -156,9 +158,9 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None) -> dict[str, g
         # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
         runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider)
         mine = [b for b in ledger.open_breakers(project) if ":" not in b["kind"] or b["kind"].endswith(":" + provider)]
-        breaker, trip = gate.breaker_verdict(mine, runs, n)
-        if trip:
-            ledger.trip(project, f"{trip['kind']}:{provider}", trip["detail"], now=now)
+        breaker, tripped = gate.breaker_verdict(mine, runs, n)
+        if tripped and trip:
+            ledger.trip(project, f"{tripped['kind']}:{provider}", tripped["detail"], now=now)
         v = gate.usage_verdict(provider, ledger.latest_usage(provider), config_mod.budget(cfg, provider), now,
                                cfg["freshness_seconds"])
         cool = ledger.cooldown(provider, now)
@@ -790,7 +792,7 @@ class Dispatcher:
         if trip:
             self.ledger.trip(self.project, trip["kind"], trip["detail"], now=now)
             self.escalate_breaker(trip)
-        allowed = verdicts(self.ledger, self.cfg, now)
+        allowed = verdicts(self.ledger, self.cfg, now, trip=True)
         report["verdicts"] = {p: v.reason for p, v in allowed.items()}
         picked = self.pick(allowed)
         if not picked:
