@@ -219,6 +219,21 @@ class WithLedger(unittest.TestCase):
         self.assertTrue(any("merge conflicts" in a for a in actions))
         self.assertIn((95, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
 
+    def test_codex_takes_second_routine_build_in_parallel(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:sonnet", "codex"], builder_heavy=["claude:opus"])
+        issues = [issue(100, ["status:ready", "role:builder", "size:S"]), issue(101, ["status:ready", "role:builder", "size:S"]),
+                  issue(102, ["status:ready", "role:builder", "size:L"])]
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        codex = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="codex")
+        claude = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="claude")
+        job, provider, _ = codex.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (101, "codex"))   # the second routine task
+        job, provider, _ = claude.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (100, "claude"))  # Claude keeps the first
+        issues.pop(1)
+        self.assertIsNone(codex.pick(allowed))                               # one routine task left: it stays Claude's
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

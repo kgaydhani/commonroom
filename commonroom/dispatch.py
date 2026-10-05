@@ -337,6 +337,14 @@ class Dispatcher:
             if choice:
                 issue = min(scouting, key=priority)
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
+        if self.only_provider == "codex" and self.roles.get("codex_parallel_builds", True):
+            # Codex shouldn't idle while there's a queue: it takes the second routine task in parallel,
+            # leaving the top-priority one for Claude, and never the heavy (Opus) work.
+            routine = [i for i in sorted(ready, key=priority)
+                       if not labels(i) & {"size:L", "risk:high", "builder:heavy"}
+                       and not any(l.startswith("provider:") for l in labels(i))]
+            if len(routine) >= 2 and allowed.get("codex") and allowed["codex"].allowed:
+                return Job("build", "builder", issue=routine[1], reason=f"#{routine[1]['number']} is ready (parallel Codex build)"), "codex", None
         for issue in sorted(ready, key=priority):
             # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
             pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
