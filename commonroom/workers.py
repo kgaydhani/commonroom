@@ -62,6 +62,9 @@ def claude_command(role: Role, model: str | None, session_id: str, prompt_file: 
         cmd += ["--effort", effort]
     if role.tools:
         cmd += ["--tools", ",".join(role.tools)]
+    if role.name != "art-tech":
+        # Workers don't need the owner's connectors (Drive, Docs, Blender...); they only cost context.
+        cmd += ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
     return cmd
 
 

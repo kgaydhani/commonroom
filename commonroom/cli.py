@@ -157,18 +157,46 @@ def cmd_run(args) -> int:
         print("No room.toml found; run inside a project")
         return 2
     ledger = Ledger()
+    lock = ledger.path.parent / f"{cfg['project'].get('name') or 'default'}.lock"
+    if not args.dry_run and not acquire_lock(lock):
+        print(f"another dispatcher holds {lock}; exiting")
+        ledger.close()
+        return 0
     dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, log=lambda line: print(f"{datetime.now():%H:%M:%S} {line}", flush=True))
     try:
         while True:
             report = dispatcher.run_once()
-            if not args.loop:
+            idle = report.get("job") is None
+            if args.dry_run or (not args.loop and not args.until_idle) or (args.until_idle and idle):
                 return 0
             # Idle passes are cheap (no model calls); wait longer when nothing could run.
-            time.sleep(args.interval if report.get("job") is None else 5)
+            time.sleep(args.interval if idle else 5)
     except KeyboardInterrupt:
         return 0
     finally:
         ledger.close()
+        if not args.dry_run:
+            lock.unlink(missing_ok=True)
+
+
+def acquire_lock(path) -> bool:
+    """One dispatcher per project. A lock left by a dead process is taken over."""
+    import os
+    if path.exists():
+        try:
+            pid = int(path.read_text().strip())
+            if pid != os.getpid() and _alive(pid):
+                return False
+        except ValueError:
+            pass
+    path.write_text(str(os.getpid()))
+    return True
+
+
+def _alive(pid: int) -> bool:
+    import subprocess
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+    return str(pid) in out
 
 
 def desktop_window(label: str) -> str | None:
@@ -251,6 +279,34 @@ def cmd_peek(args) -> int:
     return 0
 
 
+def cmd_suggest(args) -> int:
+    """Owner, in the room channel: an idea for the director to triage. It can be rejected."""
+    cfg = config_mod.load()
+    repo = cfg["project"].get("repo")
+    body = (args.body or "") + "\n\n_Owner suggestion (room channel). The director triages it: accept, reject with reasons, or park._"
+    cmd =["issue", "create", "--repo", repo, "--title", args.title, "--body", body.strip(), "--label", "kind:suggestion"]
+    if cfg["goal"].get("milestone"):
+        cmd += ["--milestone", cfg["goal"]["milestone"]]
+    print(board.gh(cmd))
+    return 0
+
+
+def cmd_submit(args) -> int:
+    """Owner, in the room channel: deliver an assigned task. Lists new files under the project's art/incoming."""
+    import subprocess
+    cfg = config_mod.load()
+    root, repo = cfg.get("_root"), cfg["project"].get("repo")
+    new = subprocess.run(["git", "status", "--porcelain", "--untracked-files=all", "art/incoming"], cwd=root,
+                         capture_output=True, text=True).stdout.splitlines() if root else []
+    files = [line[3:] for line in new if line.strip()]
+    body = "submitted" + (f": {args.note}" if args.note else "")
+    if files:
+        body += "\n\nNew files:\n" + "\n".join(f"- `{f}`" for f in files)
+    board.gh(["issue", "comment", str(args.issue), "--repo", repo, "--body", body])
+    print(f"Submitted on #{args.issue}" + (f" with {len(files)} new file(s)" if files else ""))
+    return 0
+
+
 def cmd_breaker(args) -> int:
     cfg, ledger = config_mod.load(), Ledger()
     project = _project_name(cfg)
@@ -276,7 +332,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
-    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
+    p = sub.add_parser("submit", help="owner: deliver an assigned task"); p.add_argument("issue", type=int); p.add_argument("--note"); p.set_defaults(func=cmd_submit)
     p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
     sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
