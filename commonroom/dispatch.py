@@ -347,7 +347,10 @@ class Dispatcher:
         reasons = []
         for issue in self.board.open_issues(None):
             names = labels(issue)
-            if names & {"owner:human", "kind:suggestion"} and any(_after(c, since) for c in owner_comments(issue)):
+            comments = issue.get("comments") or []
+            # Only unanswered: the last word must be the owner's, and new since the last director run.
+            last_is_owner = bool(comments) and not (comments[-1].get("body") or "").lstrip().startswith("[")
+            if names & {"owner:human", "kind:suggestion"} and last_is_owner and _after(comments[-1], since):
                 reasons.append(f"#{issue['number']} has a new owner comment: answer it, accept the delivery, or close the task")
         return "; ".join(reasons) or None
 

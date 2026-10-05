@@ -125,6 +125,12 @@ class WithLedger(unittest.TestCase):
         job, _, _ = d.pick(allowed)
         self.assertEqual(job.kind, "build")  # answered; back to building
 
+    def test_owner_comment_already_answered_does_not_wake_director(self):
+        issues = [issue(42, ["owner:human"], comments=[{"body": "avg 58.9 fps", "createdAt": "2026-10-05T12:32:00Z"},
+                                                       {"body": "[agent:director] Recorded.", "createdAt": "2026-10-05T12:40:00Z"}])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(d.owner_trigger())
+
     def test_high_risk_review_goes_to_codex_routine_to_claude(self):
         cfg = cfg_with(self.tmp.name)
         cfg["roles"].update(reviewer=["claude:sonnet"], reviewer_high_risk=["codex", "claude:opus"])
