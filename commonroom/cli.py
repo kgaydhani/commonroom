@@ -279,6 +279,16 @@ def cmd_peek(args) -> int:
     return 0
 
 
+def cmd_dashboard(args) -> int:
+    from commonroom.dashboard import serve
+    cfg = config_mod.load()
+    if not cfg.get("_root"):
+        print("No room.toml found; run inside a project")
+        return 2
+    serve(cfg, args.port)
+    return 0
+
+
 def cmd_suggest(args) -> int:
     """Owner, in the room channel: an idea for the director to triage. It can be rejected."""
     cfg = config_mod.load()
@@ -333,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)
     p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
     p = sub.add_parser("submit", help="owner: deliver an assigned task"); p.add_argument("issue", type=int); p.add_argument("--note"); p.set_defaults(func=cmd_submit)
     p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
