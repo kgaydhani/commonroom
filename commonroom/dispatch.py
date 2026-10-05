@@ -26,6 +26,7 @@ MARK = "[room]"
 STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 DIRECTOR_COOLDOWN = 3600
+OWNER_COOLDOWN = 300
 
 
 def slug(title: str) -> str:
@@ -234,16 +235,37 @@ class Dispatcher:
         if self.milestone:
             ready = [i for i in self.board.open_issues(self.milestone)
                      if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)]
-            for issue in sorted(ready, key=lambda i: i["number"]):
-                choice = choose_provider(builder_spec, allowed)
-                if choice:
-                    return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
+        else:
+            ready = []
+        # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
+        owner = self.owner_trigger()
+        if owner:
+            choice = choose_provider(self.roles.get("director", ["claude:opus"]), allowed)
+            if choice:
+                return Job("direct", "director", reason=owner), *choice
+        for issue in sorted(ready, key=lambda i: i["number"]):
+            choice = choose_provider(builder_spec, allowed)
+            if choice:
+                return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
         trigger = self.director_trigger()
         if trigger:
             choice = choose_provider(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=trigger), *choice
         return None
+
+    def owner_trigger(self) -> str | None:
+        """New owner comments on owner tasks or suggestions, answered within minutes rather than the hourly cooldown."""
+        last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
+        since = last["started_at"] if last else 0
+        if time.time() - since < OWNER_COOLDOWN:
+            return None
+        reasons = []
+        for issue in self.board.open_issues(None):
+            names = labels(issue)
+            if names & {"owner:human", "kind:suggestion"} and any(_after(c, since) for c in owner_comments(issue)):
+                reasons.append(f"#{issue['number']} has a new owner comment: answer it, accept the delivery, or close the task")
+        return "; ".join(reasons) or None
 
     def director_trigger(self) -> str | None:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)

@@ -23,7 +23,7 @@ def gh(args: list[str], timeout: float = 30) -> object:
 
 def issues(repo: str, label: str | None = None, milestone: str | None = None, state: str = "open", limit: int = 200) -> list[dict]:
     args = ["issue", "list", "--repo", repo, "--state", state, "--limit", str(limit),
-            "--json", "number,title,labels,assignees,milestone,updatedAt,state,body"]
+            "--json", "number,title,labels,assignees,milestone,updatedAt,state,body,comments"]
     if label:
         args += ["--label", label]
     if milestone:

@@ -45,6 +45,19 @@ def worker_tail(ledger: Ledger, project: str, lines: int = 18) -> dict | None:
     return {"file": path.name, "updated": path.stat().st_mtime, "events": events[-lines:], "count": len(events)}
 
 
+def owner_queue(repo: str) -> list[dict]:
+    """Owner tasks with their brief and the conversation so far, soonest due first."""
+    rows = board.gh(["issue", "list", "--repo", repo, "--label", board.OWNER_LABEL, "--state", "open", "--limit", "50",
+                     "--json", "number,title,body,comments,url"]) or []
+    queue = []
+    for i in rows:
+        comments = [{"who": "agent" if (c.get("body") or "").lstrip().startswith("[") else "you",
+                     "body": (c.get("body") or "")[:600], "at": c.get("createdAt")} for c in i.get("comments") or []]
+        queue.append({"number": i["number"], "title": i["title"], "due": board.due_date(i["body"]), "url": i["url"],
+                      "brief": (i.get("body") or "")[:1500], "comments": comments[-4:]})
+    return sorted(queue, key=lambda q: q["due"] or "9999")
+
+
 def state(cfg: dict) -> dict:
     ledger = Ledger()
     try:
@@ -64,9 +77,7 @@ def state(cfg: dict) -> dict:
         }
         if repo:
             result["milestone"] = cached("milestone", 60, lambda: board.milestone(repo, goal) if goal else None)
-            result["owner_queue"] = cached("owner", 60, lambda: [
-                {"number": i["number"], "title": i["title"], "due": board.due_date(i["body"])}
-                for i in board.issues(repo, label=board.OWNER_LABEL)])
+            result["owner_queue"] = cached("owner", 30, lambda: owner_queue(repo))
             result["board"] = cached("board", 60, lambda: [
                 {"number": i["number"], "title": i["title"], "labels": [l["name"] for l in i["labels"]]}
                 for i in board.issues(repo, milestone=goal)] if goal else [])
@@ -113,11 +124,26 @@ async function refresh(){const r=await fetch('/api/state');const d=await r.json(
  $('usage').innerHTML=u;
  const run=d.running[0];$('now').innerHTML=run?`<b>${esc(run.role)}</b> on ${esc(run.task||'-')} with ${esc(run.provider)} ${esc(run.model||'')} · started ${ago(run.started_at)} ago`:'Nothing running.';
  $('tail').textContent=d.worker?`${d.worker.file} · ${d.worker.count} events · last update ${ago(d.worker.updated)} ago\\n`+d.worker.events.join('\\n'):'';
- $('queue').innerHTML=(d.owner_queue&&d.owner_queue.length)?d.owner_queue.map(i=>`<div>#${i.number} ${esc(i.title)} <span class="muted">due ${esc(i.due||'-')}</span></div>`).join(''):'<span class="muted">Nothing assigned to you.</span>';
+ renderQueue(d.owner_queue);
  $('board').innerHTML=(d.board||[]).map(i=>`<div>#${i.number} ${esc(i.title)} ${(i.labels||[]).filter(l=>/^(status|needs|owner):/.test(l)).map(l=>`<span class="tag">${esc(l)}</span>`).join('')}</div>`).join('')||'<span class="muted">empty</span>';
  $('runs').innerHTML=d.runs.map(r=>`<tr><td>${clock(r.started_at)}</td><td>${esc(r.role)}<br><span class="muted">${esc(r.provider)} ${esc(r.model||'')}</span></td><td>${esc(r.task||'')}</td><td class="${r.status=='done'?'go':r.status=='running'?'':'stop'}">${esc(r.status)}</td><td>${r.outputs.map(o=>esc(o.ref)).join('<br>')||'<span class="stop">no output</span>'}</td><td class="muted">${r.weekly_end!=null&&r.weekly_start!=null?'+'+(r.weekly_end-r.weekly_start).toFixed(1)+'% wk':''}${r.cost_usd?'<br>~$'+r.cost_usd.toFixed(2):''}</td></tr>`).join('');
  const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';
  $('breakers').innerHTML=d.breakers.map(b=>`<div class="stop" style="font-size:13px">${esc(b.kind)}: ${esc(b.detail)}</div>`).join('');}
+const openItems=new Set();
+function renderQueue(q){const el=$('queue');
+ if(!q||q.error||!q.length){el.innerHTML=q&&q.error?`<span class="stop">${esc(q.error)}</span>`:'<span class="muted">Nothing assigned to you.</span>';return}
+ if(el.contains(document.activeElement))return; // don't redraw while you're typing
+ el.innerHTML=q.map(i=>`<details data-n="${i.number}" ${openItems.has(i.number)?'open':''} style="border-top:1px solid var(--line);padding:6px 0">
+  <summary><b>#${i.number}</b> ${esc(i.title.replace(/^\\[You\\]\\s*/,''))} <span class="muted">due ${esc(i.due||'-')}</span>${i.comments.length&&i.comments[i.comments.length-1].who=='agent'?' <span class="tag">reply waiting</span>':''}</summary>
+  <pre style="max-height:180px;margin:6px 0">${esc(i.brief)}</pre>
+  ${i.comments.map(c=>`<div style="font-size:13px;margin:4px 0"><b class="${c.who=='you'?'':'go'}">${c.who=='you'?'You':'Room'}:</b> ${esc(c.body)}</div>`).join('')}
+  <form data-n="${i.number}" style="margin-top:6px"><input name="text" placeholder="Answer, question, or what you delivered"><button name="act" value="send">Send</button><button name="act" value="done">Done</button></form>
+  <a href="${esc(i.url)}" target="_blank" class="muted" style="font-size:12px">open on GitHub</a></details>`).join('');
+ el.querySelectorAll('details').forEach(x=>x.ontoggle=()=>{const n=+x.dataset.n;x.open?openItems.add(n):openItems.delete(n)});
+ el.querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const act=e.submitter?e.submitter.value:'send';let t=f.text.value.trim();
+  if(act=='send'&&!t){f.text.placeholder='Write something first';return}
+  if(act=='done')t='done'+(t?': '+t:'');
+  const res=await post('/api/comment',{number:+f.dataset.n,text:t});if(res.error){alert(res.error);return}f.text.value='';refresh()})}
 async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Room':'1'},body:JSON.stringify(body||{})});return r.json()}
 $('pause').onclick=async()=>{await post($('pause').dataset.paused?'/api/resume':'/api/pause');refresh()};
 $('suggest').onsubmit=async e=>{e.preventDefault();const t=e.target.title.value.trim();if(!t)return;const res=await post('/api/suggest',{title:t});e.target.title.value=res.url?'':t;alert(res.url?'Filed: '+res.url:'Failed: '+res.error)};
@@ -160,6 +186,15 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"ok": True}
             elif self.path == "/api/resume":
                 result = {"ok": True, "cleared": ledger.clear_breakers(project, PAUSE_KIND)}
+            elif self.path == "/api/comment":
+                number, text = int(body.get("number", 0)), str(body.get("text", "")).strip()[:4000]
+                if not number or not text:
+                    raise ValueError("Nothing to send")
+                if text.startswith("["):
+                    text = "​" + text  # leading "[" marks agent comments; keep owner comments distinguishable
+                board.gh(["issue", "comment", str(number), "--repo", self.cfg["project"]["repo"], "--body", text])
+                _cache.pop("owner", None)
+                result = {"ok": True}
             elif self.path == "/api/suggest":
                 title = str(body.get("title", "")).strip()[:200]
                 if not title:

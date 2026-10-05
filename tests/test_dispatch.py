@@ -111,6 +111,20 @@ class WithLedger(unittest.TestCase):
         issues.append(issue(20, ["status:blocked", "role:builder"], body="Depends on #99"))
         self.assertIn("nothing is ready", d.director_trigger())
 
+    def test_owner_reply_outranks_builds(self):
+        issues = [issue(40, ["status:ready", "role:builder"]),
+                  issue(41, ["owner:human"], comments=[{"body": "[agent:director] which phone?", "createdAt": "2026-10-05T10:00:00Z"},
+                                                       {"body": "Pixel 8, Android 16", "createdAt": "2026-10-05T12:00:00Z"}])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        job, provider, model = d.pick(allowed)
+        self.assertEqual((job.kind, provider, model), ("direct", "claude", "opus"))
+        self.assertIn("#41", job.reason)
+        run = self.ledger.start_run("t", None, "director", "claude")
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "director", "ref": "answered #41"}])
+        job, _, _ = d.pick(allowed)
+        self.assertEqual(job.kind, "build")  # answered; back to building
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
