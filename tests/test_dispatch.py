@@ -233,6 +233,10 @@ class WithLedger(unittest.TestCase):
         self.assertEqual((job.issue["number"], provider), (100, "claude"))  # Claude keeps the first
         issues.pop(1)
         self.assertIsNone(codex.pick(allowed))                               # one routine task left: it stays Claude's
+        busy = self.ledger.start_run("t", "#102", "builder", "claude")       # ...unless Claude is busy elsewhere
+        job, _, _ = codex.pick(allowed)
+        self.assertEqual(job.issue["number"], 100)
+        self.ledger.finish_run(busy, "done", outputs=[{"kind": "pr", "ref": "PR #1"}])
         issues.append(issue(103, ["status:ready", "role:builder", "size:S"]))
         issues.append(issue(104, ["status:ready", "role:builder", "provider:codex"], milestone="M1"))
         job, _, _ = codex.pick(allowed)
