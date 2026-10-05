@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -70,7 +71,7 @@ def state(cfg: dict) -> dict:
                                      "windows": ledger.latest_usage(provider)}
         runs = ledger.recent_runs(project, limit=25)
         result = {
-            "now": now, "project": cfg["project"], "goal": goal, "usage": usage_state, "runs": runs,
+            "now": now, "version": VERSION, "project": cfg["project"], "goal": goal, "usage": usage_state, "runs": runs,
             "running": [r for r in runs if r["status"] == "running"],
             "breakers": ledger.open_breakers(project),
             "worker": worker_tail(ledger, project) if project else None,
@@ -115,7 +116,9 @@ form{display:flex;gap:8px}form input{flex:1;min-width:0}.tag{font-size:11px;padd
 const $=id=>document.getElementById(id);const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const ago=t=>{const s=Math.max(0,Date.now()/1000-t);return s<90?Math.round(s)+'s':s<5400?Math.round(s/60)+'m':(s/3600).toFixed(1)+'h'};
 const clock=t=>t?new Date(t*1000).toLocaleString([], {weekday:'short',hour:'2-digit',minute:'2-digit'}):'?';
-async function refresh(){const r=await fetch('/api/state');const d=await r.json();
+let pageVersion=null;
+async function refresh(){let d;try{const r=await fetch('/api/state',{cache:'no-store'});d=await r.json()}catch(e){return} // server restarting: try again next tick
+ if(pageVersion===null)pageVersion=d.version;else if(d.version!==pageVersion){location.reload();return} // new dashboard deployed
  $('title').textContent='Common Room: '+(d.project.name||'');
  const m=d.milestone;$('goal').innerHTML=m&&!m.error?`<b>${esc(d.goal)}</b><br>${m.closed_issues}/${m.open_issues+m.closed_issues} issues done${m.due_on?' · due '+m.due_on.slice(0,10):''}`:esc(d.goal||'no goal set');
  let u='';for(const [p,v] of Object.entries(d.usage)){u+=`<div><b>${p}</b> <span class="${v.allowed?'go':'hold'}">${v.allowed?'GO':'HOLD'}</span> <span class="muted" style="font-size:13px">${esc(v.reason)}</span></div>`;
@@ -230,3 +233,7 @@ def serve(cfg: dict, port: int = 8770):
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+
+
+# Open pages reload themselves when this changes: a new page or a restarted server.
+VERSION = hashlib.sha1((PAGE + str(time.time())).encode()).hexdigest()[:10]
