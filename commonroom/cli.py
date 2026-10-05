@@ -163,9 +163,14 @@ def cmd_run(args) -> int:
         ledger.close()
         return 0
     dispatcher = Dispatcher(cfg, ledger, dry_run=args.dry_run, log=lambda line: print(f"{datetime.now():%H:%M:%S} {line}", flush=True))
+    stop_file = ledger.path.parent / f"{cfg['project'].get('name') or 'default'}.stop"
     try:
         while True:
             report = dispatcher.run_once()
+            if stop_file.exists():
+                stop_file.unlink(missing_ok=True)
+                print(f"{datetime.now():%H:%M:%S} stop requested; exiting between jobs", flush=True)
+                return 0
             idle = report.get("job") is None
             if args.dry_run or (not args.loop and not args.until_idle) or (args.until_idle and idle):
                 return 0
@@ -279,6 +284,15 @@ def cmd_peek(args) -> int:
     return 0
 
 
+def cmd_stop(args) -> int:
+    """Ask a running dispatcher to exit after its current job (used to deploy new room code)."""
+    cfg = config_mod.load()
+    path = Ledger().path.parent / f"{cfg['project'].get('name') or 'default'}.stop"
+    path.write_text(str(time.time()))
+    print(f"Stop requested: the dispatcher exits after its current job ({path})")
+    return 0
+
+
 def cmd_dashboard(args) -> int:
     from commonroom.dashboard import serve
     cfg = config_mod.load()
@@ -343,6 +357,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.set_defaults(func=cmd_run)
+    sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)
     p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
     p = sub.add_parser("submit", help="owner: deliver an assigned task"); p.add_argument("issue", type=int); p.add_argument("--note"); p.set_defaults(func=cmd_submit)
