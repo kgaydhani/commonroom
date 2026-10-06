@@ -266,6 +266,12 @@ class WithLedger(unittest.TestCase):
         issues.append(issue(104, ["status:ready", "role:builder", "provider:codex"], milestone="M1"))
         job, _, _ = codex.pick(allowed)
         self.assertEqual(job.issue["number"], 104)                           # pinned Codex-only work beats parallel routine
+        issues[:] = [issue(110, ["status:ready", "role:builder", "needs:render"]), issue(111, ["status:ready", "role:builder", "kind:art"]),
+                     issue(112, ["status:ready", "role:builder", "kind:perf"])]
+        job, _, _ = codex.pick(allowed)                                      # Codex renders off-screen (gamemirage#101)...
+        self.assertIn(job.issue["number"], (110, 111))
+        issues[:] = [issue(112, ["status:ready", "role:builder", "kind:perf"]), issue(113, ["status:ready", "role:builder", "kind:perf"])]
+        self.assertIsNone(codex.pick(allowed))                               # ...but device perf work stays with Claude
 
     def fresh_readings(self, now):
         for provider in ("claude", "codex"):

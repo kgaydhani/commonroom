@@ -497,9 +497,9 @@ class Dispatcher:
             # Work only Codex can do (pinned, e.g. image generation) comes before routine parallel builds.
             # Codex shouldn't idle while there's a queue: it takes the second routine task in parallel,
             # leaving the top-priority one for Claude, and never the heavy (Opus) work.
-            # Codex's sandbox can't render (no Godot windows, no browser), so visual and perf work stays with Claude.
+            # Codex renders Godot off-screen fine in its sandbox (gamemirage#101); device-level perf work stays with Claude.
             routine = [i for i in sorted(ready, key=priority)
-                       if not labels(i) & {"size:L", "risk:high", "builder:heavy", "kind:perf", "kind:art", "needs:render"}
+                       if not labels(i) & {"size:L", "risk:high", "builder:heavy", "kind:perf"}
                        and not any(l.startswith("provider:") for l in labels(i))]
             claude_busy = any(r["provider"] == "claude" and r["status"] == "running"
                               for r in self.ledger.recent_runs(self.project, limit=20))
@@ -805,10 +805,13 @@ class Dispatcher:
                         f"You are on branch `{branch}` in a fresh checkout of origin/main. Follow your builder instructions and "
                         f"AGENTS.md, **except for git**: your sandbox keeps .git read-only, so do not commit, push or open a PR. "
                         f"Leave your changes in the working tree, and Common Room will commit, push and open the PR for you. "
-                        f"Your sandbox also can't run Git Bash or render Godot windows, so run the tests by calling Godot "
-                        f"directly: `\"$GODOT\" --headless --path game -s res://tests/run_tests.gd` (GODOT is "
-                        f"D:/Dev/tools/godot/Godot_v4.7.2-stable_win64_console.exe). CI and the reviewer cover full runs and "
-                        f"visual checks. If something in the sandbox is impossible, finish the rest and say what's left; your "
+                        f"Git Bash can't start in your sandbox (an upstream Codex limitation), so run the tests with "
+                        f"`python tools/test.py` if it exists, otherwise call Godot directly: "
+                        f"`\"$GODOT\" --headless --path game -s res://tests/run_tests.gd` (GODOT is "
+                        f"D:/Dev/tools/godot/Godot_v4.7.2-stable_win64_console.exe). Rendering does work: for visual checks use "
+                        f"`--write-movie` off-screen (`--position -10000,-10000`), create the output folder first (Godot won't, and "
+                        f"silently writes nothing), use absolute paths inside your checkout, and ignore `user://` log errors. Look at "
+                        f"the frames you render. If something in the sandbox is impossible, finish the rest and say what's left; your "
                         f"partial work is kept, not discarded.{extra}\n"
                         f"Finish with: a line `PR_TITLE: <short title>`, then `PR_BODY:` followed by each acceptance criterion and "
                         f"how you verified it, plus anything unverified. Make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
