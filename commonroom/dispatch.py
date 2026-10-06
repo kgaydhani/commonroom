@@ -230,6 +230,17 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
         if v.allowed and cool:
             v = gate.Verdict(False, f"{provider}: {cool['reason']}; resting until "
                                     f"{time.strftime('%H:%M', time.localtime(cool['until']))}", v.detail)
+        if provider == "claude" and v.allowed:
+            owner = cfg.get("owner") or {}
+            elsewhere = usage.owner_active(cfg.get("_root"), owner.get("active_minutes", 20), now=now)
+            if elsewhere:
+                # The owner shares this plan: yield to their own sessions. Running workers finish; nothing new
+                # starts once the 5-hour window passes the cap (no "reserve" wording, so in-flight work isn't stopped).
+                v.detail["owner_active"] = elsewhere
+                cap = owner.get("new_work_cap_5h", 70)
+                if v.detail.get("five_hour_used", 0) >= cap:
+                    v = gate.Verdict(False, f"claude: the owner is using Claude elsewhere; no new work above {cap}% "
+                                            f"of the 5-hour window", v.detail)
         result[provider] = v if (not v.allowed or breaker.allowed) else gate.Verdict(False, breaker.reason, v.detail)
     return result
 
@@ -249,11 +260,18 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
     """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
-    spent = sum(max(0.0, (r.get("weekly_end") or 0) - (r.get("weekly_start") or 0))
-                for r in runs if r["provider"] == "claude" and r["autonomous"] and r.get("weekly_start") is not None)
+    if not any(r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge" for r in runs):
+        return None   # the room didn't work: whatever was spent was the owner's own use
+    # Plan-wide weekly growth over 24h (per-run deltas double-count parallel runs). Within each weekly period
+    # take last minus first, so a reset or a flapping last digit can't inflate it.
+    periods: dict = {}
+    for r in ledger.usage_history("claude", "seven_day", since):
+        key = round((r["resets_at"] or 0) / 3600)
+        periods.setdefault(key, [r["used_pct"], r["used_pct"]])[1] = r["used_pct"]
+    spent = sum(max(0.0, last - first) for first, last in periods.values())
     merged = sum(1 for r in runs if r["role"] == "merge")
     if spent > spend_limit and merged == 0:
-        return {"kind": "no_progress", "detail": f"{spent:.1f}% of the weekly Claude allowance spent by autonomous runs in 24h with nothing merged"}
+        return {"kind": "no_progress", "detail": f"{spent:.1f}% of the weekly Claude allowance spent in 24h of room work with nothing merged"}
     return None
 
 
@@ -434,8 +452,8 @@ class Dispatcher:
         if self.slot > int(par.get(f"{provider}_slots", 1)) or not v or not v.allowed:
             return None
         pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
-        if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15):
-            return None
+        if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15) or v.detail.get("owner_active"):
+            return None   # extra slots also yield while the owner is using Claude elsewhere
         busy = any(r["provider"] == provider and r["status"] == "running" for r in self.ledger.recent_runs(self.project, limit=20))
         if not busy:
             return None

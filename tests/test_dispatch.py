@@ -1,3 +1,4 @@
+import os
 import tempfile
 import time
 import unittest
@@ -83,7 +84,8 @@ class WithLedger(unittest.TestCase):
         now = time.time()
         run = self.ledger.start_run("t", "#1", "builder", "claude", now=now - 3600)
         self.ledger.finish_run(run, "failed", now=now - 3000)
-        self.ledger.db.execute("UPDATE runs SET weekly_start=10, weekly_end=22 WHERE id=?", (run,)); self.ledger.db.commit()
+        for t, pct in ((now - 3600, 10), (now - 3500, 11), (now - 3400, 10), (now - 3000, 22)):   # incl. a flapping digit
+            self.ledger.record_usage([usage.observation("claude", "seven_day", pct, now + 86400, "test")], now=t)
         self.assertEqual(dispatch.check_progress(self.ledger, "t", now)["kind"], "no_progress")
         merge = self.ledger.start_run("t", "#1", "merge", "none", now=now - 100)
         self.ledger.finish_run(merge, "done", outputs=[{"kind": "merge", "ref": "PR #3"}], now=now - 100)
@@ -406,6 +408,34 @@ class WithLedger(unittest.TestCase):
         d.preserve_work(job, main, "i92-x")
         bundles = list((Path(self.ledger.path).parent / "rescue").glob("i92-x-*.bundle"))
         self.assertEqual(len(bundles), 1)                                               # ...so it's bundled locally
+
+    def test_room_yields_while_the_owner_uses_claude_elsewhere(self):
+        now = time.time()
+        self.fresh_readings(now)
+        projects = Path(self.tmp.name) / "projects"
+        root = Path(self.tmp.name) / "game"
+        mine = projects / dispatch.re.sub(r"[^A-Za-z0-9]", "-", str(root))
+        for folder in (mine, Path(str(mine) + "--claude-worktrees-i1-x"), projects / "D--Docs-career-CV"):
+            folder.mkdir(parents=True); (folder / "s.jsonl").write_text("{}")
+        old = time.time() - 3600
+        os.utime(projects / "D--Docs-career-CV" / "s.jsonl", (old, old))
+        dispatch.usage._owner_cache.clear()
+        self.assertIsNone(dispatch.usage.owner_active(str(root), 20, projects_dir=projects))   # only the room's own sessions
+        os.utime(projects / "D--Docs-career-CV" / "s.jsonl", None)
+        dispatch.usage._owner_cache.clear()
+        self.assertEqual(dispatch.usage.owner_active(str(root), 20, projects_dir=projects), "D--Docs-career-CV")
+        cfg = cfg_with(self.tmp.name); cfg["_root"] = str(root)
+        orig = dispatch.usage.owner_active
+        dispatch.usage.owner_active = lambda *a, **k: "D--Docs-career-CV"
+        try:
+            v = dispatch.verdicts(self.ledger, cfg, now)["claude"]
+            self.assertTrue(v.allowed); self.assertEqual(v.detail["owner_active"], "D--Docs-career-CV")   # 5% used: fine
+            self.ledger.record_usage([usage.observation("claude", "five_hour", 75, now + 3600, "test")], now=now)
+            v = dispatch.verdicts(self.ledger, cfg, now)["claude"]
+            self.assertFalse(v.allowed); self.assertIn("owner is using Claude elsewhere", v.reason)
+            self.assertNotIn("reserve", v.reason)                                # running workers aren't stopped
+        finally:
+            dispatch.usage.owner_active = orig
 
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]

@@ -139,6 +139,36 @@ def limit_hit(texts: list[str], now: float, fallback: float = 1800) -> float | N
     return now + fallback
 
 
+_owner_cache: dict = {}
+
+
+def owner_active(project_root: str | None, minutes: float = 20, projects_dir: Path | None = None,
+                 now: float | None = None) -> str | None:
+    """Is the owner using Claude Code elsewhere on this machine? Looks for session transcripts under
+    ~/.claude/projects modified in the last `minutes`, outside this project (its director chat and room workers
+    all live under the project's own encoded folder name). Returns that folder's name, or None. Cached for a minute.
+    Usage on claude.ai or other devices can't be seen here; the plan-wide meter still counts it."""
+    now = time.time() if now is None else now
+    key = (project_root, minutes, str(projects_dir))
+    hit = _owner_cache.get(key)
+    if hit and now - hit[0] < 60:
+        return hit[1]
+    root = projects_dir or Path.home() / ".claude" / "projects"
+    mine = re.sub(r"[^A-Za-z0-9]", "-", str(Path(project_root))) if project_root else None
+    found = None
+    try:
+        for folder in root.iterdir():
+            if not folder.is_dir() or (mine and folder.name.startswith(mine)):
+                continue
+            if any(now - f.stat().st_mtime < minutes * 60 for f in folder.glob("*.jsonl")):
+                found = folder.name
+                break
+    except OSError:
+        pass
+    _owner_cache[key] = (now, found)
+    return found
+
+
 def parse_claude_screen(text: str, now: float) -> list[dict]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     result, current = [], None
