@@ -581,15 +581,21 @@ class Dispatcher:
         every = float(audit.get("every_hours", 1))
         last = self.last_run_at("auditor")
         age = time.time() - last
-        if age < every * 3600:
-            return None
-        activity = [r for r in self.ledger.recent_runs(self.project, limit=200)
-                    if r["started_at"] > last and r["role"] not in ("auditor",)]
-        if not activity and age < 6 * 3600:
-            return None
         # Fable has its own weekly window: keep a quarter of it for the owner.
         fable = self.ledger.latest_usage("claude").get("seven_day_fable")
         if fable and fable["used_pct"] > 75:
+            return None
+        activity = [r for r in self.ledger.recent_runs(self.project, limit=200)
+                    if r["started_at"] > last and r["role"] not in ("auditor",)]
+        if age < every * 3600:
+            # Something going wrong brings the audit forward (at most every 30 min): a breaker, or 3+ wasted runs.
+            wasted = [r for r in activity if r["status"] in ("failed", "blocked", "room-error")]
+            breaker = bool(self.ledger.open_breakers(self.project))
+            if age >= 1800 and (breaker or len(wasted) >= 3):
+                return (f"early audit: {len(wasted)} runs didn't land since the last audit"
+                        + (" and a breaker is open" if breaker else ""))
+            return None
+        if not activity and age < 6 * 3600:
             return None
         hours = round(min(age / 3600, 24), 1) if last else every
         return f"periodic audit of the last {hours}h ({len(activity)} runs since the previous audit)"

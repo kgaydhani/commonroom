@@ -191,6 +191,18 @@ class WithLedger(unittest.TestCase):
         run = self.ledger.start_run("t", "#3", "builder", "claude"); self.ledger.finish_run(run, "done")
         self.assertIsNone(d.audit_due())                       # Fable weekly above 75%: hold
 
+    def test_trouble_brings_the_audit_forward(self):
+        cfg = cfg_with(self.tmp.name); cfg["audit"] = {"every_hours": 2}
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        now = time.time()
+        a = self.ledger.start_run("t", None, "auditor", "claude", now=now - 2400); self.ledger.finish_run(a, "done", now=now - 2300)
+        self.assertIsNone(d.audit_due())                       # 40 min since the audit, all quiet: wait for 2 h
+        for i in range(3):
+            r = self.ledger.start_run("t", f"#{i}", "builder", "claude", now=now - 600 + i); self.ledger.finish_run(r, "failed", now=now - 500)
+        self.assertIn("early audit", d.audit_due())            # 3 wasted runs: look now
+        self.ledger.db.execute("UPDATE runs SET started_at=? WHERE id=?", (now - 900, a)); self.ledger.db.commit()
+        self.assertIsNone(d.audit_due())                       # but never more often than every 30 min
+
     def test_heavy_work_goes_to_opus(self):
         cfg = cfg_with(self.tmp.name)
         cfg["roles"].update(builder=["claude:sonnet"], builder_heavy=["claude:opus"])
