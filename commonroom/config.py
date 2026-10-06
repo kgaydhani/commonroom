@@ -21,6 +21,8 @@ DEFAULTS = {
     # While the owner uses Claude elsewhere on this machine, extra slots yield and no new work starts above this
     # share of the 5-hour window, so the owner's own sessions keep room to breathe.
     "owner": {"active_minutes": 20, "new_work_cap_5h": 70},
+    # Reasoning effort per role (`claude --effort`). Unlisted roles use the CLI's default. Recorded on every run.
+    "effort": {"director": "high", "auditor": "high"},
     "director_share_max": 0.15,
     "board": {"ready_cap": 15},
     "checks": {},

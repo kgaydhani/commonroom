@@ -678,8 +678,10 @@ class Dispatcher:
         if self.dry_run:
             return {"status": "dry-run"}
         # Claim first, atomically: parallel dispatchers must never work the same task twice.
+        effort = (self.cfg.get("effort") or {}).get(job.role)
         run_id = self.ledger.start_run(self.project, task, job.role, provider,
-                                       model or (role.model if provider == "claude" else "default"), exclusive=bool(task))
+                                       model or (role.model if provider == "claude" else "default"),
+                                       effort=effort or "default", exclusive=bool(task))
         if run_id is None:
             self.log(f"   {task} is already being worked on; skipped")
             return {"status": "skipped", "outputs": [], "note": "already running"}
@@ -699,7 +701,7 @@ class Dispatcher:
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
             result = run_worker(provider, role, self.prompt(job, branch) + HEADLESS_NOTE, worktree, self.ledger, self.log_dir,
-                                model=model, effort="high" if job.role in ("director", "auditor") else None,
+                                model=model, effort=effort,
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
                 status, outputs, note = self.requeue(job, provider, result)

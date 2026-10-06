@@ -307,6 +307,35 @@ def cmd_peek(args) -> int:
     return 0
 
 
+def efficiency(ledger, project, since: float, now: float) -> dict:
+    """Are we getting the most out of the allowance? Output per unit of spend, and work that didn't land, by role,
+    model and effort. `api_usd` is Claude's API-equivalent cost of each run, a proxy for its share of the plan."""
+    runs = [r for r in ledger.recent_runs(project, limit=2000) if r["started_at"] >= since]
+    groups: dict = {}
+    for r in runs:
+        if r["role"] == "merge":
+            continue
+        g = groups.setdefault(f"{r['role']}/{r['provider']}:{r['model']}@{r.get('effort') or 'default'}",
+                              {"runs": 0, "done": 0, "wasted": 0, "api_usd": 0.0, "minutes": 0.0})
+        g["runs"] += 1
+        g["done"] += r["status"] == "done"
+        g["wasted"] += r["status"] in ("failed", "blocked", "room-error", "stopped")
+        g["api_usd"] = round(g["api_usd"] + (r.get("cost_usd") or 0), 2)
+        g["minutes"] = round(g["minutes"] + ((r.get("ended_at") or now) - r["started_at"]) / 60, 1)
+    for g in groups.values():
+        g["usd_per_done"] = round(g["api_usd"] / g["done"], 2) if g["done"] else None
+    week = ledger.usage_history("claude", "seven_day", since)
+    periods: dict = {}
+    for u in week:
+        periods.setdefault(round((u["resets_at"] or 0) / 3600), [u["used_pct"], u["used_pct"]])[1] = u["used_pct"]
+    weekly_spent = round(sum(max(0.0, b - a) for a, b in periods.values()), 1)
+    merges = sum(1 for r in runs if r["role"] == "merge")
+    return {"merges": merges, "claude_weekly_pct_spent": weekly_spent,
+            "merges_per_weekly_pct": round(merges / weekly_spent, 2) if weekly_spent else None,
+            "note": "weekly % is plan-wide: it includes the owner's own sessions and the director chat",
+            "by_role_model_effort": groups}
+
+
 def digest(cfg: dict, hours: float) -> dict:
     """Everything an auditor needs about the last `hours`, in one structure."""
     ledger, now = Ledger(), time.time()
@@ -329,6 +358,7 @@ def digest(cfg: dict, hours: float) -> dict:
                     "no_output": len([r for r in runs if r["role"] != "merge" and not r["outputs"]
                                       and r["status"] not in ("running", "room-error", "limited", "stopped")]),
                     "limited": len([r for r in runs if r["status"] == "limited"])},
+        "efficiency": efficiency(ledger, project, since, now),
         "hours_since_last": {role: round((now - t) / 3600, 1) for role, t in last_role.items()},
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
         "breakers": ledger.open_breakers(project),
