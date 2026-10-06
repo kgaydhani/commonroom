@@ -739,7 +739,7 @@ class Dispatcher:
     def why(self) -> str:
         """Workers optimise what they're told. Give them the goal the task serves, not only its acceptance criteria."""
         mission = (self.cfg.get("project") or {}).get("mission")
-        parts = [f"the milestone **{self.milestone}**" if self.milestone else None, f"the mission: {mission}" if mission else None]
+        parts = [f"the milestone **{self.milestone}**" if self.milestone else None, f"the mission: {mission.rstrip('.')}" if mission else None]
         parts = [p for p in parts if p]
         return ("\n\nWhy this matters: it serves " + " and ".join(parts) + ". Judge your work against that goal as well as "
                 "the task's criteria.") if parts else ""
