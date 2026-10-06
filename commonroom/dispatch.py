@@ -706,7 +706,7 @@ class Dispatcher:
                 labelled = True
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
-            result = run_worker(provider, role, self.prompt(job, branch) + HEADLESS_NOTE, worktree, self.ledger, self.log_dir,
+            result = run_worker(provider, role, self.prompt(job, branch) + self.why() + HEADLESS_NOTE, worktree, self.ledger, self.log_dir,
                                 model=model, effort=effort,
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
@@ -735,6 +735,14 @@ class Dispatcher:
             self.cleanup_worktree(worktree)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def why(self) -> str:
+        """Workers optimise what they're told. Give them the goal the task serves, not only its acceptance criteria."""
+        mission = (self.cfg.get("project") or {}).get("mission")
+        parts = [f"the milestone **{self.milestone}**" if self.milestone else None, f"the mission: {mission}" if mission else None]
+        parts = [p for p in parts if p]
+        return ("\n\nWhy this matters: it serves " + " and ".join(parts) + ". Judge your work against that goal as well as "
+                "the task's criteria.") if parts else ""
 
     def requeue(self, job: Job, provider: str, result) -> tuple[str, list, str]:
         """The provider refused (usage limit) or the room stopped the worker. Neither is the task's fault:
