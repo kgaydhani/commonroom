@@ -185,7 +185,8 @@ def ci_infra_only(detail: dict) -> bool:
 HEADLESS_NOTE = ("\n\nYou are running headless, in a single turn: the moment you stop, the session ends and nobody wakes you "
                  "again. Never background a command and wait for it, and don't use Monitor. Run commands in the foreground "
                  "(the Bash tool allows up to 600000 ms). The slow suite (`tools/test_slow.sh`) runs in CI; run it locally only "
-                 "if your task requires it, in the foreground. Finish your whole job, including the final comment or PR, before you stop.")
+                 "if your task requires it, in the foreground. Finish your whole job, including the final comment or PR, before you stop. "
+                 "The room already checked the budget before starting you: don't run `room.py gate` yourself.")
 ORPHAN_AGE = 7200   # a worker never runs past an hour; a run 'running' for longer has lost its dispatcher
 
 
