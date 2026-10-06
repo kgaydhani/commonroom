@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from commonroom import config, gate, usage
+from commonroom import config, gate, reddit, usage
 from commonroom.ledger import Ledger
 
 NOW = 1_791_200_000.0  # fixed clock for deterministic tests
@@ -174,6 +174,27 @@ class Config(unittest.TestCase):
             self.assertEqual(cfg["budget"]["claude"]["reserve_weekly"], 20)
             self.assertEqual(cfg["budget"]["claude"]["reserve_5h"], 10)
             self.assertEqual(config.find_config(Path(tmp)), path)
+
+
+
+class RedditResearch(unittest.TestCase):
+    def test_archive_fallback_and_cache(self):
+        calls = []
+        def fetch(url):
+            calls.append(url)
+            if "arctic-shift" in url:
+                return {"data": None, "error": "Timeout. Maybe slow down a bit"}
+            return {"data": [{"title": "Miragine War tips", "subreddit": "AndroidGaming", "created_utc": 1500000000,
+                              "score": 12, "num_comments": 3, "selftext": "Spam  cheap units\nearly",
+                              "permalink": "/r/AndroidGaming/comments/x/tips/"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500)
+            self.assertEqual(len(calls), 2)                                   # Arctic Shift timed out, Pullpush answered
+            self.assertIn("size=50", calls[1])                                 # limit is capped
+            self.assertEqual(rows[0]["url"], "https://www.reddit.com/r/AndroidGaming/comments/x/tips/")
+            self.assertEqual((rows[0]["excerpt"], rows[0]["date"], rows[0]["source"]), ("Spam cheap units early", "2017-07-14", "pullpush"))
+            reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500)
+            self.assertEqual(len(calls), 2)                                   # second identical query comes from the cache
 
 
 if __name__ == "__main__":
