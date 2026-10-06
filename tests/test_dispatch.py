@@ -231,7 +231,7 @@ class WithLedger(unittest.TestCase):
                          details={85: red, 86: stuck})
         fake.comments, fake.reruns = [], []
         fake.comment = lambda n, body: fake.comments.append((n, body))
-        fake.rerun_ci = lambda run_id: fake.reruns.append(run_id) or 1
+        fake.rerun_ci = lambda run_id, minutes_since: fake.reruns.append(run_id) or 1
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
         actions = d.housekeeping()
         self.assertIn((65, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)

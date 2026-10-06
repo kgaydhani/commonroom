@@ -113,11 +113,14 @@ class GitHubBoard:
     def merge(self, number: int):
         board_mod.gh(["pr", "merge", str(number), "--repo", self.repo, "--squash", "--delete-branch"])
 
-    def rerun_ci(self, run_id: str) -> int | None:
-        """Rerun a workflow run's failed or cancelled jobs. Returns the attempt that was rerun, or None if capped."""
+    def rerun_ci(self, run_id: str, minutes_since: float) -> int | None:
+        """Rerun a workflow run's failed or cancelled jobs, backing off during an outage.
+        Returns the attempt that was rerun, 0 while backing off, or None once capped."""
         attempt = (board_mod.gh(["run", "view", run_id, "--repo", self.repo, "--json", "attempt"]) or {}).get("attempt", 1)
         if attempt >= CI_RERUNS + 1:
             return None
+        if minutes_since < CI_BACKOFF_MINUTES * (attempt - 1):
+            return 0
         board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
         return attempt
 
@@ -151,7 +154,8 @@ def checks_state(detail: dict) -> str:
 
 
 INFRA_CONCLUSIONS = {"CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
-CI_RERUNS = 2          # infrastructure cancellations are rerun at most this many times per run
+CI_RERUNS = 6          # infrastructure cancellations are rerun at most this many times per run...
+CI_BACKOFF_MINUTES = 20  # ...waiting 20, 40, 60... minutes between reruns, so an outage can't use them all up
 CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this often before the director steps in
 
 
@@ -354,7 +358,12 @@ class Dispatcher:
             done = []
             for run_id in sorted(runs):
                 try:
-                    attempt = self.board.rerun_ci(run_id)
+                    ended = max((c.get("completedAt") or "" for c in failed), default="")
+                    try:
+                        since = (time.time() - calendar.timegm(time.strptime(ended[:19], "%Y-%m-%dT%H:%M:%S"))) / 60
+                    except ValueError:
+                        since = 1e9
+                    attempt = self.board.rerun_ci(run_id, since)
                 except Exception as exc:
                     done.append(f"PR #{pr['number']}: CI rerun failed: {str(exc)[:100]}")
                     continue
