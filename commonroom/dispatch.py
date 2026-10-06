@@ -187,6 +187,7 @@ HEADLESS_NOTE = ("\n\nYou are running headless, in a single turn: the moment you
                  "(the Bash tool allows up to 600000 ms). The slow suite (`tools/test_slow.sh`) runs in CI; run it locally only "
                  "if your task requires it, in the foreground. Finish your whole job, including the final comment or PR, before you stop. "
                  "The room already checked the budget before starting you: don't run `room.py gate` yourself.")
+CODEX_CANNOT = {"kind:perf"}   # Codex's Windows sandbox can't start Chrome/Edge (gamemirage#121)
 ORPHAN_AGE = 7200   # a worker never runs past an hour; a run 'running' for longer has lost its dispatcher
 
 
@@ -534,7 +535,7 @@ class Dispatcher:
             # leaving the top-priority one for Claude, and never the heavy (Opus) work.
             # Codex renders Godot off-screen fine in its sandbox (gamemirage#101); device-level perf work stays with Claude.
             routine = [i for i in sorted(ready, key=priority)
-                       if not labels(i) & {"size:L", "risk:high", "builder:heavy", "kind:perf"}
+                       if not labels(i) & ({"size:L", "risk:high", "builder:heavy"} | CODEX_CANNOT)
                        and not any(l.startswith("provider:") for l in labels(i))]
             claude_busy = any(r["provider"] == "claude" and r["status"] == "running"
                               for r in self.ledger.recent_runs(self.project, limit=20))
@@ -544,6 +545,10 @@ class Dispatcher:
                 return Job("build", "builder", issue=take, reason=f"#{take['number']} is ready (parallel Codex build)"), "codex", None
         for issue in sorted(ready, key=priority):
             choice = self.choose(self.build_spec(issue), allowed)
+            # Codex's sandbox can't start a browser, so device-perf work never falls back to it (gamemirage#121),
+            # unless the issue is explicitly pinned to Codex.
+            if choice and choice[0] == "codex" and labels(issue) & CODEX_CANNOT and "provider:codex" not in labels(issue):
+                continue
             if choice:
                 return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready"), *choice
         for issue in sorted(scouting, key=priority):
@@ -866,7 +871,8 @@ class Dispatcher:
                         f"Git Bash can't start in your sandbox (an upstream Codex limitation), so run the tests with "
                         f"`python tools/test.py` if it exists, otherwise call Godot directly: "
                         f"`\"$GODOT\" --headless --path game -s res://tests/run_tests.gd` (GODOT is "
-                        f"D:/Dev/tools/godot/Godot_v4.7.2-stable_win64_console.exe). Rendering does work: for visual checks use "
+                        f"D:/Dev/tools/godot/Godot_v4.7.2-stable_win64_console.exe). No browser (Chrome, Edge, Playwright) can start in your "
+                        f"sandbox; the web export and serve.py do work. Rendering does work: for visual checks use "
                         f"`--write-movie` off-screen (`--position -10000,-10000`), create the output folder first (Godot won't, and "
                         f"silently writes nothing), use absolute paths inside your checkout, and ignore `user://` log errors. Look at "
                         f"the frames you render. If something in the sandbox is impossible, finish the rest and say what's left; your "

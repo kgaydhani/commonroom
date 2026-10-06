@@ -274,6 +274,9 @@ class WithLedger(unittest.TestCase):
         self.assertIn(job.issue["number"], (110, 111))
         issues[:] = [issue(112, ["status:ready", "role:builder", "kind:perf"]), issue(113, ["status:ready", "role:builder", "kind:perf"])]
         self.assertIsNone(codex.pick(allowed))                               # ...but device perf work stays with Claude
+        held = {"claude": gate.Verdict(False, "5-hour reserve"), "codex": gate.Verdict(True, "ok")}
+        anyone = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(anyone.pick(held))                                 # ...even when Claude is held (gamemirage#121)
 
     def fresh_readings(self, now):
         for provider in ("claude", "codex"):
