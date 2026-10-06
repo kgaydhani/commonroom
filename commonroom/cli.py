@@ -182,6 +182,9 @@ def cmd_run(args) -> int:
                 import traceback
                 print(f"{datetime.now():%H:%M:%S}{tag} pass failed, continuing: {type(exc).__name__}: {str(exc)[:200]}", flush=True)
                 traceback.print_exc()
+                if stop_file.exists() and stop_file.stat().st_mtime > started:
+                    print(f"{datetime.now():%H:%M:%S}{tag} stop requested; exiting", flush=True)
+                    return 0
                 time.sleep(30)
                 continue
             if stop_file.exists() and stop_file.stat().st_mtime > started:
