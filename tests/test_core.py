@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from commonroom import config, gate, reddit, usage
+from commonroom import config, gate, reddit, services, usage
 from commonroom.ledger import Ledger
 
 NOW = 1_791_200_000.0  # fixed clock for deterministic tests
@@ -195,6 +195,22 @@ class RedditResearch(unittest.TestCase):
             self.assertEqual((rows[0]["excerpt"], rows[0]["date"], rows[0]["source"]), ("Spam cheap units early", "2017-07-14", "pullpush"))
             reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500)
             self.assertEqual(len(calls), 2)                                   # second identical query comes from the cache
+
+
+class Services(unittest.TestCase):
+    def test_portless_service_is_started_once(self):
+        cfg = {"_root": ".", "services": {"ci": {"command": "run.cmd", "process": "Runner.Listener.exe"}}}
+        started, alive = [], {"v": False}
+        orig = (services.start, services.process_running, services.port_open)
+        services.start = lambda cfg, name, spec, log_dir: started.append(name) or alive.update(v=True)
+        services.process_running = lambda image: alive["v"]
+        services.port_open = lambda port: True                                  # the dashboard is up
+        try:
+            for _ in range(3):
+                services.ensure(cfg, Path("."))
+        finally:
+            services.start, services.process_running, services.port_open = orig
+        self.assertEqual(started, ["ci"])
 
 
 if __name__ == "__main__":

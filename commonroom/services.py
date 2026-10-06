@@ -17,10 +17,19 @@ def port_open(port: int) -> bool:
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
+def process_running(image: str) -> bool:
+    """For services that listen on no port (e.g. a CI runner that long-polls out): is a process of this image alive?"""
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"], capture_output=True, text=True,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        return image.lower() in out.lower()
+    return subprocess.run(["pgrep", "-f", image], capture_output=True).returncode == 0
+
+
 def declared(cfg: dict) -> dict[str, dict]:
     services = {"dashboard": {"command": [sys.executable, ROOM_PY, "dashboard"], "port": 8770}}
     for name, spec in (cfg.get("services") or {}).items():
-        services[name] = {"command": spec["command"], "port": spec.get("port"),
+        services[name] = {"command": spec["command"], "port": spec.get("port"), "process": spec.get("process"),
                           "restart_on_deploy": spec.get("restart_on_deploy", False)}
     return services
 
@@ -41,6 +50,9 @@ def ensure(cfg: dict, log_dir: Path) -> list[str]:
     for name, spec in declared(cfg).items():
         if spec.get("port") and port_open(int(spec["port"])):
             lines.append(f"{name}: already running on :{spec['port']}")
+            continue
+        if spec.get("process") and process_running(spec["process"]):
+            lines.append(f"{name}: already running ({spec['process']})")
             continue
         start(cfg, name, spec, log_dir)
         lines.append(f"{name}: started" + (f" on :{spec['port']}" if spec.get("port") else ""))
