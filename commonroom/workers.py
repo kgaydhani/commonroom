@@ -83,6 +83,12 @@ def codex_command(model: str | None, effort: str | None, cwd: Path, writable: bo
     return cmd + ["-"]
 
 
+def worker_tmp(cwd) -> Path:
+    """Per-worktree scratch space on the same drive as the worktree, outside the repo."""
+    cwd = Path(cwd)
+    return Path(cwd.anchor) / "commonroom-tmp" / cwd.name
+
+
 def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger, log_dir: Path,
                model: str | None = None, effort: str | None = None, timeout: float = 3600,
                stop_check=None, resume_session: str | None = None) -> WorkerResult:
@@ -103,6 +109,11 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     env = usage.clean_env()
     env["PYTHONUTF8"] = "1"
     env["COMMONROOM_WORKER"] = "1"   # `room gate` inside a worker answers GO: its start was already gated
+    # Scratch files (render captures run to gigabytes) go on the worktree's drive, never the system drive's TEMP,
+    # which filled up on 2026-10-07. The folder is removed when the run ends.
+    tmp = worker_tmp(cwd)
+    tmp.mkdir(parents=True, exist_ok=True)
+    env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
     process = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))

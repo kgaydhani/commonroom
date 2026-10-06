@@ -12,6 +12,7 @@ import calendar
 import os
 import json
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from pathlib import Path
 
 from commonroom import board as board_mod, config as config_mod, gate, usage
 from commonroom.ledger import Ledger
-from commonroom.workers import load_role, run_worker
+from commonroom.workers import load_role, run_worker, worker_tmp
 
 DEPENDS = re.compile(r"^(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
 BRANCH = re.compile(r"^i(\d+)-")
@@ -211,6 +212,22 @@ def owner_comments(issue: dict) -> list[dict]:
 
 
 # Policy ------------------------------------------------------------------------------------------
+MIN_FREE_GB = {"room": 3, "project": 8}
+
+
+def disk_verdict(cfg: dict, ledger: Ledger) -> str | None:
+    """Hold all work when a drive the room writes to is nearly full. A full system drive took the ledger, the dispatchers
+    and a moonshot down at once (2026-10-07). This doesn't contain "reserve" or "breaker", so running workers finish."""
+    for label, path in (("room", Path(ledger.path).parent), ("project", Path(cfg.get("_root") or "."))):
+        try:
+            free = shutil.disk_usage(path).free / 2**30
+        except OSError:
+            continue
+        if free < (cfg.get("min_free_gb") or MIN_FREE_GB).get(label, 0):
+            return f"disk nearly full: {free:.1f} GB free on {Path(path).anchor} ({label}); clear space before more work"
+    return None
+
+
 def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = False) -> dict[str, gate.Verdict]:
     """Only the dispatcher records breaker trips (`trip=True`). Views (status, dashboard) are read-only, so a
     long-running view on old code can never re-trip a breaker the current code would not."""
@@ -218,7 +235,11 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
     project = cfg["project"].get("name")
     n = cfg["breakers"]["no_output_runs"]
     result = {}
+    disk = disk_verdict(cfg, ledger)
     for provider in ("claude", "codex"):
+        if disk:
+            result[provider] = gate.Verdict(False, disk)
+            continue
         # A provider that keeps producing nothing is held on its own; the other keeps working.
         # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
         runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider)
@@ -733,6 +754,7 @@ class Dispatcher:
         finally:
             self.preserve_work(job, worktree, branch)
             self.cleanup_worktree(worktree)
+            shutil.rmtree(worker_tmp(worktree), ignore_errors=True)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
 

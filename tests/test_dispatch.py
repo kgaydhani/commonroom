@@ -41,6 +41,7 @@ def cfg_with(root):
     cfg = config.merge(config.DEFAULTS, {"project": {"name": "t", "repo": "o/t"}, "goal": {"milestone": "M0"},
                                          "roles": {"builder": ["codex", "claude:sonnet"], "director": ["claude:opus"]}})
     cfg["_root"] = str(root)
+    cfg["min_free_gb"] = {"room": 0, "project": 0}   # tests mustn't depend on this machine's free space
     return cfg
 
 
@@ -451,6 +452,16 @@ class WithLedger(unittest.TestCase):
             self.assertNotIn("reserve", v.reason)                                # running workers aren't stopped
         finally:
             dispatch.usage.owner_active = orig
+
+    def test_a_full_disk_holds_all_work(self):
+        cfg = cfg_with(self.tmp.name)
+        self.fresh_readings(time.time())
+        self.assertTrue(dispatch.verdicts(self.ledger, cfg)["claude"].allowed)
+        cfg["min_free_gb"] = {"room": 10**9, "project": 0}
+        v = dispatch.verdicts(self.ledger, cfg)
+        self.assertFalse(v["claude"].allowed or v["codex"].allowed)
+        self.assertIn("disk nearly full", v["claude"].reason)
+        self.assertNotIn("reserve", v["claude"].reason)                       # running workers finish
 
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
