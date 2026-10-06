@@ -53,9 +53,11 @@ def load_role(project_root: str | Path, name: str) -> Role:
     return Role(name, meta.get("model"), tools, match.group(2).strip())
 
 
-def claude_command(role: Role, model: str | None, session_id: str, prompt_file: Path, effort: str | None) -> list[str]:
+def claude_command(role: Role, model: str | None, session_id: str, prompt_file: Path, effort: str | None,
+                   resume: bool = False) -> list[str]:
+    # `resume` continues an earlier session with its full context (e.g. one stopped by a budget limit).
     cmd = [usage.claude_executable() or "claude", "-p", "--output-format", "stream-json", "--verbose",
-           "--session-id", session_id, "--name", f"room {role.name}",
+           *(["--resume", session_id] if resume else ["--session-id", session_id]), "--name", f"room {role.name}",
            "--append-system-prompt-file", str(prompt_file),
            "--permission-mode", "auto", "--permission-prompts", "none", "--no-chrome"]
     if model or role.model:
@@ -83,16 +85,16 @@ def codex_command(model: str | None, effort: str | None, cwd: Path, writable: bo
 
 def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger, log_dir: Path,
                model: str | None = None, effort: str | None = None, timeout: float = 3600,
-               stop_check=None) -> WorkerResult:
+               stop_check=None, resume_session: str | None = None) -> WorkerResult:
     """Run to completion. `stop_check()` returning a reason string aborts the worker (e.g. the gate closed)."""
     log_dir.mkdir(parents=True, exist_ok=True)
-    session_id = str(uuid.uuid4())
+    session_id = resume_session or str(uuid.uuid4())
     log_path = log_dir / f"{int(time.time())}-{provider}-{role.name}.jsonl"
     result = WorkerResult(ok=False, session_id=session_id, log=str(log_path))
     if provider == "claude":
         prompt_file = log_dir / f"{session_id}-role.md"
         prompt_file.write_text(role.prompt, encoding="utf8")
-        cmd = claude_command(role, model, session_id, prompt_file, effort)
+        cmd = claude_command(role, model, session_id, prompt_file, effort, resume=bool(resume_session))
         stdin_text = prompt
     else:
         # Every worker runs in its own disposable worktree, so Codex may write there (tests, caches, git).
