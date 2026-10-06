@@ -8,6 +8,7 @@ cd /d "%~1" || exit /b 2
 set "LOGS=%USERPROFILE%\.commonroom"
 "%PY%" "%~dp0room.py" services >> "%LOGS%\heartbeat-services.log" 2>&1
 start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider codex >> "%LOGS%\heartbeat-codex.log" 2>&1"
-rem A second Claude slot builds in parallel only when the queue is deep and weekly use is well under pace.
+rem Extra Claude slots build in parallel only when the queue is deep and weekly use is well under pace ([parallel]).
 start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude --slot 2 >> "%LOGS%\heartbeat-claude2.log" 2>&1"
+start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude --slot 3 >> "%LOGS%\heartbeat-claude3.log" 2>&1"
 "%PY%" "%~dp0room.py" run --until-idle --provider claude >> "%LOGS%\heartbeat-claude.log" 2>&1

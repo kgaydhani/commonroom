@@ -618,7 +618,8 @@ class Dispatcher:
         if self.dry_run:
             return {"status": "dry-run"}
         # Claim first, atomically: parallel dispatchers must never work the same task twice.
-        run_id = self.ledger.start_run(self.project, task, job.role, provider, model or role.model, exclusive=bool(task))
+        run_id = self.ledger.start_run(self.project, task, job.role, provider,
+                                       model or (role.model if provider == "claude" else "default"), exclusive=bool(task))
         if run_id is None:
             self.log(f"   {task} is already being worked on; skipped")
             return {"status": "skipped", "outputs": [], "note": "already running"}
