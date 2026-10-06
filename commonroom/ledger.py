@@ -72,9 +72,9 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
-        for name in ("weekly_start", "weekly_end"):
+        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER")):
             if name not in columns:
-                self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} REAL")
+                self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
     def close(self):
         self.db.close()
@@ -130,9 +130,9 @@ class Ledger:
                                    (project, task, now_ts - 7200)).fetchone():
                     return None
             self.db.execute(
-                "INSERT INTO runs (id, project, task, role, provider, model, effort, autonomous, started_at, status, session_id) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, project, task, role, provider, model, effort, int(autonomous), now_ts, "running", session_id))
+                "INSERT INTO runs (id, project, task, role, provider, model, effort, autonomous, started_at, status, session_id, pid) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, project, task, role, provider, model, effort, int(autonomous), now_ts, "running", session_id, os.getpid()))
         return run_id
 
     def running_tasks(self, project: str | None, now: float | None = None) -> set[str]:
@@ -171,6 +171,15 @@ class Ledger:
             row["outputs"] = json.loads(row["outputs"] or "[]")
             result.append(row)
         return result
+
+    def running_runs(self, project: str | None) -> list[dict]:
+        return [dict(r) for r in self.db.execute("SELECT * FROM runs WHERE project IS ? AND status='running'", (project,))]
+
+    def close_orphan(self, run_id: str, note: str, now: float | None = None) -> bool:
+        """Close a run whose dispatcher died. True only for the one caller that closed it."""
+        with self.db:
+            return self.db.execute("UPDATE runs SET status='stopped', ended_at=?, note=? WHERE id=? AND status='running'",
+                                   (time.time() if now is None else now, note, run_id)).rowcount == 1
 
     def task_failures(self, project: str | None, task: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM runs WHERE project IS ? AND task=? AND status IN ('failed', 'blocked')",

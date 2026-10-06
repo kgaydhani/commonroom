@@ -166,6 +166,24 @@ def ci_infra_only(detail: dict) -> bool:
     return bool(failed) and all((c.get("conclusion") or c.get("state") or "").upper() in INFRA_CONCLUSIONS for c in failed)
 
 
+ORPHAN_AGE = 7200   # a worker never runs past an hour; a run 'running' for longer has lost its dispatcher
+
+
+def pid_alive(pid: int) -> bool:
+    """Is this dispatcher process still running? Errs towards yes: wrongly closing a live run is worse."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FI", "IMAGENAME eq python.exe", "/NH"],
+                                 capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+            return str(pid) in out
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except Exception:
+        return True
+
+
 def owner_comments(issue: dict) -> list[dict]:
     return [c for c in issue.get("comments") or [] if not (c.get("body") or "").lstrip().startswith("[")]
 
@@ -884,8 +902,42 @@ class Dispatcher:
                 failed[provider] = now
                 self.log(f"   {provider} meter refresh failed (retrying in 30 min): {str(exc)[:160]}")
 
+    def recover_orphans(self, now: float | None = None) -> list[str]:
+        """A dispatcher that died mid-job (PC shut down, crash) leaves its run 'running' and its issue in progress,
+        which no one would ever pick up again. Close the run as stopped (not an attempt), save any unsaved work
+        from its working copy onto the branch, and put the task back."""
+        now = time.time() if now is None else now
+        actions = []
+        for run in self.ledger.running_runs(self.project):
+            dead = run.get("pid") and run["pid"] != os.getpid() and not pid_alive(run["pid"])
+            if not dead and now - run["started_at"] < ORPHAN_AGE:
+                continue
+            if self.dry_run or not self.ledger.close_orphan(run["id"], "dispatcher died mid-run (shutdown or crash); work saved, task requeued", now):
+                continue
+            task = run["task"] or ""
+            actions.append(f"recovered {run['role']}/{run['provider']} {task or '-'} left running by a dead dispatcher")
+            m = re.fullmatch(r"#(\d+)", task)
+            if not m:
+                continue   # reviews, director and audit runs simply run again when due
+            n = int(m.group(1))
+            issue = next((i for i in self.board.open_issues(None) if i["number"] == n), None)
+            if self.root:
+                base = self.root / ".claude" / "worktrees"
+                for path in [*base.glob(f"i{n}-*"), *base.glob(f"codex-i{n}-*")]:
+                    branch = path.name.removeprefix("codex-")
+                    if issue:
+                        self.preserve_work(Job("build", run["role"], issue=issue), path, branch)
+                    self.cleanup_worktree(path)
+            if issue and "status:in-progress" in labels(issue):
+                self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
+                self.board.comment(n, "The worker was interrupted (the PC shut down or its dispatcher crashed). "
+                                      "Back to ready; this does not count as an attempt.")
+        return actions
+
     def run_once(self) -> dict:
         self.refresh_readings(time.time())
+        for line in self.recover_orphans():
+            self.log("   " + line)
         report = {"housekeeping": self.housekeeping() if self.only_provider in (None, "claude") and self.slot == 1 else []}
         for line in report["housekeeping"]:
             self.log("   " + line)

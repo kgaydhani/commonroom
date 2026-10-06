@@ -340,6 +340,24 @@ class WithLedger(unittest.TestCase):
         issues.append(issue(80, ["status:ready", "role:builder"])); issues.append(issue(81, ["status:ready", "role:builder"]))
         self.assertIsNone(slot2.pick(roomy))                                   # slot disabled by config
 
+    def test_runs_left_by_a_dead_dispatcher_are_recovered(self):
+        issues = [issue(90, ["status:in-progress", "role:builder"])]
+        board = FakeBoard(issues)
+        board.comments = []
+        board.comment = lambda n, body: board.comments.append((n, body))
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        live = self.ledger.start_run("t", "#91", "builder", "codex")                 # this process: alive
+        dead = self.ledger.start_run("t", "#90", "builder", "claude")
+        self.ledger.db.execute("UPDATE runs SET pid=999999 WHERE id=?", (dead,)); self.ledger.db.commit()
+        old = self.ledger.start_run("t", "PR #5", "reviewer", "claude", now=time.time() - 3 * 3600)
+        self.ledger.db.execute("UPDATE runs SET pid=NULL WHERE id=?", (old,)); self.ledger.db.commit()   # pre-pid row
+        actions = d.recover_orphans()
+        self.assertEqual(len(actions), 2)
+        self.assertEqual({r["id"] for r in self.ledger.running_runs("t")}, {live})
+        self.assertIn((90, ("status:ready",), ("status:in-progress",)), board.label_calls)
+        self.assertEqual(self.ledger.task_failures("t", "#90"), 0)
+        self.assertEqual(d.recover_orphans(), [])                                       # once only
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
