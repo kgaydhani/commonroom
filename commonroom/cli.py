@@ -92,6 +92,10 @@ def cmd_usage(args) -> int:
 
 
 def cmd_gate(args) -> int:
+    if os.environ.get("COMMONROOM_WORKER"):
+        # The dispatcher gated this job's start; a hold on *new* work must not make a running worker stop itself.
+        print("GO room worker: the dispatcher already checked the budget for this job")
+        return 0
     ledger = Ledger()
     v = verdicts(ledger, config_mod.load())[args.provider]
     ledger.close()

@@ -100,6 +100,7 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
         stdin_text = role.prompt + "\n\n" + prompt
     env = usage.clean_env()
     env["PYTHONUTF8"] = "1"
+    env["COMMONROOM_WORKER"] = "1"   # `room gate` inside a worker answers GO: its start was already gated
     process = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
