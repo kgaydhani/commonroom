@@ -170,6 +170,10 @@ def ci_infra_only(detail: dict) -> bool:
     return bool(failed) and all((c.get("conclusion") or c.get("state") or "").upper() in INFRA_CONCLUSIONS for c in failed)
 
 
+HEADLESS_NOTE = ("\n\nYou are running headless, in a single turn: the moment you stop, the session ends and nobody wakes you "
+                 "again. Never background a command and wait for it, and don't use Monitor. Run commands in the foreground "
+                 "(the Bash tool allows up to 600000 ms). The slow suite (`tools/test_slow.sh`) runs in CI; run it locally only "
+                 "if your task requires it, in the foreground. Finish your whole job, including the final comment or PR, before you stop.")
 ORPHAN_AGE = 7200   # a worker never runs past an hour; a run 'running' for longer has lost its dispatcher
 
 
@@ -658,7 +662,7 @@ class Dispatcher:
                 labelled = True
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
-            result = run_worker(provider, role, self.prompt(job, branch), worktree, self.ledger, self.log_dir,
+            result = run_worker(provider, role, self.prompt(job, branch) + HEADLESS_NOTE, worktree, self.ledger, self.log_dir,
                                 model=model, effort="high" if job.role in ("director", "auditor") else None,
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
@@ -853,28 +857,33 @@ class Dispatcher:
             branch = self.find_branch(n) or f"i{n}-{slug(job.issue['title'])}"
             start = f"origin/{branch}" if self.remote_head(branch) else "origin/main"
             path = base / (f"codex-{branch}" if clone else branch)
-            self.checkout(path, start, branch, clone)
+            path = self.checkout(path, start, branch, clone)
             return path, branch
         if job.kind == "review":
             branch = job.pr["headRefName"]
             path = base / f"{'codex-' if clone else ''}review-{job.pr['number']}"
-            self.checkout(path, f"origin/{branch}", None, clone)
+            path = self.checkout(path, f"origin/{branch}", None, clone)
             return path, branch
         path = base / f"{'codex-' if clone else ''}{job.role}-{int(time.time())}"
-        self.checkout(path, "origin/main", None, clone)
+        path = self.checkout(path, "origin/main", None, clone)
         return path, None
 
-    def checkout(self, path: Path, start: str, branch: str | None, clone: bool):
+    def checkout(self, path: Path, start: str, branch: str | None, clone: bool) -> Path:
         self.cleanup_worktree(path)
+        if path.exists():
+            # A process from an earlier run (e.g. a test it left running) still holds files there: use a fresh folder.
+            git(["worktree", "prune"], self.root)
+            path = path.with_name(f"{path.name}-{int(time.time())}")
         if not clone:
             if branch:
                 git(["worktree", "add", "-B", branch, str(path), start], self.root)
             else:
                 git(["worktree", "add", "--detach", str(path), start], self.root)
-            return
+            return path
         url = git(["remote", "get-url", "origin"], self.root)
         git(["clone", "--quiet", "--reference", str(self.root), url, str(path)], self.root)
         git(["checkout", "--quiet", "-B", branch, start] if branch else ["checkout", "--quiet", "--detach", start], path)
+        return path
 
     def find_branch(self, number: int) -> str | None:
         out = git(["branch", "-r", "--list", f"origin/i{number}-*"], self.root)
