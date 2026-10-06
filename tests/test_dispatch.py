@@ -383,6 +383,30 @@ class WithLedger(unittest.TestCase):
         job, _, _ = slot2.pick(allowed)
         self.assertEqual((job.role, job.issue["number"]), ("scout", 101))
 
+    def test_unpushed_commits_are_pushed_or_rescued_before_cleanup(self):
+        root = Path(self.tmp.name)
+        run = lambda *a, cwd=root: dispatch.git(list(a), cwd)
+        run("init", "-q", "--bare", "-b", "main", str(root / "origin.git"))
+        run("clone", "-q", str(root / "origin.git"), str(root / "main"))
+        main = root / "main"
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            run("config", k, v, cwd=main)
+        (main / "a.txt").write_text("a")
+        run("add", "-A", cwd=main); run("commit", "-qm", "base", cwd=main); run("push", "-q", "origin", "main", cwd=main)
+        run("checkout", "-qb", "i92-x", cwd=main)
+        (main / "b.txt").write_text("b")
+        run("add", "-A", cwd=main); run("commit", "-qm", "work the room committed", cwd=main)   # push never happened
+        board = FakeBoard([issue(92, ["status:ready"])]); board.comment = lambda n, body: None
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        job = dispatch.Job("build", "builder", issue=board.issues[0])
+        d.preserve_work(job, main, "i92-x")
+        self.assertIn("i92-x", run("ls-remote", "--heads", "origin", cwd=main))
+        run("remote", "set-url", "origin", str(root / "missing.git"), cwd=main)          # now the push fails...
+        (main / "c.txt").write_text("c")
+        d.preserve_work(job, main, "i92-x")
+        bundles = list((Path(self.ledger.path).parent / "rescue").glob("i92-x-*.bundle"))
+        self.assertEqual(len(bundles), 1)                                               # ...so it's bundled locally
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

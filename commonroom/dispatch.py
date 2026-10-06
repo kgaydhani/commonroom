@@ -62,8 +62,20 @@ def find_bash() -> str | None:
     return None
 
 
+NETWORK_GIT = {"push", "fetch", "clone", "ls-remote"}
+GIT_REJECTED = ("non-fast-forward", "fetch first", "[rejected]", "Authentication failed", "not found",
+                "does not appear to be a git repository")
+
+
 def git(args: list[str], cwd: Path) -> str:
-    done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
+    # GitHub has transient failures (e.g. "remote: error: unable to write file ... index-pack failed"): retry network ops.
+    tries = 3 if args and args[0] in NETWORK_GIT else 1
+    for attempt in range(tries):
+        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
+        if done.returncode == 0 or any(s in done.stderr for s in GIT_REJECTED):
+            break
+        if attempt < tries - 1:
+            time.sleep(5 * (attempt + 1) ** 2)
     if done.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)}: {done.stderr.strip()}")
     return done.stdout.strip()
@@ -710,18 +722,41 @@ class Dispatcher:
         before the working copy is deleted, so the next attempt continues from them."""
         if job.kind != "build" or not branch or not worktree.exists() or self.dry_run:
             return
+        committed = False
         try:
-            if not git(["status", "--porcelain"], worktree):
+            if git(["status", "--porcelain"], worktree):
+                git(["add", "-A"], worktree)
+                git(["commit", "-q", "-m", "WIP: unfinished work preserved by Common Room\n\nThe worker stopped before "
+                     "finishing; the next attempt continues from this commit."], worktree)
+                committed = True
+            # Also catch commits that exist only here (e.g. the room committed Codex's work, then the push failed).
+            try:
+                base = git(["rev-parse", "--verify", "-q", f"origin/{branch}"], worktree)
+            except RuntimeError:
+                base = "origin/main"
+            if int(git(["rev-list", "--count", f"{base}..HEAD"], worktree) or 0) == 0:
                 return
-            git(["add", "-A"], worktree)
-            git(["commit", "-q", "-m", "WIP: unfinished work preserved by Common Room\n\nThe worker stopped before "
-                 "finishing; the next attempt continues from this commit."], worktree)
             git(["push", "-q", "-u", "origin", branch], worktree)
-            if job.issue:
+            if committed and job.issue:
                 self.board.comment(job.issue["number"], f"Unfinished work was preserved on branch `{branch}`. "
                                                         f"The next attempt continues from it.")
         except Exception as exc:
-            self.log(f"   could not preserve work on {branch}: {str(exc)[:160]}")
+            self.log(f"   could not push work on {branch}: {str(exc)[:160]}")
+            self.rescue(job, worktree, branch)
+
+    def rescue(self, job: Job, worktree: Path, branch: str):
+        """Last resort before the working copy is deleted: bundle its unpushed commits to a local file."""
+        try:
+            folder = Path(self.ledger.path).parent / "rescue"
+            folder.mkdir(parents=True, exist_ok=True)
+            bundle = folder / f"{branch}-{int(time.time())}.bundle"
+            git(["bundle", "create", str(bundle), "HEAD", "^origin/main"], worktree)
+            self.log(f"   rescued unpushed work to {bundle}")
+            if job.issue:
+                self.board.comment(job.issue["number"], f"Pushing this branch failed, so its unpushed work was saved "
+                                                        f"locally as `{bundle}` (`git fetch <bundle> HEAD:{branch}` restores it).")
+        except Exception as exc:
+            self.log(f"   could not rescue work on {branch}: {str(exc)[:160]}")
 
     def publish_sandboxed_work(self, job: Job, worktree: Path, branch: str, result):
         """Codex's sandbox keeps .git read-only, so the room commits, pushes and opens the PR for its changes."""
