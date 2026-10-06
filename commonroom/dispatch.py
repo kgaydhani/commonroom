@@ -409,8 +409,9 @@ class Dispatcher:
         return pinned or (self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec)
 
     def pick_extra(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
-        """An extra slot for the same provider: builds only (no reviews, director or audits, which slot 1 owns),
-        only while slot 1 is busy, the queue is deep, and weekly use sits well under the pace line."""
+        """An extra slot for the same provider, only while another is busy and weekly use sits well under the pace
+        line. It takes reviews (short, and they unblock merges), then builds once the queue is deep, then research.
+        Director, audits and housekeeping stay with slot 1."""
         par = self.cfg.get("parallel") or {}
         provider = self.only_provider or "claude"
         v = allowed.get(provider)
@@ -420,18 +421,27 @@ class Dispatcher:
         if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15):
             return None
         busy = any(r["provider"] == provider and r["status"] == "running" for r in self.ledger.recent_runs(self.project, limit=20))
-        ready = sorted(self.ready_builds(self.board.open_issues(None)), key=priority)
-        if not busy or len(ready) < par.get("min_ready", 3):
+        if not busy:
             return None
-        for issue in ready:
-            choice = self.choose(self.build_spec(issue), {provider: v})
+        review = self.pick_review(allowed)   # full verdicts: a review meant for the other provider stays its own
+        if review:
+            return review
+        open_now = self.board.open_issues(None)
+        ready = sorted(self.ready_builds(open_now), key=priority)
+        if len(ready) >= par.get("min_ready", 3):
+            for issue in ready:
+                choice = self.choose(self.build_spec(issue), {provider: v})
+                if choice:
+                    return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
+        running = self.ledger.running_tasks(self.project)
+        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
+        for issue in sorted(scouting, key=priority):
+            choice = self.choose(self.roles.get("scout", ["claude:sonnet"]), {provider: v})
             if choice:
-                return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
+                return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready (parallel slot {self.slot})"), *choice
         return None
 
-    def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
-        if self.slot > 1:
-            return self.pick_extra(allowed)
+    def pick_review(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         issue_labels = None
         running = self.ledger.running_tasks(self.project)
@@ -450,9 +460,19 @@ class Dispatcher:
                 choice = self.choose(spec, allowed, exclude=built_by)
                 if choice:
                     return Job("review", "reviewer", pr=detail, reason=f"PR #{pr['number']} awaits {'high-risk ' if high_risk else ''}review"), *choice
+        return None
+
+    def pick(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
+        if self.slot > 1:
+            return self.pick_extra(allowed)
+        review = self.pick_review(allowed)
+        if review:
+            return review
+        builder_spec = self.roles.get("builder", ["claude:sonnet"])
         open_now = self.board.open_issues(None)
         ready = self.ready_builds(open_now)
-        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i)]
+        running = self.ledger.running_tasks(self.project)
+        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
         if owner:

@@ -358,6 +358,25 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(self.ledger.task_failures("t", "#90"), 0)
         self.assertEqual(d.recover_orphans(), [])                                       # once only
 
+    def test_extra_slot_takes_reviews_and_research_while_slot_one_is_busy(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(reviewer=["claude:opus"], reviewer_high_risk=["codex", "claude:opus"], scout=["claude:opus"])
+        issues = [issue(108, ["status:review"]), issue(109, ["status:review", "risk:high"]),
+                  issue(101, ["status:ready", "role:scout"], milestone=None)]
+        detail = lambda n, b: {"number": n, "headRefName": b, "commits": [], "comments": [], "mergeable": "MERGEABLE",
+                               "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        board = FakeBoard(issues, prs=[{"number": 209, "headRefName": "i109-y"}, {"number": 208, "headRefName": "i108-x"}],
+                          details={208: detail(208, "i108-x"), 209: detail(209, "i109-y")})
+        slot2 = dispatch.Dispatcher(cfg, self.ledger, board=board, log=lambda *_: None, only_provider="claude", slot=2)
+        allowed = {"claude": gate.Verdict(True, "ok", {"weekly_pace": 50, "weekly_used": 9}), "codex": gate.Verdict(True, "ok")}
+        self.assertIsNone(slot2.pick(allowed))                                 # slot 1 idle: nothing for an extra slot
+        self.ledger.start_run("t", "#90", "builder", "claude", exclusive=True)
+        job, provider, _ = slot2.pick(allowed)
+        self.assertEqual((job.kind, job.pr["number"], provider), ("review", 208, "claude"))   # high-risk #209 stays Codex's
+        self.ledger.start_run("t", "PR #208", "reviewer", "claude", exclusive=True)
+        job, _, _ = slot2.pick(allowed)
+        self.assertEqual((job.role, job.issue["number"]), ("scout", 101))
+
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
