@@ -848,6 +848,12 @@ class Dispatcher:
                 if job.role == "scout" and hasattr(self.board, "label_pr"):
                     self.board.label_pr(pr["number"], "review:skip")
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
+            if (pr and pr["state"] == "OPEN" and not blocked
+                    and re.search(r"STATUS:\s*DONE", result.final_text or "", re.I)):
+                # The builder checked and found nothing left to change (e.g. the fix already landed and was approved
+                # while the issue sat in the queue). That's a finished task, not a failed attempt.
+                self.board.set_labels(n, add=["status:review"], remove=["status:in-progress", "needs:changes"])
+                return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (no changes needed)"}], tail
             if blocked:
                 self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
                 return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked"}], tail
