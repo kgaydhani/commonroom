@@ -127,6 +127,7 @@ td.t{color:var(--dim);white-space:nowrap}
       <section id="usageSec"><h2><span>Allowance</span><span class="pg">P400</span></h2><div id="usage"></div></section>
     </div>
     <section class="full" id="liveSec"><h2><span>Live</span><span class="pg">P500</span></h2><div class="feedhead" id="feedHead"></div><pre class="feed" id="feed"></pre></section>
+    <section class="full"><h2><span>Moonshots</span></h2><div id="moonshots"></div></section>
     <section class="full" id="runsSec"><h2><span>Recent runs</span><span class="pg">P600</span></h2><table id="runs"></table></section>
     <section class="full" id="boardSec"><h2><span>Board</span><span class="pg">P700</span></h2><div class="cols" id="board"></div></section>
     <section class="full" id="ctrlSec"><h2><span>Suggestions and control</span><span class="pg">P800</span></h2>
@@ -245,6 +246,7 @@ async function refresh(){
     $('reportWhen').textContent='UPDATED '+new Date(rp.updated*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+ago(rp.updated)+' AGO';
     if(!$('reportFull').open)$('reportBody').textContent=rp.body}
   beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
+  $('moonshots').textContent=(d.moonshots||[]).map(j=>`${j.name}: ${j.status} · ${j.branch} · ${j.minutes_used}m used / ${j.minutes_left}m left · round ${j.round}/${j.max_rounds} · bar ${j.met}/${j.total} · session ${j.session_id||'-'} · ~$${j.cost_usd.toFixed(2)}`).join('\n')||'No moonshots';
   const w=d.worker;$('feedHead').textContent=w?`${w.file} · ${w.count} events · updated ${ago(w.updated)} ago`:'No worker activity yet';
   $('feed').textContent=w?w.events.join('\n'):'';const f=$('feed');f.scrollTop=f.scrollHeight;
   const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';

@@ -326,6 +326,9 @@ class Dispatcher:
     # Housekeeping (no model) -----------------------------------------------------------------------
     def housekeeping(self) -> list[str]:
         actions = []
+        if not self.dry_run:
+            from commonroom.moonshots import schedule
+            actions += schedule(self.cfg, self.ledger)
         everything = self.board.all_issues()
         state = {i["number"]: i["state"] for i in everything}
         for pr in self.board.open_prs():
@@ -674,6 +677,10 @@ class Dispatcher:
             return None
         reasons = []
         open_issues = self.board.open_issues(self.milestone) if self.milestone else []
+        # Harvest issues can outlive their original milestone (or a project may have no milestone).
+        known = {i["number"] for i in open_issues}
+        open_issues += [i for i in self.board.open_issues(None)
+                        if i["number"] not in known and "needs:director" in labels(i)]
         for issue in open_issues:
             names = labels(issue)
             if "needs:director" in names:
@@ -1055,6 +1062,8 @@ class Dispatcher:
         now = time.time() if now is None else now
         actions = []
         for run in self.ledger.running_runs(self.project):
+            if run["role"] == "moonshot":
+                continue   # the moonshot runner owns recovery and active-time accounting
             dead = run.get("pid") and run["pid"] != os.getpid() and not pid_alive(run["pid"])
             if not dead and now - run["started_at"] < ORPHAN_AGE:
                 continue

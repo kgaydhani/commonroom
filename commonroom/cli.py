@@ -145,6 +145,11 @@ def cmd_status(args) -> int:
             print(f"Board unavailable: {exc}")
     for provider, v in verdicts(ledger, cfg, now).items():
         print(f"{provider}: {'GO' if v.allowed else 'HOLD'} - {v.reason}")
+    from commonroom.moonshots import overview
+    moonshots = overview(ledger, project.get("name") or "default")
+    if moonshots:
+        print("Moonshots:")
+        print_moonshots(moonshots)
     runs = ledger.recent_runs(project.get("name"), limit=5)
     if runs:
         print("Recent runs:")
@@ -471,6 +476,60 @@ def cmd_breaker(args) -> int:
     return 0
 
 
+def print_moonshots(jobs):
+    for j in jobs:
+        print(f"  {j['name']} {j['status']} {j['branch']}  "
+              f"{j['minutes_used']:.1f}m used / {j['minutes_left']:.1f}m left  "
+              f"round {j['round']}/{j['max_rounds']}  bar {j['met']}/{j['total']}  "
+              f"session {j['session_id'] or '-'}  cost~${j['cost_usd']:.2f}")
+
+
+def cmd_moonshot(args) -> int:
+    from commonroom import moonshots
+    cfg = config_mod.load()
+    if not cfg.get("_root"):
+        print("No room.toml found; run inside a project")
+        return 2
+    ledger = Ledger(getattr(args, "ledger", None))
+    project = cfg["project"].get("name") or "default"
+    try:
+        if args.action == "add":
+            job = moonshots.add(cfg, ledger, args.name, Path(args.brief), minutes=args.minutes, model=args.model,
+                                effort=args.effort, base=args.base, start=args.start, report=args.report,
+                                verify_cmd=args.verify_cmd, max_rounds=args.max_rounds, until=args.until)
+            print(f"Queued moonshot {job['name']}: {job['branch']}; durable brief {job['brief_path']}")
+        elif args.action in ("list", "status"):
+            jobs = moonshots.overview(ledger, project)
+            if getattr(args, "name", None):
+                moonshots.require_job(ledger, project, args.name)
+                jobs = [j for j in jobs if j["name"] == args.name]
+            print_moonshots(jobs)
+            if not jobs:
+                print("No moonshots")
+        elif args.action == "stop":
+            moonshots.stop(ledger, project, args.name)
+            print(f"Stop requested for {args.name}; its runner saves and pushes before exiting")
+        elif args.action == "resume":
+            prompt = Path(args.prompt_file).read_text(encoding="utf-8") if args.prompt_file else None
+            moonshots.resume(ledger, project, args.name, args.extend, prompt)
+            print(f"Queued {args.name} to resume its session")
+        elif args.action == "note":
+            moonshots.require_job(ledger, project, args.name)
+            ledger.moonshot_note(project, args.name, Path(args.file).read_text(encoding="utf-8"))
+            print(f"Feedback queued for the next prompt to {args.name}")
+        elif args.action == "run":
+            if args.name:
+                return moonshots.run(cfg, ledger, args.name, moonshots.parse_time(args.until))
+            for line in moonshots.schedule(cfg, ledger):
+                print(line)
+        return 0
+    except (ValueError, OSError) as exc:
+        print(f"Moonshot: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        ledger.close()
+
+
 def cmd_reddit(args) -> int:
     """Read-only Reddit research through public archives. Small reads only: no bulk collection, never training."""
     from commonroom import reddit
@@ -503,6 +562,19 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
+    p = sub.add_parser("moonshot", help="durable frontier-model sessions on their own branches")
+    ms = p.add_subparsers(dest="action", required=True)
+    a = ms.add_parser("add"); a.add_argument("name"); a.add_argument("--brief", required=True)
+    a.add_argument("--minutes", type=float); a.add_argument("--model"); a.add_argument("--effort")
+    a.add_argument("--base"); a.add_argument("--start"); a.add_argument("--until")
+    a.add_argument("--report"); a.add_argument("--verify-cmd"); a.add_argument("--max-rounds", type=int)
+    ms.add_parser("list")
+    a = ms.add_parser("status"); a.add_argument("name", nargs="?")
+    a = ms.add_parser("stop"); a.add_argument("name")
+    a = ms.add_parser("resume"); a.add_argument("name"); a.add_argument("--extend", type=float, default=0); a.add_argument("--prompt-file")
+    a = ms.add_parser("note"); a.add_argument("name"); a.add_argument("file")
+    a = ms.add_parser("run"); a.add_argument("name", nargs="?"); a.add_argument("--until"); a.add_argument("--ledger", help=argparse.SUPPRESS)
+    p.set_defaults(func=cmd_moonshot)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
     p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
     p = sub.add_parser("pause", help="stop autonomous work with a reason"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor"); p.set_defaults(func=cmd_pause)

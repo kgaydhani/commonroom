@@ -55,6 +55,40 @@ CREATE TABLE IF NOT EXISTS cooldowns (
     until REAL NOT NULL,
     reason TEXT
 );
+CREATE TABLE IF NOT EXISTS moonshots (
+    project TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    brief_path TEXT NOT NULL,
+    branch TEXT NOT NULL,
+    worktree TEXT NOT NULL,
+    report TEXT NOT NULL,
+    model TEXT NOT NULL,
+    effort TEXT NOT NULL,
+    budget_minutes REAL NOT NULL,
+    active_seconds_used REAL NOT NULL DEFAULT 0,
+    round INTEGER NOT NULL DEFAULT 0,
+    max_rounds INTEGER NOT NULL,
+    session_id TEXT,
+    runner_pid INTEGER,
+    start_after REAL NOT NULL DEFAULT 0,
+    pending_note TEXT,
+    last_scorecard TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    base TEXT NOT NULL DEFAULT 'origin/main',
+    verify_cmd TEXT,
+    until REAL,
+    stop_requested INTEGER NOT NULL DEFAULT 0,
+    wait_until REAL NOT NULL DEFAULT 0,
+    next_prompt TEXT,
+    wrap_sent INTEGER NOT NULL DEFAULT 0,
+    checkpoint_at REAL,
+    finished_at REAL,
+    issue_url TEXT,
+    detail TEXT,
+    PRIMARY KEY (project, name)
+);
 """
 
 
@@ -184,6 +218,49 @@ class Ledger:
     def task_failures(self, project: str | None, task: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM runs WHERE project IS ? AND task=? AND status IN ('failed', 'blocked')",
                                (project, task)).fetchone()[0]
+
+    # Moonshots -------------------------------------------------------------
+    def add_moonshot(self, project: str, name: str, **fields):
+        fields = dict(fields, project=project, name=name, created_at=time.time(), updated_at=time.time())
+        with self.db:
+            self.db.execute(f"INSERT INTO moonshots ({','.join(fields)}) VALUES ({','.join('?' for _ in fields)})",
+                            tuple(fields.values()))
+
+    def moonshot(self, project: str, name: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM moonshots WHERE project=? AND name=?", (project, name)).fetchone()
+        return dict(row) if row else None
+
+    def moonshots(self, project: str) -> list[dict]:
+        return [dict(r) for r in self.db.execute("SELECT * FROM moonshots WHERE project=? ORDER BY created_at", (project,))]
+
+    def update_moonshot(self, project: str, name: str, **fields):
+        columns = {r[1] for r in self.db.execute("PRAGMA table_info(moonshots)")}
+        if not fields.keys() <= columns - {"project", "name", "created_at"}:
+            raise ValueError("Unknown or immutable moonshot field")
+        fields["updated_at"] = time.time()
+        with self.db:
+            self.db.execute(f"UPDATE moonshots SET {','.join(k + '=?' for k in fields)} WHERE project=? AND name=?",
+                            (*fields.values(), project, name))
+
+    def moonshot_cost(self, project: str, name: str) -> float:
+        return self.db.execute("SELECT COALESCE(SUM(cost_usd),0) FROM runs WHERE project=? AND task=? AND role='moonshot'",
+                               (project, f"moonshot:{name}")).fetchone()[0]
+
+    def moonshot_note(self, project: str, name: str, text: str):
+        with self.db:
+            self.db.execute("UPDATE moonshots SET pending_note=COALESCE(pending_note,'') || ?, updated_at=? "
+                            "WHERE project=? AND name=?", ("Owner/director feedback (verbatim):\n" + text + "\n\n",
+                                                          time.time(), project, name))
+
+    def prepare_moonshot_prompt(self, project: str, name: str, prompt: str, session: str, wrap: bool = False) -> str:
+        """Consume feedback and persist the outgoing prompt together; shutdown cannot lose a note."""
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            prompt = (self.moonshot(project, name)["pending_note"] or "") + prompt
+            self.db.execute("UPDATE moonshots SET pending_note=NULL, next_prompt=?, session_id=?, status='running', "
+                            "wait_until=0, wrap_sent=MAX(wrap_sent,?), updated_at=? WHERE project=? AND name=?",
+                            (prompt, session, int(wrap), time.time(), project, name))
+        return prompt
 
     # Breakers --------------------------------------------------------------
     def trip(self, project: str | None, kind: str, detail: str, now: float | None = None):

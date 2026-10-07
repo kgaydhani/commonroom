@@ -18,6 +18,8 @@ DEFAULTS = {
     "breakers": {"no_output_runs": 3, "task_failures": 2},
     # A second Claude slot builds in parallel only when the queue is deep and weekly use is well under pace.
     "parallel": {"claude_slots": 2, "min_ready": 3, "min_pace_headroom": 15},
+    "moonshot": {"minutes": 180, "model": "fable", "effort": "high", "base": "origin/main",
+                 "max_rounds": 5, "max_parallel": 3, "pause_5h": 80, "stop_model_weekly": 85, "stop_weekly": 85},
     # While the owner uses Claude elsewhere on this machine, extra slots yield and no new work starts above this
     # share of the 5-hour window, so the owner's own sessions keep room to breathe.
     "owner": {"active_minutes": 20, "new_work_cap_5h": 70},

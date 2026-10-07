@@ -91,11 +91,11 @@ def worker_tmp(cwd) -> Path:
 
 def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger, log_dir: Path,
                model: str | None = None, effort: str | None = None, timeout: float = 3600,
-               stop_check=None, resume_session: str | None = None) -> WorkerResult:
+               stop_check=None, resume_session: str | None = None, new_session_id: str | None = None) -> WorkerResult:
     """Run to completion. `stop_check()` returning a reason string aborts the worker (e.g. the gate closed)."""
     log_dir.mkdir(parents=True, exist_ok=True)
-    session_id = resume_session or str(uuid.uuid4())
-    log_path = log_dir / f"{int(time.time())}-{provider}-{role.name}.jsonl"
+    session_id = resume_session or new_session_id or str(uuid.uuid4())
+    log_path = log_dir / f"{time.time_ns()}-{provider}-{role.name}.jsonl"
     result = WorkerResult(ok=False, session_id=session_id, log=str(log_path))
     if provider == "claude":
         prompt_file = log_dir / f"{session_id}-role.md"
@@ -134,6 +134,7 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
         while len(ended) < 2:
             reason = stop_check() if stop_check else None
             if reason or time.monotonic() > deadline:
+                result.ok = False
                 result.errors.append(reason or f"timed out after {timeout:.0f}s")
                 if reason:
                     result.interrupted = reason

@@ -104,6 +104,8 @@ def state(cfg: dict) -> dict:
             "breakers": ledger.open_breakers(project),
             "worker": worker_tail(ledger, project) if project else None,
         }
+        from commonroom.moonshots import overview
+        result["moonshots"] = overview(ledger, project or "default")
         if repo:
             result["milestone"] = cached("milestone", 60, lambda: board.milestone(repo, goal) if goal else None)
             result["owner_queue"] = cached("owner", 30, lambda: owner_queue(repo))
