@@ -134,6 +134,15 @@ class WithLedger(unittest.TestCase):
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
         self.assertIsNone(d.owner_trigger())
 
+    def test_owner_channel_bulletin_does_not_wake_director(self):
+        # The studio's daily bulletin starts with an @-mention of the owner (repo "o/t" -> "@o"), not `[agent:`.
+        issues = [issue(43, ["kind:suggestion", "triaged"], comments=[
+            {"body": "@o Morning bulletin. Nothing needs you.", "createdAt": "2026-10-05T12:32:00Z"}])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(d.owner_trigger())
+        issues[0]["comments"].append({"body": "love the art, hate the lane", "createdAt": "2026-10-05T12:50:00Z"})
+        self.assertIn("#43", d.owner_trigger())
+
     def test_high_risk_review_goes_to_codex_routine_to_claude(self):
         cfg = cfg_with(self.tmp.name)
         cfg["roles"].update(reviewer=["claude:sonnet"], reviewer_high_risk=["codex", "claude:opus"])
