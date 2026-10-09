@@ -26,6 +26,12 @@ test = "python -m unittest discover -s tests"
 # when it carries `TESTS: PASS <head sha> <test command>: <result>`, and merges one PR per pass.
 ci = false
 
+[merge]
+# The room merges its own PRs, so a change to what it may spend or what stops it also needs the director's
+# `[agent:director] REVIEW: APPROVE` after the last commit (commonroom#49). A glob can't pick out just the budget parts
+# of config.py, so the whole file is in.
+director_paths = ["commonroom/gate.py", "commonroom/config.py", "room.toml"]
+
 [roles]
 # All Claude: one Claude dispatcher serves this project. Codex's build prompt and sandbox are set up for the game.
 director = ["claude:opus"]

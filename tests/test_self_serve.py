@@ -310,6 +310,101 @@ class OwnerAndWorktrees(Base):
         self.assertEqual(self.dispatcher(cfg, MergeBoard([], {})).worktree_base(), Path("D:/Dev/commonroom-wt/room"))
 
 
+def touching(*paths, **kw):
+    d = detail(approve(), **kw)
+    d["files"] = [{"path": p, "additions": 1, "deletions": 0} for p in paths]
+    return d
+
+
+def director(at="2026-10-09T14:00:00Z", verdict="APPROVE"):
+    return {"createdAt": at, "body": f"[agent:director] REVIEW: {verdict}\nThe budget change is what the issue asks for."}
+
+
+class DirectorPaths(Base):
+    """commonroom#49: budget and safety code merges only with the director's approval."""
+    PATHS = ["commonroom/gate.py", "commonroom/config.py", "room.toml"]
+
+    def cfg(self, paths=PATHS, **kw):
+        cfg = project_cfg(self.tmp.name, **kw)
+        if paths is not None:
+            cfg["merge"] = {"director_paths": paths}
+        return cfg
+
+    def test_reviewer_approval_alone_does_not_merge_gate_changes_and_the_trigger_names_it(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py", "tests/test_core.py")})
+        d = self.dispatcher(self.cfg(), board)
+        actions = d.housekeeping()
+        self.assertEqual(board.merged, [])
+        wait = "PR #5 touches director paths (commonroom/gate.py) and waits for the director's approval"
+        self.assertIn(wait, actions)
+        self.assertIn(wait, d.director_trigger())
+        self.assertFalse(d.needs_review(board.details[5]))              # the reviewer's part is done: no re-review loop
+
+    def test_director_approval_after_the_last_commit_merges(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        board.details[5]["comments"].append(director())
+        d = self.dispatcher(self.cfg(), board)
+        self.assertIsNone(d.ready_for_director() or None)
+        self.assertFalse(d.needs_review(board.details[5]))              # the director's newer comment hides nothing
+        d.housekeeping()
+        self.assertEqual(board.merged, [5])
+
+    def test_director_approval_before_the_last_commit_does_not_count(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("room.toml", committed="2026-10-09T12:00:00Z")})
+        board.details[5]["comments"].insert(0, director(at="2026-10-09T11:00:00Z"))
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [])
+
+    def test_director_changes_or_a_non_director_approve_does_not_count(self):
+        for extra in (director(verdict="CHANGES"),
+                      {"createdAt": "2026-10-09T14:00:00Z", "body": "[agent:reviewer] REVIEW: APPROVE (director said ok)"}):
+            board = MergeBoard([pr(5, 40)], {5: touching("commonroom/config.py")})
+            board.details[5]["comments"].append(extra)
+            self.dispatcher(self.cfg(), board).housekeeping()
+            self.assertEqual(board.merged, [], extra["body"])
+
+    def test_director_approval_does_not_replace_the_reviewers_tested_one(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        board.details[5]["comments"] = [director()]
+        d = self.dispatcher(self.cfg(), board)
+        d.housekeeping()
+        self.assertEqual(board.merged, [])
+        self.assertTrue(d.needs_review(board.details[5]))
+        self.assertEqual(d.ready_for_director(), [])                    # nothing for the director until the reviewer approves
+
+    def test_a_pr_touching_only_dispatch_merges_on_the_reviewers_approval(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/dispatch.py", "tests/test_dispatch.py")})
+        d = self.dispatcher(self.cfg(), board)
+        d.housekeeping()
+        self.assertEqual(board.merged, [5])
+        self.assertNotIn("director paths", d.director_trigger() or "")
+
+    def test_no_merge_table_behaves_as_before(self):
+        for ci in (False, True):
+            board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py",
+                                                         checks=[{"name": "t", "conclusion": "SUCCESS"}])})
+            d = self.dispatcher(self.cfg(paths=None, ci=ci), board)
+            self.assertEqual(d.director_paths, [])
+            d.housekeeping()
+            self.assertEqual(board.merged, [5], ci)
+            self.assertEqual(d.ready_for_director(), [])
+
+    def test_with_ci_a_green_approved_gate_change_waits_for_the_director(self):
+        green = [{"name": "t", "conclusion": "SUCCESS"}]
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py", checks=green)})
+        d = self.dispatcher(self.cfg(ci=True), board)
+        d.housekeeping()
+        self.assertEqual(board.merged, [])
+        self.assertEqual(len(d.ready_for_director()), 1)
+        board.details[5]["comments"].append(director())
+        d.housekeeping()
+        self.assertEqual(board.merged, [5])
+
+    def test_commonrooms_room_toml_names_the_budget_and_safety_files(self):
+        cfg = config.load(REPO / "room.toml", follow_host=False)
+        self.assertEqual(cfg["merge"]["director_paths"], self.PATHS)
+
+
 class LiveCheckout(Base):
     def setUp(self):
         super().setUp()
