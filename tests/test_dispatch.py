@@ -479,6 +479,46 @@ class WithLedger(unittest.TestCase):
         issues.append(issue(80, ["status:ready", "role:builder"])); issues.append(issue(81, ["status:ready", "role:builder"]))
         self.assertIsNone(slot2.pick(roomy))                                   # slot disabled by config
 
+    def test_extra_slot_waits_at_max_5h_but_slot_one_starts(self):
+        # commonroom#15: gamemirage ran three builders into the 5-hour reserve and two were stopped mid-run.
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:sonnet"])
+        self.assertEqual(cfg["parallel"]["max_5h"], 60)                       # default; gamemirage sets none
+        issues = [issue(n, ["status:ready", "role:builder"]) for n in (64, 70, 72, 79)]
+        board = FakeBoard(issues)
+        verdict = lambda five: {"claude": gate.Verdict(True, "ok", {"weekly_pace": 50, "weekly_used": 9, "five_hour_used": five}),
+                                "codex": gate.Verdict(False, "dry")}
+        slot1 = dispatch.Dispatcher(cfg, self.ledger, board=board, log=lambda *_: None, only_provider="claude")
+        job, provider, _ = slot1.pick(verdict(60))
+        self.assertEqual((job.kind, provider), ("build", "claude"))           # slot 1 is unaffected
+        self.ledger.start_run("t", "#64", "builder", "claude", exclusive=True)
+        slot2 = dispatch.Dispatcher(cfg, self.ledger, board=board, log=lambda *_: None, only_provider="claude", slot=2)
+        self.assertIsNone(slot2.pick(verdict(60)))                             # plenty of weekly headroom, but 60% of 5 h
+        job, _, _ = slot2.pick(verdict(59))
+        self.assertEqual((job.kind, job.issue["number"]), ("build", 70))
+        cfg["parallel"]["max_5h"] = 80
+        self.assertIsNotNone(slot2.pick(verdict(60)))                          # the threshold is [parallel] max_5h
+
+    def test_run_row_records_the_5_hour_window_at_launch(self):
+        root = Path(self.tmp.name)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "builder.md").write_text("---\nmodel: sonnet\n---\nBuild.\n")
+        now = time.time()
+        self.ledger.record_usage([usage.observation("claude", "five_hour", 61, now + 3600, "test")], now=now)
+        d = dispatch.Dispatcher(cfg_with(root), self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        def broken(job, provider=None):
+            raise RuntimeError("no worktree")
+        d.prepare_worktree = broken
+        orig = dispatch.git
+        dispatch.git = lambda args, cwd: ""
+        try:
+            with self.assertRaises(RuntimeError):
+                d.run_job(dispatch.Job("build", "builder", issue=issue(5, ["status:ready"]), reason="ready"), "claude", "sonnet")
+        finally:
+            dispatch.git = orig
+        row = self.ledger.db.execute("SELECT five_hour_start FROM runs WHERE task='#5'").fetchone()
+        self.assertEqual(row["five_hour_start"], 61)                          # recorded before any work, even on a room error
+
     def test_runs_left_by_a_dead_dispatcher_are_recovered(self):
         issues = [issue(90, ["status:in-progress", "role:builder"])]
         board = FakeBoard(issues)
