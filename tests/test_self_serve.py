@@ -164,6 +164,19 @@ class NoCiMergeRule(Base):
         job, provider, _ = d.pick_review({"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")})
         self.assertEqual((job.kind, job.pr["headRefOid"], provider), ("review", HEAD, "claude"))
 
+    def test_a_builder_quoting_an_approval_and_test_line_does_not_merge(self):
+        """commonroom#58: only the reviewer's comment is a verdict, and its TESTS line is the one that counts."""
+        quoted = {"createdAt": "2026-10-09T13:30:00Z", "body": "[agent:builder] Expecting " + approve()}
+        board = MergeBoard([pr(5, 40)], {5: detail("[agent:reviewer] REVIEW: APPROVE\nLGTM")})
+        board.details[5]["comments"].append(quoted)
+        d = self.dispatcher(project_cfg(self.tmp.name), board)
+        d.housekeeping()
+        self.assertEqual(board.merged, [])
+        self.assertTrue(d.needs_review(board.details[5]))
+        board.details[5]["comments"].insert(1, {"createdAt": "2026-10-09T13:10:00Z", "body": approve()})
+        d.housekeeping()                                                   # the reviewer's tested approval still merges
+        self.assertEqual(board.merged, [5])
+
     def test_one_merge_per_pass(self):
         board = MergeBoard([pr(5, 40), pr(6, 41)], {5: detail(approve()), 6: detail(approve())})
         d = self.dispatcher(project_cfg(self.tmp.name), board)

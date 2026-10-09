@@ -99,6 +99,19 @@ class PureLogic(unittest.TestCase):
         detail["comments"].append({"createdAt": "2026-10-05T12:30:00Z", "body": "[agent:reviewer] REVIEW: CHANGES - fix x"})
         self.assertEqual(dispatch.latest_review(detail), "CHANGES")
 
+    def test_only_a_comment_that_starts_with_a_verdict_is_one(self):
+        """commonroom#58: a builder quoting `REVIEW: CHANGES` in its reply escalated #49 as a second round."""
+        for body, verdict in (("REVIEW: APPROVE\nLedger rows checked: none relevant", "APPROVE"),   # gamemirage's reviewer
+                              ("  \n[agent:reviewer] REVIEW: CHANGES - fix x", "CHANGES"),
+                              ("[agent:director]REVIEW: APPROVE", "APPROVE"),
+                              ("[agent:builder] A `REVIEW: CHANGES` now sends it back.", None),
+                              ("[agent:builder] REVIEW: APPROVE", None),
+                              ("[room] REVIEW: CHANGES", None),
+                              ("Fixed. REVIEW: APPROVE please", None),
+                              ("[agent:reviewer] Looks fine.\nREVIEW: APPROVE", None),
+                              ("", None), (None, None)):
+            self.assertEqual(dispatch.verdict_of(body), verdict, body)
+
     def test_checks_require_ci(self):
         self.assertEqual(dispatch.checks_state({"statusCheckRollup": []}), "pending")
         self.assertEqual(dispatch.checks_state({"statusCheckRollup": [{"conclusion": "SUCCESS"}]}), "green")
@@ -934,6 +947,39 @@ class WithLedger(unittest.TestCase):
         work["labels"] = [{"name": "status:review"}]                         # the director sent it back with a new bar:
         d.housekeeping()                                                     # rounds count afresh from the escalation
         self.assertEqual(fake.label_calls, [to_builder])
+    def test_a_quoted_verdict_in_a_builder_reply_is_not_a_review(self):
+        """commonroom#58: on PR #54 the builder's reply quoted `REVIEW: CHANGES` and housekeeping escalated #49."""
+        work = issue(80, ["status:review"])
+        detail = {"commits": [{"committedDate": "2026-10-09T09:00:00Z"}],
+                  "comments": [{"createdAt": "2026-10-09T09:30:00Z", "body": "[agent:reviewer] REVIEW: CHANGES - fix x"}],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        fake = FakeBoard([work], prs=[{"number": 81, "headRefName": "i80-x"}], details={81: detail})
+        fake.merges = []
+        fake.merge = fake.merges.append
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()                                                     # round 1: back to the builder
+        fake.label_calls.clear()
+        detail["commits"].append({"committedDate": "2026-10-09T10:00:00Z"})  # the fix, and a reply quoting a verdict
+        detail["comments"].append({"createdAt": "2026-10-09T10:05:00Z", "body": "[agent:builder] Fixed: a director "
+                                   "`REVIEW: CHANGES` after the last commit now sends the PR back."})
+        self.assertEqual(dispatch.changes_rounds(detail), 1)
+        self.assertIsNone(dispatch.latest_review(detail))
+        d.housekeeping()
+        self.assertFalse(any("needs:director" in call[1] for call in fake.label_calls))   # not escalated
+        self.assertTrue(d.needs_review(detail))                              # the reviewer looks at the fix
+
+        # With CI green (gamemirage), a builder quoting an approval after the last commit doesn't merge it either.
+        detail["comments"].append({"createdAt": "2026-10-09T10:10:00Z", "body": "[agent:builder] Waiting for "
+                                   "REVIEW: APPROVE from the reviewer."})
+        self.assertIsNone(dispatch.latest_review(detail))
+        d.housekeeping()
+        self.assertEqual(fake.merges, [])
+        self.assertTrue(d.needs_review(detail))
+        detail["comments"].append({"createdAt": "2026-10-09T10:30:00Z", "body": "REVIEW: APPROVE\nLGTM"})   # no prefix
+        self.assertEqual(dispatch.latest_review(detail), "APPROVE")
+        d.housekeeping()
+        self.assertEqual(fake.merges, [81])
+
     def test_review_skip_prs_merge_whatever_the_branch(self):
         """commonroom#22: green review:skip audit PRs on audit-* branches sat open for 8-10 hours."""
         green = {"commits": [], "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}

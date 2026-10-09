@@ -235,13 +235,24 @@ def squash_message(number: int, title: str, body: str | None) -> list[str]:
 
 
 # PR state ----------------------------------------------------------------------------------------
+VERDICT = re.compile(r"\s*(?:\[agent:(?:reviewer|director)\]\s*)?REVIEW:\s*(APPROVE|CHANGES)")
+
+
+def verdict_of(body: str | None) -> str | None:
+    """APPROVE or CHANGES if the comment is a review verdict, else None. Only a body that starts with `REVIEW:`, or with
+    `[agent:reviewer]` or `[agent:director]` and then `REVIEW:`, is one: a verdict quoted in a builder's or the room's
+    comment is not (commonroom#58)."""
+    m = VERDICT.match(body or "")
+    return m.group(1) if m else None
+
+
 def review_comment(detail: dict) -> dict | None:
     """The comment holding the newest REVIEW verdict posted after the PR's latest commit."""
     commits = detail.get("commits") or []
     last_commit = max((c.get("committedDate") or "" for c in commits), default="")
     found = None
     for c in detail.get("comments") or []:
-        if (c.get("createdAt") or "") >= last_commit and re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c.get("body") or ""):
+        if (c.get("createdAt") or "") >= last_commit and verdict_of(c.get("body")):
             found = c
     return found
 
@@ -249,7 +260,7 @@ def review_comment(detail: dict) -> dict | None:
 def latest_review(detail: dict) -> str | None:
     """The newest REVIEW verdict posted after the PR's latest commit, or None if it needs (re)review."""
     c = review_comment(detail)
-    return re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c["body"]).group(1) if c else None
+    return verdict_of(c["body"]) if c else None
 
 
 DIRECTOR_MARK = "[agent:director]"
@@ -263,9 +274,9 @@ def director_verdict(detail: dict) -> str | None:
     verdict = None
     for c in detail.get("comments") or []:
         body = (c.get("body") or "").strip()
-        m = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", body)
-        if m and body.startswith(DIRECTOR_MARK) and (c.get("createdAt") or "") >= last_commit:
-            verdict = m.group(1)
+        found = verdict_of(body)
+        if found and body.startswith(DIRECTOR_MARK) and (c.get("createdAt") or "") >= last_commit:
+            verdict = found
     return verdict
 
 
@@ -295,9 +306,9 @@ def approved_at(detail: dict) -> str:
     """When the newest REVIEW verdict was posted, if it is an APPROVE (whatever commits followed), else ''."""
     verdict, at = None, ""
     for c in detail.get("comments") or []:
-        m = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", (c.get("body") or "").strip())
-        if m:
-            verdict, at = m.group(1), c.get("createdAt") or ""
+        found = verdict_of(c.get("body"))
+        if found:
+            verdict, at = found, c.get("createdAt") or ""
     return at if verdict == "APPROVE" else ""
 
 
@@ -383,7 +394,7 @@ ROUNDS_ESCALATED = "review rounds without an approval"   # marks the escalation 
 def changes_rounds(detail: dict, since: str = "") -> int:
     """REVIEW: CHANGES verdicts on a PR posted after `since` (an ISO time; '' counts all)."""
     return sum(1 for c in detail.get("comments") or []
-               if (c.get("createdAt") or "") > since and re.search(r"REVIEW:\s*CHANGES", c.get("body") or ""))
+               if (c.get("createdAt") or "") > since and verdict_of(c.get("body")) == "CHANGES")
 
 
 def failed_checks(detail: dict) -> list[dict]:
@@ -1462,9 +1473,9 @@ class Dispatcher:
         if job.kind == "review":
             detail = self.board.pr_detail(job.pr["number"])
             fresh = [c for c in detail.get("comments") or [] if (c.get("createdAt") or "") >= started_iso
-                     and re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c.get("body") or "")]
+                     and verdict_of(c.get("body"))]
             if fresh:
-                verdict = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", fresh[-1]["body"]).group(1)
+                verdict = verdict_of(fresh[-1]["body"])
                 if verdict == "APPROVE" and not self.ci and not self.tested(detail):
                     return "failed", [], "approval without a `TESTS: PASS <head sha> <command>` line: without CI it can't merge"
                 return "done", [{"kind": "review", "ref": f"PR #{job.pr['number']} {verdict}"}], tail
