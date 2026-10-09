@@ -34,6 +34,22 @@ class FakeBoard:
     def comment(self, n, body):
         self.comments = getattr(self, "comments", []) + [(n, body)]
 
+    # Merge safety (commonroom#19): by default every branch contains main and main's CI isn't red.
+    behind, main_runs = {}, []
+
+    def behind_main(self, detail):
+        return self.behind.get(detail.get("number"), 0)
+
+    def update_branch(self, n):
+        self.updated = getattr(self, "updated", []) + [n]
+
+    def main_checks(self):
+        return self.main_runs
+
+    def create_issue(self, title, body, labels=(), milestone=None):
+        self.created = getattr(self, "created", []) + [(title, tuple(labels), milestone)]
+        return 900
+
 
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
     return {"number": n, "title": f"Issue {n}", "labels": [{"name": l} for l in labels], "body": body,
@@ -505,6 +521,124 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(any(call[0] == 61 for call in fake.label_calls))   # its PR is open: still in review
         self.assertTrue(any("#60" in a for a in actions))
 
+    @staticmethod
+    def approved_pr(n, branch):
+        return {"number": n, "headRefName": branch, "mergeable": "MERGEABLE", "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+                "commits": [{"oid": f"{n}a", "committedDate": "2026-10-07T02:00:00Z"}],
+                "comments": [{"createdAt": "2026-10-07T02:30:00Z", "body": "[agent:reviewer] REVIEW: APPROVE"}]}
+
+    def test_approved_prs_merge_one_at_a_time_and_only_up_to_date(self):
+        """commonroom#19: PRs #224 and #225 were each green against the old main, merged 5 s apart, and broke main."""
+        issues = [issue(200, ["status:review"]), issue(201, ["status:review"])]
+        details = {224: self.approved_pr(224, "i200-front-widths"), 225: self.approved_pr(225, "i201-haze-lights")}
+        fake = FakeBoard(issues, prs=[{"number": 225, "headRefName": "i201-haze-lights"},     # newest first, like gh
+                                      {"number": 224, "headRefName": "i200-front-widths"}], details=details)
+        fake.merges = []
+        fake.merge = fake.merges.append
+        fake.behind = {}
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+
+        d.housekeeping()                                                  # pass 1: the older one, alone
+        self.assertEqual(fake.merges, [224])
+        fake.prs = fake.prs[:1]
+        fake.behind = {225: 1}                                            # main moved under #225
+        actions = d.housekeeping()                                        # pass 2: bring it up to date, don't merge
+        self.assertEqual(fake.merges, [224])
+        self.assertEqual(fake.updated, [225])
+        self.assertTrue(any("behind main" in a for a in actions))
+
+        # GitHub's update is a merge commit after the approval. CI reruns on it; the approval stands only because
+        # that commit merges main and nothing else, so no reviewer is dispatched for it.
+        details[225]["commits"].append({"oid": "225m", "committedDate": "2026-10-07T03:20:00Z"})
+        details[225]["statusCheckRollup"] = [{"conclusion": "IN_PROGRESS"}]
+        fake.behind = {}
+        checked = []
+        d.only_merges_main = lambda branch, oids: checked.append((branch, oids)) or True
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        self.assertIsNone(d.pick_review(allowed))
+        self.assertEqual(checked[-1], ("i201-haze-lights", ["225m"]))
+        d.housekeeping()                                                  # CI still running: wait
+        self.assertEqual(fake.merges, [224])
+        details[225]["statusCheckRollup"] = [{"conclusion": "SUCCESS"}]
+        d.housekeeping()                                                  # green on the merged tree: merge
+        self.assertEqual(fake.merges, [224, 225])
+        d.only_merges_main = lambda branch, oids: False                   # anything more than a merge: review again
+        self.assertEqual(d.pick_review(allowed)[0].pr["number"], 225)
+
+    def test_red_main_holds_merges_and_opens_one_fix_task(self):
+        """commonroom#19: main stayed red for 1.5 h and nothing in the room noticed."""
+        issues = [issue(200, ["status:review"])]
+        fake = FakeBoard(issues, prs=[{"number": 224, "headRefName": "i200-x"}],
+                         details={224: self.approved_pr(224, "i200-x")})
+        fake.merges = []
+        fake.merge = fake.merges.append
+        fake.main_runs = [{"name": "Fast tests", "conclusion": "failure", "sha": "1f411c0aa",
+                           "detailsUrl": "https://github.com/o/t/actions/runs/5/job/1"},
+                          {"name": "Slow simulation tests", "conclusion": "success", "sha": "1f411c0aa"}]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.merges, [])
+        self.assertEqual(fake.created, [("Main is red: Fast tests failing on 1f411c0",
+                                         ("prio:top", "role:builder", "status:ready", "kind:bug"), "M0")])
+        self.assertTrue(any("merges held" in a for a in actions))
+
+        issues.append(issue(900, ["status:review"]) | {"title": "Main is red: Fast tests failing on 1f411c0"})
+        fake.prs.append({"number": 901, "headRefName": "i900-fix-main"})
+        fake.details[901] = self.approved_pr(901, "i900-fix-main")
+        d.housekeeping()                                                  # no second task; only the fix lands
+        self.assertEqual(len(fake.created), 1)
+        self.assertEqual(fake.merges, [901])
+
+        fake.main_runs = [{"name": "Fast tests", "conclusion": "cancelled", "sha": "2"}]   # a runner hiccup
+        d.housekeeping()
+        self.assertEqual(fake.merges, [901, 224])                         # isn't a red main
+
+    def test_conflicts_on_an_approved_pr_get_a_cheap_claude_merge_main_run(self):
+        """commonroom#14 and #19: a one-line conflict cost a full builder run plus a re-review, and Codex can't fetch."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"] = {"builder": ["claude:opus", "codex"], "builder_heavy": ["claude:opus"]}
+        work = issue(173, ["status:review", "risk:high"])
+        changes = issue(174, ["status:review"])
+        conflicted = self.approved_pr(180, "i173-header") | {"mergeable": "CONFLICTING"}
+        rejected = {**self.approved_pr(181, "i174-x"), "mergeable": "CONFLICTING",
+                    "comments": [{"createdAt": "2026-10-07T02:30:00Z", "body": "REVIEW: CHANGES - fix y"}]}
+        fake = FakeBoard([work, changes], prs=[{"number": 180, "headRefName": "i173-header"},
+                                               {"number": 181, "headRefName": "i174-x"}],
+                         details={180: conflicted, 181: rejected})
+        d = dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertIn((173, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+        notes = dict(fake.comments)
+        self.assertIn("merge-main run", notes[173])
+        self.assertIn("approval stands", notes[173])
+        self.assertNotIn("merge-main run", notes[174])                    # review asked for changes: a full run
+        self.assertTrue(any("merge conflicts" in a for a in actions))
+
+        work["labels"] = [{"name": "status:ready"}, {"name": "role:builder"}, {"name": "risk:high"}]
+        work["comments"] = [{"body": "[room] " + notes[173]}]
+        self.assertEqual(d.build_spec(work), ["claude:sonnet"])          # not Opus for a merge, never Codex
+        d.board.pr_for_branch = lambda branch: {"number": 180, "state": "OPEN"}
+        d._provider = "claude"
+        prompt = d.prompt(dispatch.Job("build", "builder", issue=work), "i173-header")
+        self.assertIn("merge-main run", prompt)
+        self.assertIn("git merge origin/main", prompt)
+        work["comments"].append({"body": "[room] Attempt 1 produced no PR. Back to ready."})
+        self.assertEqual(d.build_spec(work), ["claude:opus"])             # the room's latest word decides
+
+        # GitHub refusing to update a behind branch because of conflicts sends it back the same way.
+        clean = issue(175, ["status:review"])
+        fake.issues, fake.prs = [clean], [{"number": 182, "headRefName": "i175-y"}]
+        fake.details = {182: self.approved_pr(182, "i175-y")}
+        fake.behind = {182: 3}
+        fake.comments = []
+
+        def refuse(n):
+            raise RuntimeError("Cannot update PR branch due to conflicts")
+        fake.update_branch = refuse
+        d.housekeeping()
+        self.assertIn("merge-main run", fake.comments[0][1])
+
+
     def test_second_changes_verdict_goes_to_the_director_not_the_builder(self):
         """commonroom#32: gamemirage PR #369 went 6+ builder/reviewer rounds on a PR that couldn't change."""
         def changes(t):
@@ -563,6 +697,81 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(merge["task"], "PR #244")               # counts as progress like any merge
 
 
+class MergesMainOnly(unittest.TestCase):
+    """commonroom#14: an approval survives commits that only merge main in. Checked against real git."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.git("init", "-q", "-b", "main")
+        for key, value in (("user.name", "t"), ("user.email", "t@t"), ("core.autocrlf", "false")):
+            self.git("config", key, value)
+        self.write("a.txt", "one\ntwo\nthree\nfour\nfive\n")
+        self.write("b.txt", "bee\n")
+        self.commit("base")
+        self.git("checkout", "-q", "-b", "feature")
+        self.write("a.txt", "ONE\ntwo\nthree\nfour\nfive\n")
+        self.approved = self.commit("feature work")   # the reviewed head
+        self.git("checkout", "-q", "main")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def git(self, *args):
+        import subprocess
+        done = subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True)
+        return done.stdout.strip()
+
+    def write(self, name, text):
+        (self.root / name).write_bytes(text.encode())
+
+    def commit(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD")
+
+    def merge_main_into_feature(self):
+        self.git("checkout", "-q", "feature")
+        self.git("merge", "-q", "--no-edit", "main")
+
+    def test_clean_merge_of_main_keeps_the_approval_and_extra_changes_lose_it(self):
+        self.write("b.txt", "bee, changed on main\n")
+        self.commit("main moves")
+        self.merge_main_into_feature()
+        self.assertTrue(dispatch.merges_main_only(self.root, self.git("rev-parse", "HEAD"), main="main"))
+        self.write("b.txt", "bee, sneaked into the merge\n")                 # an "evil merge"
+        self.git("commit", "-q", "-a", "--amend", "--no-edit")
+        self.assertFalse(dispatch.merges_main_only(self.root, self.git("rev-parse", "HEAD"), main="main"))
+        self.assertFalse(dispatch.merges_main_only(self.root, self.approved, main="main"))   # not a merge at all
+
+    def test_conflict_resolution_keeps_it_only_inside_the_conflict(self):
+        self.write("a.txt", "uno\ntwo\nthree\nfour\nfive\n")                  # main edits the line feature edited
+        self.commit("main renames one")
+        self.git("checkout", "-q", "feature")
+        self.git("merge", "-q", "main")
+        self.assertEqual(self.git("diff", "--name-only", "--diff-filter=U"), "a.txt")   # a real conflict
+        self.write("a.txt", "ONE (uno)\ntwo\nthree\nfour\nfive\n")
+        resolved = self.commit("Merge main into feature")
+        self.assertTrue(dispatch.merges_main_only(self.root, resolved, main="main"))
+        self.write("a.txt", "ONE (uno)\ntwo\nthree\nfour\nFIVE, while I was here\n")
+        self.git("commit", "-q", "-a", "--amend", "--no-edit")
+        self.assertFalse(dispatch.merges_main_only(self.root, self.git("rev-parse", "HEAD"), main="main"))
+
+    def test_merging_another_branch_is_not_merging_main(self):
+        self.git("checkout", "-q", "-b", "side", "main")
+        self.write("c.txt", "side\n")
+        self.commit("side work")
+        self.git("checkout", "-q", "feature")
+        self.git("merge", "-q", "--no-edit", "side")
+        self.assertFalse(dispatch.merges_main_only(self.root, self.git("rev-parse", "HEAD"), main="main"))
+
+    def test_resolution_text_check(self):
+        conflicted = "a\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\nb\n<<<<<<< ours\np\n=======\nq\n>>>>>>> theirs\nc\n"
+        self.assertTrue(dispatch.resolves_only_conflicts(conflicted, "a\nxy\nb\nq\nc\n"))
+        self.assertTrue(dispatch.resolves_only_conflicts(conflicted, "a\nb\nc\n"))
+        self.assertFalse(dispatch.resolves_only_conflicts(conflicted, "a\nxy\nB\nq\nc\n"))
+        self.assertFalse(dispatch.resolves_only_conflicts(conflicted, "a\nb\nc\nextra\n"))
+        self.assertFalse(dispatch.resolves_only_conflicts("same\n", "changed\n"))
 class StackedMerge(unittest.TestCase):
     def test_merge_retargets_stacked_prs_before_deleting_the_branch(self):
         calls = []
