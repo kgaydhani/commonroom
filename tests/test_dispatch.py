@@ -532,6 +532,35 @@ class StackedMerge(unittest.TestCase):
         self.assertLess(retarget, delete)
         self.assertTrue(calls[delete][-1].endswith("/git/refs/heads/i277-base"))
 
+    def test_squash_commit_reads_as_the_pr_not_the_branch_commits(self):
+        """commonroom#21: a branch whose only commit was the room's WIP placeholder put that text on main."""
+        calls = []
+        body = "Closes #229\r\n\r\nImport until the global class cache exists.\r\n" + "x" * 5000 + "\r\nfooter"
+
+        def fake_gh(args, timeout=30):
+            calls.append(args)
+            if args[:2] == ["pr", "view"]:
+                return {"headRefName": "i229-export", "baseRefName": "main",
+                        "title": "Android export: import until the global class cache exists (#229)", "body": body}
+            return [] if args[:2] == ["pr", "list"] else None
+
+        orig = dispatch.board_mod.gh
+        dispatch.board_mod.gh = fake_gh
+        try:
+            dispatch.GitHubBoard("o/t").merge(259)
+        finally:
+            dispatch.board_mod.gh = orig
+        merge = next(c for c in calls if c[:2] == ["pr", "merge"])
+        self.assertIn("--subject=Android export: import until the global class cache exists (#229) (#259)", merge)
+        sent = next(a for a in merge if a.startswith("--body="))[len("--body="):]
+        self.assertTrue(sent.startswith("Closes #229\n\nImport until"))           # the PR's words, LF only
+        self.assertNotIn("\r", sent)
+        self.assertLess(len(sent), dispatch.SQUASH_BODY_MAX + 100)                 # trimmed at a line break
+        self.assertTrue(sent.endswith("(Trimmed: the full description is on PR #259.)"))
+        self.assertNotIn("WIP", " ".join(merge))
+        # A title that already names the PR isn't suffixed twice; an empty body still overrides the commit list.
+        self.assertEqual(dispatch.squash_message(7, "Fix it (#7)", None), ["--subject=Fix it (#7)", "--body="])
+
 
 if __name__ == "__main__":
     unittest.main()
