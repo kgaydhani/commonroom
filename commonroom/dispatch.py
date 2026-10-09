@@ -9,6 +9,7 @@ One pass (`run_once`):
 from __future__ import annotations
 
 import calendar
+import fnmatch
 import os
 import json
 import re
@@ -148,7 +149,7 @@ class GitHubBoard:
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                              "--json", "number,state,headRefName,headRefOid,baseRefName,url,commits,comments,"
-                                       "statusCheckRollup,mergeable"])
+                                       "statusCheckRollup,mergeable,files"])
 
     def behind_main(self, detail: dict) -> int:
         """Commits on the PR's base branch that its head doesn't contain yet."""
@@ -249,6 +250,27 @@ def latest_review(detail: dict) -> str | None:
     """The newest REVIEW verdict posted after the PR's latest commit, or None if it needs (re)review."""
     c = review_comment(detail)
     return re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c["body"]).group(1) if c else None
+
+
+DIRECTOR_MARK = "[agent:director]"
+
+
+def director_verdict(detail: dict) -> str | None:
+    """The newest director verdict posted after the PR's latest commit. Only a comment that starts with
+    `[agent:director]` counts, and a later commit voids it (commonroom#49)."""
+    commits = detail.get("commits") or []
+    last_commit = max((c.get("committedDate") or "" for c in commits), default="")
+    verdict = None
+    for c in detail.get("comments") or []:
+        body = (c.get("body") or "").strip()
+        m = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", body)
+        if m and body.startswith(DIRECTOR_MARK) and (c.get("createdAt") or "") >= last_commit:
+            verdict = m.group(1)
+    return verdict
+
+
+def director_approved(detail: dict) -> bool:
+    return director_verdict(detail) == "APPROVE"
 
 
 def head_sha(detail: dict) -> str:
@@ -562,6 +584,8 @@ class Dispatcher:
         self.log_dir = Path(ledger.path).parent / "logs" / (self.project or "default")
         self._provider = None
         self.ci = config_mod.has_ci(cfg)
+        # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
+        self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
 
     def worktree_base(self) -> Path:
@@ -605,8 +629,11 @@ class Dispatcher:
             if not m and "review:skip" not in labels(pr):
                 continue
             detail = self.board.pr_detail(pr["number"])
-            review, checks = self.review_verdict(detail), checks_state(detail)
+            review, checks = self.review_verdict(self.reviewer_view(detail)), checks_state(detail)
             issue_no = int(m.group(1)) if m else None
+            # The director's CHANGES on a PR that needs them sends it back to the builder, as a reviewer's does.
+            if self.director_rejected(detail):
+                review = "CHANGES"
             # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
             if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
                 actions += self.back_to_merge_main(pr, issue_no, everything, review)
@@ -652,6 +679,12 @@ class Dispatcher:
                                 else:
                                     actions.append(f"PR #{pr['number']}: updating it with main failed: {str(exc)[:100]}")
                         continue
+                # Asked only once the branch contains main, so the director judges the tree main becomes and an update
+                # doesn't void their approval (commonroom#49).
+                if self.waits_for_director(detail):
+                    actions.append(self.director_wait(pr["number"], detail))
+                    continue
+                if not self.dry_run:
                     try:
                         self.board.merge(pr["number"])
                     except Exception as exc:  # e.g. another dispatcher merged it a moment ago
@@ -813,17 +846,63 @@ class Dispatcher:
         except Exception as exc:
             return [f"live checkout update FAILED, left as it was: {str(exc)[:160]}"]
 
+    def director_files(self, detail: dict) -> list[str]:
+        """The PR's changed files that match `[merge] director_paths`."""
+        return [f["path"] for f in detail.get("files") or [] if f.get("path")
+                and any(fnmatch.fnmatchcase(f["path"], glob) for glob in self.director_paths)]
+
+    def reviewer_view(self, detail: dict) -> dict:
+        """On a PR that needs the director, the usual approval is the reviewer's: the director's own verdict is a
+        second gate, so it neither stands in for the reviewer's nor hides it as the newest REVIEW comment."""
+        if not self.director_files(detail):
+            return detail
+        return detail | {"comments": [c for c in detail.get("comments") or []
+                                      if not (c.get("body") or "").strip().startswith(DIRECTOR_MARK)]}
+
+    def waits_for_director(self, detail: dict) -> bool:
+        return bool(self.director_files(detail)) and not director_approved(detail)
+
+    def director_rejected(self, detail: dict) -> bool:
+        return bool(self.director_files(detail)) and director_verdict(detail) == "CHANGES"
+
+    def director_wait(self, number: int, detail: dict) -> str:
+        return (f"PR #{number} touches director paths ({', '.join(self.director_files(detail))}) "
+                f"and waits for the director's approval")
+
+    def ready_for_director(self) -> list[str]:
+        """PRs with their usual approval, up to date with main, that wait only for the director's (commonroom#49). One
+        the director already sent back, or one housekeeping still has to update, isn't theirs yet."""
+        if not self.director_paths:
+            return []
+        waiting = []
+        for pr in self.board.open_prs():
+            if not BRANCH.match(pr["headRefName"]):
+                continue
+            detail = self.board.pr_detail(pr["number"])
+            if not self.waits_for_director(detail) or self.director_rejected(detail):
+                continue
+            view = self.reviewer_view(detail)
+            if self.review_verdict(view) != "APPROVE" or not (checks_state(detail) == "green" if self.ci else self.tested(detail)):
+                continue
+            try:
+                if self.board.behind_main(detail):
+                    continue
+            except Exception:
+                continue   # housekeeping reports a PR it can't compare with main
+            waiting.append(self.director_wait(pr["number"], detail))
+        return waiting
+
     def tested(self, detail: dict) -> bool:
         """No CI: the approving review states a passing run of the project's test command on the PR head."""
-        c = review_comment(detail)
+        c = review_comment(self.reviewer_view(detail))
         return bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test"))
 
     def needs_review(self, detail: dict) -> bool:
         if not self.ci:
             # No CI: only an approval stating a passing test run on this exact head lets it merge, so an untested
             # approval, or one from before the room merged main into the branch, is reviewed again.
-            return latest_review(detail) != "CHANGES" and not self.tested(detail)
-        return self.review_verdict(detail) is None and checks_state(detail) != "red"
+            return latest_review(self.reviewer_view(detail)) != "CHANGES" and not self.tested(detail)
+        return self.review_verdict(self.reviewer_view(detail)) is None and checks_state(detail) != "red"
 
     def handle_red_ci(self, pr: dict, detail: dict, issue_no: int, everything: list[dict]) -> list[str]:
         failed = failed_checks(detail)
@@ -1151,6 +1230,7 @@ class Dispatcher:
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
+        reasons += self.ready_for_director()
         # The director is always on it (owner, 9 Oct; commonroom#41): even with no event, it steers every few hours.
         steer = float((self.cfg.get("director") or {}).get("steer_every_hours", 3) or 0)
         if steer and time.time() - since >= steer * 3600:

@@ -37,6 +37,9 @@ DEFAULTS = {
     # per provider over the trailing `hours`, unless no other project has used that provider for `idle_minutes`.
     # Empty: the project is not a guest and has the whole allowance (unchanged behaviour).
     "share": {},
+    # `director_paths`: globs of repo-relative files. A PR that changes one merges only once a `[agent:director]`
+    # `REVIEW: APPROVE` follows its last commit, on top of the usual approval (commonroom#49). Empty: no extra gate.
+    "merge": {},
 }
 
 # What a guest takes from its host, so both pass through one budget gate.
