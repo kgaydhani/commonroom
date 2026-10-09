@@ -999,8 +999,8 @@ class Dispatcher:
         return pinned or (self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec)
 
     def pick_extra(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
-        """An extra slot for the same provider, only while another is busy and weekly use sits well under the pace
-        line. It takes reviews (short, and they unblock merges), then builds once the queue is deep, then research.
+        """An extra slot for the same provider, only while another is busy, weekly use sits well under the pace line
+        and the 5-hour window is under `[parallel] max_5h` (commonroom#15). It takes reviews (short, and they unblock merges), then builds once the queue is deep, then research.
         Director, audits and housekeeping stay with slot 1."""
         par = self.cfg.get("parallel") or {}
         provider = self.only_provider or "claude"
@@ -1010,6 +1010,8 @@ class Dispatcher:
         pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
         if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15) or v.detail.get("owner_active"):
             return None   # extra slots also yield while the owner is using Claude elsewhere
+        if (v.detail.get("five_hour_used") or 0) >= par.get("max_5h", 60):
+            return None   # near the 5-hour reserve, finish what runs rather than start more (running work isn't stopped)
         busy = any(r["provider"] == provider and r["status"] == "running" for r in self.ledger.recent_runs(self.project, limit=20))
         if not busy:
             return None
@@ -1276,6 +1278,9 @@ class Dispatcher:
             self.log(f"   {task} is already being worked on; skipped")
             return {"status": "skipped", "outputs": [], "note": "already running"}
         self._run_id = run_id
+        # The window at decision time, for audits (commonroom#15).
+        self.ledger.db.execute("UPDATE runs SET five_hour_start=? WHERE id=?", (self.five_hour_used(provider), run_id))
+        self.ledger.db.commit()
         try:
             git(["fetch", "--quiet", "origin"], self.root)
             worktree, branch = self.prepare_worktree(job, provider)
@@ -1669,6 +1674,10 @@ class Dispatcher:
     # Budget ----------------------------------------------------------------------------------------
     def weekly_used(self) -> float | None:
         row = self.ledger.latest_usage("claude").get("seven_day")
+        return row["used_pct"] if row else None
+
+    def five_hour_used(self, provider: str) -> float | None:
+        row = self.ledger.latest_usage(provider).get("five_hour")
         return row["used_pct"] if row else None
 
     def stop_reason(self, provider: str) -> str | None:

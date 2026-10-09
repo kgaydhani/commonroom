@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS runs (
     outputs TEXT NOT NULL DEFAULT '[]',
     note TEXT,
     weekly_start REAL,
-    weekly_end REAL
+    weekly_end REAL,
+    five_hour_start REAL
 );
 CREATE INDEX IF NOT EXISTS runs_recent ON runs (project, started_at);
 CREATE TABLE IF NOT EXISTS breakers (
@@ -76,7 +77,8 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
-        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT")):
+        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT"),
+                           ("five_hour_start", "REAL")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
