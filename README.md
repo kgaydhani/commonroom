@@ -13,7 +13,9 @@ python D:/Dev/commonroom/room.py status          # goal, your queue, usage, runs
 python D:/Dev/commonroom/room.py usage           # meter readings and gate verdicts
 python D:/Dev/commonroom/room.py gate claude     # exit 0 if autonomous Claude work may run now
 python D:/Dev/commonroom/room.py probe codex     # read the Codex meter (no inference)
-python D:/Dev/commonroom/room.py breaker reset   # clear a tripped breaker after reading the diagnosis
+python D:/Dev/commonroom/room.py pause "why"     # nothing new starts; running workers finish their job
+python D:/Dev/commonroom/room.py pause --hard "why"  # also stop running workers now (their work is saved as WIP)
+python D:/Dev/commonroom/room.py breaker reset   # clear a pause or a tripped breaker after reading the diagnosis
 ```
 
 `room tap` is a Claude Code status-line command. It records your Claude rate limits on every response and prints a compact usage line.

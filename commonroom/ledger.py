@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS cooldowns (
 """
 
 
+def _path_key(path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
 def default_path() -> Path:
     home = Path(os.environ.get("COMMONROOM_HOME") or Path.home() / ".commonroom")
     return home / "room.sqlite3"
@@ -72,7 +76,7 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
-        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("cwd", "TEXT")):
+        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
@@ -172,15 +176,11 @@ class Ledger:
             result.append(row)
         return result
 
-    def set_cwd(self, run_id: str, cwd: str | Path):
-        with self.db:
-            self.db.execute("UPDATE runs SET cwd=? WHERE id=?", (str(cwd), run_id))
-
     def worker_dirs(self, since: float) -> list[str]:
         """Folders where room workers of any project ran at some point since `since` (still running or ended later)."""
-        rows = self.db.execute("SELECT DISTINCT cwd FROM runs WHERE cwd IS NOT NULL AND (status='running' OR ended_at>=?)",
+        rows = self.db.execute("SELECT DISTINCT worktree FROM runs WHERE worktree IS NOT NULL AND (status='running' OR ended_at>=?)",
                                (since,)).fetchall()
-        return [r["cwd"] for r in rows]
+        return [r["worktree"] for r in rows]
 
     def running_runs(self, project: str | None) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM runs WHERE project IS ? AND status='running'", (project,))]
@@ -190,6 +190,34 @@ class Ledger:
         with self.db:
             return self.db.execute("UPDATE runs SET status='stopped', ended_at=?, note=? WHERE id=? AND status='running'",
                                    (time.time() if now is None else now, note, run_id)).rowcount == 1
+
+    def set_worktree(self, run_id: str, path) -> None:
+        with self.db:
+            self.db.execute("UPDATE runs SET worktree=? WHERE id=?", (_path_key(path), run_id))
+
+    def worktree_in_use(self, path, exclude_run: str | None = None, now: float | None = None) -> dict | None:
+        """The running run (if any) whose working copy is `path`: nobody may remove it from under a live worker."""
+        now = time.time() if now is None else now
+        row = self.db.execute("SELECT * FROM runs WHERE worktree=? AND status='running' AND started_at>? AND id IS NOT ?",
+                              (_path_key(path), now - 7200, exclude_run)).fetchone()
+        return dict(row) if row else None
+
+    def room_error_streaks(self, project: str | None, now: float | None = None) -> dict[str, tuple[int, float]]:
+        """Per task, how many of its latest runs in a row were room-errors, and when the last one ended."""
+        now = time.time() if now is None else now
+        streaks: dict[str, tuple[int, float]] = {}
+        settled = set()
+        for r in self.db.execute("SELECT task, status, ended_at FROM runs WHERE project IS ? AND task IS NOT NULL "
+                                 "AND status != 'running' AND started_at > ? ORDER BY started_at DESC",
+                                 (project, now - 86400)):
+            if r["task"] in settled:
+                continue
+            if r["status"] != "room-error":
+                settled.add(r["task"])
+                continue
+            count, last = streaks.get(r["task"], (0, r["ended_at"] or 0))
+            streaks[r["task"]] = (count + 1, last)
+        return streaks
 
     def task_failures(self, project: str | None, task: str) -> int:
         return self.db.execute("SELECT COUNT(*) FROM runs WHERE project IS ? AND task=? AND status IN ('failed', 'blocked')",

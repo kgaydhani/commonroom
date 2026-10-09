@@ -161,11 +161,11 @@ def owner_active(project_root: str | None, minutes: float = 20, projects_dir: Pa
         return hit[1]
     root = projects_dir or Path.home() / ".claude" / "projects"
     mine = session_folder(project_root) if project_root else None
-    room = tuple(session_folder(p) for p in exclude)
+    room = tuple(session_folder(p).lower() for p in exclude)   # the ledger stores paths case-folded
     found = None
     try:
         for folder in root.iterdir():
-            if not folder.is_dir() or (mine and folder.name.startswith(mine)) or (room and folder.name.startswith(room)):
+            if not folder.is_dir() or (mine and folder.name.startswith(mine)) or (room and folder.name.lower().startswith(room)):
                 continue
             if any(now - f.stat().st_mtime < minutes * 60 for f in folder.glob("*.jsonl")):
                 found = folder.name

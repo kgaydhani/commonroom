@@ -188,13 +188,48 @@ class RedditResearch(unittest.TestCase):
                               "score": 12, "num_comments": 3, "selftext": "Spam  cheap units\nearly",
                               "permalink": "/r/AndroidGaming/comments/x/tips/"}]}
         with tempfile.TemporaryDirectory() as tmp:
-            rows = reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500)
-            self.assertEqual(len(calls), 2)                                   # Arctic Shift timed out, Pullpush answered
-            self.assertIn("size=50", calls[1])                                 # limit is capped
+            rows = reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500,
+                                 sleep=lambda s: None)
+            self.assertEqual(len(calls), 3)                                   # Arctic Shift timed out twice, Pullpush answered
+            self.assertIn("size=50", calls[2])                                 # limit is capped
             self.assertEqual(rows[0]["url"], "https://www.reddit.com/r/AndroidGaming/comments/x/tips/")
             self.assertEqual((rows[0]["excerpt"], rows[0]["date"], rows[0]["source"]), ("Spam cheap units early", "2017-07-14", "pullpush"))
             reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500)
-            self.assertEqual(len(calls), 2)                                   # second identical query comes from the cache
+            self.assertEqual(len(calls), 3)                                   # second identical query comes from the cache
+
+    def test_arctic_shift_timeout_is_retried_once_with_title_search(self):
+        # commonroom#26: Arctic Shift answered 422 "Timeout. Maybe slow down a bit"; the tool reported only the status.
+        calls, waits = [], []
+        def fetch(url):
+            calls.append(url)
+            if len(calls) == 1:
+                raise RuntimeError("HTTP 422: Timeout. Maybe slow down a bit")
+            return {"data": [{"title": "Fake compaction injections?", "subreddit": "ClaudeCode", "created_utc": 1791511118,
+                              "permalink": "/r/ClaudeCode/comments/y/fake/"}]}
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = reddit.search("compaction", subreddit="ClaudeCode", limit=6, fetch=fetch, cache_dir=Path(tmp), sleep=waits.append)
+        self.assertEqual((len(calls), waits), (2, [reddit.RETRY_WAIT]))      # one pause, one retry
+        self.assertEqual(rows[0]["source"], "arctic-shift")
+        query = dict(reddit.urllib.parse.parse_qsl(calls[0].split("?", 1)[1]))
+        self.assertEqual(query, {"subreddit": "ClaudeCode", "limit": "6", "title": "compaction"})   # no query=, no sort=
+        self.assertTrue(calls[0].startswith(reddit.ARCTIC + "/posts/search?"))
+
+    def test_archive_error_body_is_kept(self):
+        import io, os, urllib.error
+        body = b'{"data":null,"error":"Timeout. Maybe slow down a bit"}'
+        def refuse(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable Entity", {}, io.BytesIO(body))
+        orig, home = reddit.urllib.request.urlopen, os.environ.get("COMMONROOM_HOME")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["COMMONROOM_HOME"] = tmp                               # the pacing stamp stays out of ~/.commonroom
+            reddit.urllib.request.urlopen = refuse
+            try:
+                with self.assertRaises(RuntimeError) as caught:
+                    reddit._get(reddit.ARCTIC + "/posts/search?subreddit=x&title=y")
+            finally:
+                reddit.urllib.request.urlopen = orig
+                os.environ.pop("COMMONROOM_HOME") if home is None else os.environ.update(COMMONROOM_HOME=home)
+        self.assertEqual(str(caught.exception), "HTTP 422: Timeout. Maybe slow down a bit")
 
 
 class Services(unittest.TestCase):

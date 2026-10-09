@@ -292,9 +292,9 @@ class OwnerAndWorktrees(Base):
         folder = projects / usage.session_folder(worker)
         folder.mkdir(parents=True); (folder / "s.jsonl").write_text("{}")
         run = self.ledger.start_run("commonroom", "#31", "builder", "claude", now=now - 300)
-        self.ledger.set_cwd(run, worker)
+        self.ledger.set_worktree(run, worker)
         dirs = self.ledger.worker_dirs(now - 1200)
-        self.assertEqual(dirs, [str(worker)])
+        self.assertEqual(dirs, [os.path.normcase(os.path.abspath(str(worker)))])   # stored case-folded, as the removal guard does
         usage._owner_cache.clear()
         self.assertEqual(self._owner(str(game), 20, projects_dir=projects, now=now), folder.name)   # before: "the owner"
         usage._owner_cache.clear()

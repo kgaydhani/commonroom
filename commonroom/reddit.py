@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -21,6 +23,7 @@ PULLPUSH = "https://api.pullpush.io/reddit/search"
 MIN_INTERVAL = 5.0       # seconds between any two requests, across all processes
 CACHE_TTL = 24 * 3600    # query results only, for a day
 MAX_LIMIT = 50
+RETRY_WAIT = 10.0        # Arctic Shift answers a slow full-text search with 422 "Timeout. Maybe slow down a bit"
 
 
 def home() -> Path:
@@ -42,8 +45,18 @@ def _pace(now=time.time, sleep=time.sleep):
 def _get(url: str) -> dict:
     _pace()
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # The archives say why in the body. Without it a 422 read as "HTTP Error 422: Unprocessable Entity" and was
+        # blamed on the wrong parameter; the body said "Timeout. Maybe slow down a bit" (commonroom#26).
+        body = exc.read().decode("utf-8", "replace")
+        try:
+            reason = json.loads(body).get("error") or body
+        except (ValueError, AttributeError):
+            reason = body
+        raise RuntimeError(f"HTTP {exc.code}: {' '.join(str(reason).split())[:300] or exc.reason}") from None
 
 
 def normalize(item: dict, source: str) -> dict:
@@ -63,8 +76,9 @@ def normalize(item: dict, source: str) -> dict:
 
 
 def search(query: str, subreddit: str | None = None, comments: bool = False, limit: int = 25,
-           fetch=_get, cache_dir: Path | None = None, now: float | None = None) -> list[dict]:
-    """Arctic Shift when a subreddit is given (its keyword search needs one), Pullpush otherwise or as the fallback."""
+           fetch=_get, cache_dir: Path | None = None, now: float | None = None, sleep=time.sleep) -> list[dict]:
+    """Arctic Shift when a subreddit is given (its keyword search needs one), Pullpush otherwise or as the fallback.
+    Arctic Shift searches `title` (posts) or `body` (comments); it rejects `query`."""
     limit = max(1, min(limit, MAX_LIMIT))
     now = time.time() if now is None else now
     cache_dir = cache_dir or home() / "cache" / "reddit"
@@ -74,14 +88,23 @@ def search(query: str, subreddit: str | None = None, comments: bool = False, lim
         return json.loads(cached.read_text(encoding="utf-8"))
     results, errors = None, []
     if subreddit:
-        params = {"subreddit": subreddit, "limit": limit, "sort": "desc", ("body" if comments else "title"): query}
-        try:
-            data = fetch(f"{ARCTIC}/{'comments' if comments else 'posts'}/search?{urllib.parse.urlencode(params)}")
-            if data.get("data") is None:
-                raise RuntimeError(data.get("error") or "no data")
-            results = [normalize(i, "arctic-shift") for i in data["data"]]
-        except Exception as exc:
-            errors.append(f"arctic-shift: {exc}")
+        # No `sort`: results already come newest first, and `sort=desc` made the same title search of r/ClaudeCode
+        # time out where the unsorted one answered (2026-10-09).
+        params = {"subreddit": subreddit, "limit": limit, ("body" if comments else "title"): query}
+        url = f"{ARCTIC}/{'comments' if comments else 'posts'}/search?{urllib.parse.urlencode(params)}"
+        for attempt in (1, 2):
+            try:
+                data = fetch(url)
+                if data.get("data") is None:
+                    raise RuntimeError(data.get("error") or "no data")
+                results = [normalize(i, "arctic-shift") for i in data["data"]]
+                break
+            except Exception as exc:
+                if attempt == 1 and re.search(r"time(d)? ?out", str(exc), re.I):
+                    sleep(RETRY_WAIT)   # a timeout is the archive under load: back off and ask once more
+                    continue
+                errors.append(f"arctic-shift: {exc}")
+                break
     if results is None:
         params = {"q": query, "size": limit, **({"subreddit": subreddit} if subreddit else {})}
         try:

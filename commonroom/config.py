@@ -24,6 +24,9 @@ DEFAULTS = {
     # Reasoning effort per role (`claude --effort`). Unlisted roles use the CLI's default. Recorded on every run.
     "effort": {"director": "high", "auditor": "high"},
     "director_share_max": 0.15,
+    # The headless director also steers on a cadence, with no other trigger: every `steer_every_hours` since its
+    # last run (0 turns it off). commonroom#41.
+    "director": {"steer_every_hours": 3},
     "board": {"ready_cap": 15},
     # `test` is the project's test command. `ci = false` declares the repo has no GitHub CI: housekeeping then merges on
     # a reviewer's approval that states a passing run of `test` on the PR head (dispatch.tested_on_head).
