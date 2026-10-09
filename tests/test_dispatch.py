@@ -34,6 +34,22 @@ class FakeBoard:
     def comment(self, n, body):
         self.comments = getattr(self, "comments", []) + [(n, body)]
 
+    # Merge safety (commonroom#19): by default every branch contains main and main's CI isn't red.
+    behind, main_runs = {}, []
+
+    def behind_main(self, detail):
+        return self.behind.get(detail.get("number"), 0)
+
+    def update_branch(self, n):
+        self.updated = getattr(self, "updated", []) + [n]
+
+    def main_checks(self):
+        return self.main_runs
+
+    def create_issue(self, title, body, labels=(), milestone=None):
+        self.created = getattr(self, "created", []) + [(title, tuple(labels), milestone)]
+        return 900
+
 
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
     return {"number": n, "title": f"Issue {n}", "labels": [{"name": l} for l in labels], "body": body,

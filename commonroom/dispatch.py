@@ -113,7 +113,33 @@ class GitHubBoard:
 
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
-                             "--json", "number,state,headRefName,url,commits,comments,statusCheckRollup,mergeable"])
+                             "--json", "number,state,headRefName,headRefOid,baseRefName,url,commits,comments,"
+                                       "statusCheckRollup,mergeable"])
+
+    def behind_main(self, detail: dict) -> int:
+        """Commits on the PR's base branch that its head doesn't contain yet."""
+        compare = board_mod.gh(["api", f"repos/{self.repo}/compare/{detail.get('baseRefName') or 'main'}..."
+                                       f"{detail['headRefOid']}", "--jq", "{behind_by: .behind_by}"]) or {}
+        return int(compare.get("behind_by") or 0)
+
+    def update_branch(self, number: int):
+        """Merge the base branch into the PR's branch on GitHub (no model run). Raises when that conflicts."""
+        board_mod.gh(["pr", "update-branch", str(number), "--repo", self.repo])
+
+    def main_checks(self) -> list[dict]:
+        """Main's latest check runs, shaped like a PR's statusCheckRollup."""
+        runs = board_mod.gh(["api", f"repos/{self.repo}/commits/main/check-runs?per_page=100", "--jq",
+                             "[.check_runs[] | {name, conclusion: (.conclusion // .status), detailsUrl: .html_url, sha: .head_sha}]"])
+        return runs or []
+
+    def create_issue(self, title: str, body: str, labels=(), milestone: str | None = None) -> int:
+        args = ["issue", "create", "--repo", self.repo, "--title", title, "--body", body]
+        for name in labels:
+            args += ["--label", name]
+        if milestone:
+            args += ["--milestone", milestone]
+        url = board_mod.gh(args)
+        return int(str(url).rstrip("/").rsplit("/", 1)[1])
 
     def pr_for_branch(self, branch: str) -> dict | None:
         prs = board_mod.gh(["pr", "list", "--repo", self.repo, "--head", branch, "--state", "all",
@@ -166,6 +192,64 @@ def latest_review(detail: dict) -> str | None:
     return verdict
 
 
+def approved_at(detail: dict) -> str:
+    """When the newest REVIEW verdict was posted, if it is an APPROVE (whatever commits followed), else ''."""
+    verdict, at = None, ""
+    for c in detail.get("comments") or []:
+        m = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", (c.get("body") or "").strip())
+        if m:
+            verdict, at = m.group(1), c.get("createdAt") or ""
+    return at if verdict == "APPROVE" else ""
+
+
+CONFLICT_HUNK = re.compile(r"^<{7}(?: [^\n]*)?\n.*?^>{7}(?: [^\n]*)?(?:\n|\Z)", re.M | re.S)
+
+
+def resolves_only_conflicts(conflicted: str, resolved: str) -> bool:
+    """Does `resolved` keep every line of git's conflicted merge outside the conflict hunks, in order? Then whoever
+    resolved it changed nothing but the conflicts."""
+    keep = CONFLICT_HUNK.split(conflicted)
+    if len(keep) == 1:
+        return conflicted == resolved
+    head, tail = keep[0], keep[-1]
+    if not (resolved.startswith(head) and resolved.endswith(tail)) or len(head) + len(tail) > len(resolved):
+        return False
+    pos, end = len(head), len(resolved) - len(tail)
+    for part in keep[1:-1]:   # leftmost matches leave the most room for the parts after them
+        found = resolved.find(part, pos, end)
+        if found < 0:
+            return False
+        pos = found + len(part)
+    return True
+
+
+def merges_main_only(root: Path, oid: str, main: str = "origin/main") -> bool:
+    """Is this commit a merge of main into the branch that brings in main and nothing else? Its tree must be git's own
+    merge of its parents, or differ from it only inside the conflict hunks (commonroom#14). Any doubt: no."""
+    def run(*args):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:
+        parents = run("rev-list", "--parents", "-n", "1", oid).stdout.split()[1:]
+        if len(parents) != 2 or run("merge-base", "--is-ancestor", parents[1], main).returncode != 0:
+            return False
+        merged = run("merge-tree", "--write-tree", "--name-only", "--no-messages", *parents)
+        if merged.returncode not in (0, 1):
+            return False
+        tree, *conflicted = [line for line in merged.stdout.splitlines() if line]
+        changed = run("diff", "--name-only", "--no-renames", tree, oid)
+        if changed.returncode != 0:
+            return False
+        for path in changed.stdout.splitlines():
+            if path not in conflicted:
+                return False
+            ours, theirs = run("show", f"{tree}:{path}"), run("show", f"{oid}:{path}")
+            if ours.returncode or theirs.returncode or not resolves_only_conflicts(ours.stdout, theirs.stdout):
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def checks_state(detail: dict) -> str:
     """'green', 'pending' or 'red'. No checks at all counts as pending: CI is required."""
     rollup = detail.get("statusCheckRollup") or []
@@ -183,6 +267,14 @@ INFRA_CONCLUSIONS = {"CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
 CI_RERUNS = 6          # infrastructure cancellations are rerun at most this many times per run...
 CI_BACKOFF_MINUTES = 20  # ...waiting 20, 40, 60... minutes between reruns, so an outage can't use them all up
 CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this often before the director steps in
+MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back only to merge main into it
+MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
+
+
+def merge_main_only(issue: dict) -> bool:
+    """Did the room's latest word on this issue send it back only to merge main into its PR (commonroom#14)?"""
+    room = [c for c in issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
+    return bool(room) and MERGE_MAIN in (room[-1].get("body") or "")
 
 
 def failed_checks(detail: dict) -> list[dict]:
@@ -354,21 +446,18 @@ class Dispatcher:
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
                 actions.append(f"#{n} was in review with no open PR; back to ready")
-        for pr in prs:
+        merged = updated = False
+        held = None   # is main red? Read once, when a PR is first ready to merge
+        for pr in sorted(prs, key=lambda p: p["number"]):   # oldest first: a stacked base lands before what builds on it
             m = BRANCH.match(pr["headRefName"])
             if not m:
                 continue
             detail = self.board.pr_detail(pr["number"])
-            review, checks = latest_review(detail), checks_state(detail)
+            review, checks = self.review_verdict(detail), checks_state(detail)
             issue_no = int(m.group(1))
             # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
             if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
-                issue = next((i for i in everything if i["number"] == issue_no), None)
-                if issue and issue["state"] == "OPEN" and "status:ready" not in labels(issue):
-                    self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
-                    self.board.comment(issue_no, f"PR #{pr['number']} conflicts with main. The next builder run merges "
-                                                 f"origin/main into the branch, resolves the conflicts and reruns the tests.")
-                    actions.append(f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder")
+                actions += self.back_to_merge_main(pr, issue_no, everything, review)
                 continue
             # Red CI: rerun what never really ran; send real failures back to the builder (never let a PR sit red).
             if checks == "red" and not self.dry_run:
@@ -379,11 +468,38 @@ class Dispatcher:
                 review = "APPROVE"
             if review == "APPROVE" and checks == "green":
                 if not self.dry_run:
+                    # One merge per pass, and only of a branch that already contains main, so the CI that passed ran
+                    # on exactly the tree main becomes. Two green PRs merged 5 s apart broke main (commonroom#19).
+                    if merged:
+                        continue
+                    if held is None:
+                        held = self.main_red(everything, actions)
+                    if held and not any(i["number"] == issue_no and i["title"].startswith(MAIN_RED) for i in everything):
+                        continue   # only the fix for main lands while main is red
+                    try:
+                        behind = self.board.behind_main(detail)
+                    except Exception as exc:
+                        actions.append(f"PR #{pr['number']}: couldn't compare it with main, not merged: {str(exc)[:100]}")
+                        continue
+                    if behind:
+                        if not updated:   # one branch at a time: each update reruns CI
+                            updated = True
+                            try:
+                                self.board.update_branch(pr["number"])
+                                actions.append(f"PR #{pr['number']} was {behind} commit(s) behind main: merged main into it "
+                                               f"on GitHub; it merges once CI passes on the result")
+                            except Exception as exc:
+                                if "conflict" in str(exc).lower():
+                                    actions += self.back_to_merge_main(pr, issue_no, everything, review)
+                                else:
+                                    actions.append(f"PR #{pr['number']}: updating it with main failed: {str(exc)[:100]}")
+                        continue
                     try:
                         self.board.merge(pr["number"])
                     except Exception as exc:  # e.g. another dispatcher merged it a moment ago
                         actions.append(f"merge of PR #{pr['number']} skipped: {str(exc)[:120]}")
                         continue
+                    merged = True
                     run = self.ledger.start_run(self.project, f"#{issue_no}", "merge", "none")
                     self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
                 actions.append(f"merged PR #{pr['number']} (issue #{issue_no})")
@@ -405,6 +521,72 @@ class Dispatcher:
                     self.board.set_labels(issue["number"], add=["status:ready"], remove=["status:blocked"])
                 actions.append(f"unblocked #{issue['number']} (dependencies {sorted(deps)} closed)")
         return actions
+
+    def review_verdict(self, detail: dict) -> str | None:
+        """latest_review, except that an APPROVE survives later commits that only merge main in: the room's own branch
+        updates and conflict-only merge-main runs need no re-review (commonroom#14). CI still has to pass on them."""
+        review = latest_review(detail)
+        since = approved_at(detail) if review is None else ""
+        later = [c.get("oid") for c in detail.get("commits") or [] if (c.get("committedDate") or "") > since]
+        if since and later and all(later) and self.only_merges_main(detail.get("headRefName") or "", later):
+            return "APPROVE"
+        return review
+
+    def only_merges_main(self, branch: str, oids: list[str]) -> bool:
+        if not self.root or not branch:
+            return False
+        try:
+            git(["fetch", "--quiet", "origin", "main", branch], self.root)
+        except RuntimeError:
+            return False
+        return all(merges_main_only(self.root, oid) for oid in oids)
+
+    def back_to_merge_main(self, pr: dict, issue_no: int, everything: list[dict], review: str | None) -> list[str]:
+        """A PR that conflicts with main goes back to its builder. Unless review asked for changes, that is a merge-main
+        run: Claude merges origin/main and resolves only the conflicts, so an approval stands (commonroom#14, #19)."""
+        issue = next((i for i in everything if i["number"] == issue_no), None)
+        if not issue or issue["state"] != "OPEN" or "status:ready" in labels(issue):
+            return []
+        self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
+        if review == "CHANGES":
+            self.board.comment(issue_no, f"PR #{pr['number']} conflicts with main. The next builder run merges "
+                                         f"origin/main into the branch, resolves the conflicts and reruns the tests.")
+            return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder"]
+        self.board.comment(issue_no, f"PR #{pr['number']} conflicts with main. A {MERGE_MAIN} merges origin/main into the "
+                                     f"branch, resolves only the conflicts and reruns the tests. Nothing else changes, so "
+                                     f"{'its approval stands' if review == 'APPROVE' else 'the review still sees only the PR'}.")
+        return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder for a {MERGE_MAIN}"]
+
+    def main_red(self, everything: list[dict], actions: list[str]) -> bool:
+        """Has main's own CI failed (not merely been cancelled)? Then merges hold until it is green again, and a
+        top-priority task to fix it exists (commonroom#19)."""
+        try:
+            runs = self.board.main_checks()
+        except Exception as exc:
+            actions.append(f"couldn't read main's CI, merging as usual: {str(exc)[:100]}")
+            return False
+        rollup = {"statusCheckRollup": runs}
+        if checks_state(rollup) != "red" or ci_infra_only(rollup):
+            return False
+        names = ", ".join(sorted({c.get("name") or "check" for c in failed_checks(rollup)}))
+        fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
+        if fix:
+            actions.append(f"merges held: main's CI is red ({names}); #{fix['number']} fixes it")
+            return True
+        sha = next((c["sha"] for c in runs if c.get("sha")), "")[:7]
+        links = "\n".join(f"- {c.get('name')}: {c.get('detailsUrl')}" for c in failed_checks(rollup))
+        test = (self.cfg.get("checks") or {}).get("test")
+        body = (f"Main's CI fails on {sha or 'its latest commit'}:\n{links}\n\nThe room holds every other merge until main is "
+                f"green again; this task's PR is the one exception. Find the cause (often two PRs that each passed alone), "
+                f"fix it on this issue's branch{f', run `{test}`' if test else ''}, and open a PR. Change nothing else.")
+        try:
+            number = self.board.create_issue(f"{MAIN_RED}: {names} failing on {sha or 'main'}", body,
+                                             labels=["prio:top", "role:builder", "status:ready", "kind:bug"],
+                                             milestone=self.milestone)
+            actions.append(f"main's CI is red ({names}): merges held, opened #{number} to fix it")
+        except Exception as exc:
+            actions.append(f"main's CI is red ({names}): merges held; opening the fix task failed: {str(exc)[:100]}")
+        return True
 
     def deploy(self) -> list[str]:
         """After merges: run the project's `[deploy] after_merge` command in the main checkout (e.g. re-export the web build)."""
@@ -485,6 +667,10 @@ class Dispatcher:
 
     def build_spec(self, issue: dict) -> list[str]:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
+        # Merging main needs `git fetch`, which Codex's sandbox can't do, and little judgement: the cheap Claude model
+        # takes it, whatever the task's own pin or size (commonroom#14, #19).
+        if merge_main_only(issue):
+            return self.roles.get("merge_main", ["claude:sonnet"])
         # `provider:codex` / `provider:claude` pins a task to the subscription that has the needed capability.
         pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
         # Large, high-risk and integration work goes to the heavy builder (Opus); routine work to the standard one.
@@ -533,7 +719,7 @@ class Dispatcher:
             if not m or "review:skip" in labels(pr) or f"PR #{pr['number']}" in running:
                 continue
             detail = self.board.pr_detail(pr["number"])
-            if latest_review(detail) is None and checks_state(detail) != "red":
+            if self.review_verdict(detail) is None and checks_state(detail) != "red":
                 if issue_labels is None:
                     issue_labels = {i["number"]: labels(i) for i in self.board.all_issues()}
                 # Codex (the smaller subscription) is spent where independence matters most: high-risk changes.
@@ -590,7 +776,7 @@ class Dispatcher:
             # Codex renders Godot off-screen fine in its sandbox (gamemirage#101); device-level perf work stays with Claude.
             routine = [i for i in sorted(ready, key=priority)
                        if not labels(i) & ({"size:L", "risk:high", "builder:heavy"} | CODEX_CANNOT)
-                       and not any(l.startswith("provider:") for l in labels(i))]
+                       and not any(l.startswith("provider:") for l in labels(i)) and not merge_main_only(i)]
             claude_busy = any(r["provider"] == "claude" and r["status"] == "running"
                               for r in self.ledger.recent_runs(self.project, limit=20))
             # Leave the top routine task for Claude, unless Claude is already busy on something else.
@@ -933,6 +1119,16 @@ class Dispatcher:
                      f"the branch and resolve the conflicts, then rerun the tests. If its CI is red (`gh pr checks {pr['number']} --repo {repo}`), "
                      f"read the failing log (`gh run view <run id> --repo {repo} --log-failed`) and fix that first."
                      if pr and pr["state"] == "OPEN" else "")
+            if pr and pr["state"] == "OPEN" and merge_main_only(job.issue):
+                test = (self.cfg.get("checks") or {}).get("test") or "the project's tests"
+                return (f"PR #{pr['number']} in {repo} (issue #{n}) conflicts with main. This is a merge-main run, nothing "
+                        f"more. You are on branch `{branch}` in a fresh worktree. Run `git fetch origin` and "
+                        f"`git merge origin/main`, resolve each conflict so both sides' intent survives, run `{test}`, commit "
+                        f"the merge and push with `git push origin {branch}`. Change nothing outside the conflicts: no review "
+                        f"fixes, refactors or new work, so the PR needs no new review. If the tests only pass with changes "
+                        f"outside the conflicts, make them in a separate commit after the merge (the PR then goes back to "
+                        f"review) and say so on the PR, prefixed `[agent:builder]`.\n"
+                        f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
             if job.role == "scout":
                 return (f"Do the research in GitHub issue #{n} in {repo}. You are on branch `{branch}` in a fresh worktree. "
                         f"Follow your scout instructions. Commit your report under docs/scouting/, push with "
