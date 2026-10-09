@@ -23,6 +23,8 @@ from commonroom.ledger import Ledger
 from commonroom.workers import load_role, run_worker, worker_tmp
 
 DEPENDS = re.compile(r"^(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
+# The list after "Depends on": references joined by commas or "and", each optionally followed by a parenthetical.
+DEPENDS_ITEM = re.compile(r"\s*(?:#(\d+)|\([^)]*\)|issues?\b|and\b|[,&:])", re.I)
 BRANCH = re.compile(r"^i(\d+)-")
 MARK = "[room]"
 STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
@@ -48,9 +50,16 @@ def labels(issue: dict) -> set[str]:
 
 
 def dependencies(body: str | None) -> set[int]:
+    """Only the leading list of references counts. Briefs follow it with prose ("Depends on #89. Performance is
+    checked separately in #132") or asides ("#279 (PR #369)"), and a reference there is not a dependency: it can
+    never close, or it depends back on this issue, so the auto-unblock never fires (commonroom#12)."""
     deps = set()
-    for line in DEPENDS.findall(body or ""):
-        deps |= {int(n) for n in re.findall(r"#(\d+)", line)}
+    for rest in DEPENDS.findall(body or ""):
+        pos = 0
+        while m := DEPENDS_ITEM.match(rest, pos):
+            if m.group(1):
+                deps.add(int(m.group(1)))
+            pos = m.end()
     return deps
 
 
