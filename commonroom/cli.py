@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from commonroom import board, config as config_mod, gate, usage
+from commonroom import board, config as config_mod, gate, guard, usage
 from commonroom.dispatch import Dispatcher, runnable_roles, verdicts
 from commonroom.ledger import Ledger
 
@@ -34,6 +34,11 @@ def _project_name(cfg: dict) -> str | None:
 
 
 # Commands ---------------------------------------------------------------------
+def cmd_guard_command(args) -> int:
+    """Claude Code PreToolUse hook for workers: exit 2 blocks a filter-based process kill (commonroom#18)."""
+    return guard.main()
+
+
 def cmd_tap(args) -> int:
     """Status-line command: record Claude's rate limits, print a compact line. Must never fail loudly."""
     try:
@@ -532,6 +537,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("reddit", help="read-only Reddit research through public archives (small reads only)"); p.add_argument("query"); p.add_argument("--sub", help="subreddit (uses Arctic Shift)"); p.add_argument("--comments", action="store_true"); p.add_argument("--limit", type=int, default=25); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_reddit)
     p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
     sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
+    sub.add_parser("guard-command", help="PreToolUse hook: block filter-based process kills (hook JSON on stdin)").set_defaults(func=cmd_guard_command)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     args = parser.parse_args(argv)
     return args.func(args)

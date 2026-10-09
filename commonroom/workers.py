@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -53,13 +54,24 @@ def load_role(project_root: str | Path, name: str) -> Role:
     return Role(name, meta.get("model"), tools, match.group(2).strip())
 
 
+ROOM_PY = Path(__file__).resolve().parent.parent / "room.py"
+
+
+def guard_settings() -> str:
+    """`--settings` JSON adding the command guard hook (commonroom#18). Claude Code loads it on top of the user's
+    and the project's own settings, and hooks from every settings source run, so the project's hooks still apply."""
+    command = f'"{Path(sys.executable).as_posix()}" "{ROOM_PY.as_posix()}" guard-command'
+    hook = {"matcher": "Bash|PowerShell", "hooks": [{"type": "command", "command": command}]}
+    return json.dumps({"hooks": {"PreToolUse": [hook]}})
+
+
 def claude_command(role: Role, model: str | None, session_id: str, prompt_file: Path, effort: str | None,
                    resume: bool = False) -> list[str]:
     # `resume` continues an earlier session with its full context (e.g. one stopped by a budget limit).
     cmd = [usage.claude_executable() or "claude", "-p", "--output-format", "stream-json", "--verbose",
            *(["--resume", session_id] if resume else ["--session-id", session_id]), "--name", f"room {role.name}",
            "--append-system-prompt-file", str(prompt_file),
-           "--permission-mode", "auto", "--permission-prompts", "none", "--no-chrome"]
+           "--permission-mode", "auto", "--permission-prompts", "none", "--no-chrome", "--settings", guard_settings()]
     if model or role.model:
         cmd += ["--model", model or role.model]
     if effort:
