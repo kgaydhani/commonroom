@@ -109,6 +109,9 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     env = usage.clean_env()
     env["PYTHONUTF8"] = "1"
     env["COMMONROOM_WORKER"] = "1"   # `room gate` inside a worker answers GO: its start was already gated
+    # Git never searches above the working copy: if it is deleted mid-run, the worker's git fails loudly instead of
+    # finding the owner's main checkout one level up and committing there (commonroom#17).
+    env["GIT_CEILING_DIRECTORIES"] = str(Path(cwd).resolve().parent)
     # Scratch files (render captures run to gigabytes) go on the worktree's drive, never the system drive's TEMP,
     # which filled up on 2026-10-07. The folder is removed when the run ends.
     tmp = worker_tmp(cwd)

@@ -495,6 +495,46 @@ class WithLedger(unittest.TestCase):
         job, _, _ = d.pick(allowed)
         self.assertEqual(job.kind, "build")  # within the cooldown the queue carries on
 
+    def test_room_errors_rest_the_task_and_the_third_goes_to_the_director(self):
+        # commonroom#9: one leftover folder became five identical room-errors on PR #124 in two minutes.
+        root = Path(self.tmp.name)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "reviewer.md").write_text("---\nmodel: opus\n---\nReview.\n")
+        detail = {"number": 124, "headRefName": "i90-x", "commits": [], "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        board = FakeBoard([issue(90, ["status:review"])], prs=[{"number": 124, "headRefName": "i90-x"}], details={124: detail})
+        board.comments = []
+        board.comment = lambda n, body: board.comments.append((n, body))
+        d = dispatch.Dispatcher(cfg_with(root), self.ledger, board=board, log=lambda *_: None)
+        def leftover(job, provider=None):
+            raise RuntimeError("git worktree add --detach .../review-124 origin/i90-x: fatal: '.../review-124' already exists")
+        d.prepare_worktree = leftover
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        later = lambda seconds: (self.ledger.db.execute("UPDATE runs SET started_at=started_at-?, ended_at=ended_at-?",
+                                                        (seconds, seconds)), self.ledger.db.commit())
+        orig = dispatch.git
+        dispatch.git = lambda args, cwd: ""                                    # no fetch from a real remote
+        try:
+            for attempt in (1, 2, 3):
+                job, provider, model = d.pick(allowed)
+                self.assertEqual((job.kind, job.pr["number"]), ("review", 124))
+                with self.assertRaises(RuntimeError):
+                    d.run_job(job, provider, model)
+                self.assertIsNone(d.pick(allowed))                             # not retried on the next pass
+                later(dispatch.ROOM_ERROR_BACKOFF * 2 ** (attempt - 1) - 60)
+                self.assertIsNone(d.pick(allowed))                             # the rest doubles: 10, 20, 40 min
+                later(61)
+        finally:
+            dispatch.git = orig
+        self.assertEqual(board.label_calls, [(90, ("needs:director",), ())])     # escalated once, on the third
+        self.assertIn("3 room errors in a row", board.comments[0][1])
+        self.assertIn("already exists", board.comments[0][1])
+        build = dispatch.Job("build", "builder", issue=issue(91, ["status:ready", "role:builder"]))
+        for _ in range(3):
+            d.room_error(self.ledger.start_run("t", "#91", "builder", "claude"), build, "#91", RuntimeError("boom"))
+        self.assertIn((91, ("status:blocked", "needs:director"), ("status:ready", "status:in-progress")), board.label_calls)
+        done = self.ledger.start_run("t", "#91", "builder", "claude"); self.ledger.finish_run(done, "done")
+        self.assertNotIn("#91", self.ledger.room_error_streaks("t"))           # a run that gets through ends the streak
+
     def test_review_without_open_pr_goes_back_to_ready(self):
         issues = [issue(60, ["status:review"]), issue(61, ["status:review"])]
         fake = FakeBoard(issues, prs=[{"number": 9, "headRefName": "i61-thing"}],
@@ -504,6 +544,112 @@ class WithLedger(unittest.TestCase):
         self.assertIn((60, ("status:ready",), ("status:review",)), fake.label_calls)
         self.assertFalse(any(call[0] == 61 for call in fake.label_calls))   # its PR is open: still in review
         self.assertTrue(any("#60" in a for a in actions))
+
+
+class WorktreeLifecycle(unittest.TestCase):
+    """Real git: a main checkout with the room's worktrees under .claude/worktrees, as on the owner's PC."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.root = Path(self.tmp.name) / "game"
+        self.root.mkdir()
+        self.git("init", "-q", "-b", "main")
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            self.git("config", k, v)
+        (self.root / "a.txt").write_text("a")
+        self.git("add", "-A"); self.git("commit", "-qm", "base")
+        self.lines = []
+        self.board = FakeBoard([issue(5, ["status:in-progress", "role:builder"])])
+        self.board.comments = []
+        self.board.comment = lambda n, body: self.board.comments.append((n, body))
+        self.d = dispatch.Dispatcher(cfg_with(self.root), self.ledger, board=self.board, log=self.lines.append)
+        self.base = self.root / ".claude" / "worktrees"
+
+    def tearDown(self):
+        self.ledger.close(); self.tmp.cleanup()
+
+    def git(self, *args, cwd=None):
+        return dispatch.git(list(args), cwd or self.root)
+
+    def test_a_leftover_worktree_never_blocks_the_next_checkout(self):
+        # commonroom#9: a failed reviewer left review-124 behind and five retries died on "already exists".
+        # Fixed in 2351bb3 (2026-10-06 11:19); this pins it.
+        path = self.base / "review-124"
+        self.git("worktree", "add", "-q", "--detach", str(path), "main")
+        self.assertEqual(self.d.checkout(path, "main", None, False), path)       # removed and made again in place
+        held = open(path / "held.txt", "w")                                       # a test the last run left running
+        try:
+            fresh = self.d.checkout(path, "main", None, False)
+        finally:
+            held.close()
+        self.assertTrue((fresh / ".git").exists())
+        if os.name == "nt":
+            self.assertNotEqual(fresh, path)                                      # Windows can't delete a held file
+
+    def test_git_from_a_gutted_worktree_fails_instead_of_using_the_main_checkout(self):
+        # commonroom#17: the auditor's worktree lost its .git link mid-run; git there then answered as the main checkout.
+        wt = self.base / "i5-x"
+        self.git("worktree", "add", "-q", "-b", "i5-x", str(wt), "main")
+        (wt / ".git").unlink()
+        (wt / "work.txt").write_text("unsaved")
+        with self.assertRaises(RuntimeError):
+            self.git("rev-parse", "--show-toplevel", cwd=wt)
+        head = self.git("rev-parse", "HEAD")
+        self.d.preserve_work(dispatch.Job("build", "builder", issue=self.board.issues[0]), wt, "i5-x")
+        self.assertEqual(self.git("rev-parse", "HEAD"), head)                     # nothing committed in the owner's checkout
+        self.assertEqual(self.git("status", "--porcelain", "--", "a.txt"), "")
+
+    def test_workers_cannot_reach_the_main_checkout_either(self):
+        seen = {}
+        def fake_popen(cmd, **kwargs):
+            seen.update(kwargs["env"]); raise RuntimeError("not starting a real worker")
+        wt = self.base / "auditor-1"
+        wt.mkdir(parents=True)
+        orig = workers.subprocess.Popen
+        workers.subprocess.Popen = fake_popen
+        try:
+            with self.assertRaises(RuntimeError):
+                workers.run_worker("codex", workers.Role("auditor", None, [], "x"), "y", wt, self.ledger, Path(self.tmp.name) / "logs")
+        finally:
+            workers.subprocess.Popen = orig
+            import shutil; shutil.rmtree(workers.worker_tmp(wt), ignore_errors=True)
+        self.assertEqual(seen["GIT_CEILING_DIRECTORIES"], str(self.base.resolve()))
+
+    def test_a_live_runs_worktree_is_never_removed_and_removals_are_logged(self):
+        wt = self.base / "i5-x"
+        self.git("worktree", "add", "-q", "-b", "i5-x", str(wt), "main")
+        live = self.ledger.start_run("t", "#5", "builder", "claude")
+        self.ledger.set_worktree(live, wt)
+        orphan = self.ledger.start_run("t", "#5", "builder", "claude", now=time.time() - 3 * 3600)   # its dispatcher died
+        self.d.cleanup_worktree(wt, "someone-else")
+        self.assertTrue((wt / ".git").exists())
+        self.assertTrue(any(f"run {live}" in line and "still working" in line for line in self.lines))
+        self.assertEqual(len(self.d.recover_orphans()), 1)                        # the orphan is closed...
+        self.assertTrue((wt / ".git").exists())                                   # ...but the live run's copy stays
+        self.assertEqual({r["id"] for r in self.ledger.running_runs("t")}, {live})
+        self.ledger.finish_run(live, "done")
+        self.d.cleanup_worktree(wt, live)
+        self.assertFalse(wt.exists())
+        self.assertTrue(any(line.strip() == f"removing worktree {wt} (run {live})" for line in self.lines))
+        gone = self.base / "auditor-2"
+        self.git("worktree", "add", "-q", "--detach", str(gone), "main")
+        import shutil; shutil.rmtree(gone)                                          # deleted by someone outside the room
+        self.d.cleanup_worktree(self.base / "unrelated", "run-b")
+        self.assertTrue(any("prune (run run-b)" in line and "auditor-2" in line for line in self.lines))
+        self.assertIsNotNone(orphan)
+
+    def test_the_audit_report_path_is_absolute_and_picked_up(self):
+        self.d._worktree = self.base / "auditor-3"
+        job = dispatch.Job("audit", "auditor", reason="periodic audit")
+        report = self.d.report_path()
+        self.assertTrue(report.is_absolute())
+        self.assertIn(f"`{report}`", self.d.prompt(job, None))
+        report.parent.mkdir(parents=True)
+        report.write_text("all quiet", encoding="utf-8")
+        status, outputs, _ = self.d.assess(job, None, None, "", workers.WorkerResult(ok=True, final_text="ACTIONS: []"))
+        self.assertEqual((status, outputs[0]["kind"]), ("done", "report"))
+        self.assertEqual((self.d.reports_dir() / "latest.md").read_text(encoding="utf-8"), "all quiet")
 
 
 class StackedMerge(unittest.TestCase):
