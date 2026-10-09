@@ -505,6 +505,38 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(any(call[0] == 61 for call in fake.label_calls))   # its PR is open: still in review
         self.assertTrue(any("#60" in a for a in actions))
 
+    def test_second_changes_verdict_goes_to_the_director_not_the_builder(self):
+        """commonroom#32: gamemirage PR #369 went 6+ builder/reviewer rounds on a PR that couldn't change."""
+        def changes(t):
+            return {"createdAt": t, "body": "[agent:reviewer] REVIEW: CHANGES - still wrong"}
+        work = issue(70, ["status:review"])
+        detail = {"commits": [{"committedDate": "2026-10-09T09:00:00Z"}], "comments": [changes("2026-10-09T09:30:00Z")],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        fake = FakeBoard([work], prs=[{"number": 71, "headRefName": "i70-x"}], details={71: detail})
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        to_builder = (70, ("status:ready", "needs:changes"), ("status:review", "status:in-progress"))
+        to_director = (70, ("status:blocked", "needs:director"), ("status:review", "status:in-progress", "needs:changes"))
+
+        d.housekeeping()                                                     # round 1: the builder fixes it
+        self.assertEqual(fake.label_calls, [to_builder])
+        fake.label_calls.clear()
+        detail["commits"].append({"committedDate": "2026-10-09T10:00:00Z"})  # round 2: rejected again
+        detail["comments"].append(changes("2026-10-09T10:30:00Z"))
+        actions = d.housekeeping()
+        self.assertEqual(fake.label_calls, [to_director])
+        self.assertIn("2 review rounds without an approval", fake.comments[-1][1])
+        self.assertTrue(any("escalated" in a for a in actions))
+
+        fake.label_calls.clear()                                             # later passes: no builder, no repeat
+        work["labels"] = [{"name": "status:blocked"}, {"name": "needs:director"}]
+        work["comments"] = [{"createdAt": "2026-10-09T10:40:00Z", "body": fake.comments[-1][1]}]
+        detail["comments"].append(changes("2026-10-09T10:45:00Z"))         # even a third CHANGES on the PR
+        d.housekeeping()
+        self.assertEqual(fake.label_calls, [])
+
+        work["labels"] = [{"name": "status:review"}]                         # the director sent it back with a new bar:
+        d.housekeeping()                                                     # rounds count afresh from the escalation
+        self.assertEqual(fake.label_calls, [to_builder])
     def test_review_skip_prs_merge_whatever_the_branch(self):
         """commonroom#22: green review:skip audit PRs on audit-* branches sat open for 8-10 hours."""
         green = {"commits": [], "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}

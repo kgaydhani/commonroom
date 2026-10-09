@@ -205,6 +205,14 @@ INFRA_CONCLUSIONS = {"CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
 CI_RERUNS = 6          # infrastructure cancellations are rerun at most this many times per run...
 CI_BACKOFF_MINUTES = 20  # ...waiting 20, 40, 60... minutes between reruns, so an outage can't use them all up
 CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this often before the director steps in
+REVIEW_ROUNDS = 2      # this many CHANGES verdicts on one PR go to the director, not back to the builder (commonroom#32)
+ROUNDS_ESCALATED = "review rounds without an approval"   # marks the escalation comment; rounds count again after it
+
+
+def changes_rounds(detail: dict, since: str = "") -> int:
+    """REVIEW: CHANGES verdicts on a PR posted after `since` (an ISO time; '' counts all)."""
+    return sum(1 for c in detail.get("comments") or []
+               if (c.get("createdAt") or "") > since and re.search(r"REVIEW:\s*CHANGES", c.get("body") or ""))
 
 
 def failed_checks(detail: dict) -> list[dict]:
@@ -415,9 +423,23 @@ class Dispatcher:
                     state[issue_no] = "CLOSED"
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
-                if issue and "status:ready" not in labels(issue):
-                    self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
-                    actions.append(f"PR #{pr['number']} needs changes; issue #{issue_no} back to ready")
+                if not issue or labels(issue) & {"status:ready", "status:blocked", "needs:director"}:
+                    continue
+                # A PR that keeps failing review won't pass on the next round either (gamemirage PR #369 went 6+):
+                # the director merges it, revises the bar or splits the issue. Rounds count again after an escalation.
+                escalated = max((c.get("createdAt") or "" for c in issue.get("comments") or []
+                                 if ROUNDS_ESCALATED in (c.get("body") or "")), default="")
+                rounds = changes_rounds(detail, since=escalated)
+                if rounds >= REVIEW_ROUNDS:
+                    self.board.set_labels(issue_no, add=["status:blocked", "needs:director"],
+                                          remove=["status:review", "status:in-progress", "needs:changes"])
+                    self.board.comment(issue_no, f"PR #{pr['number']} has had {rounds} {ROUNDS_ESCALATED}. Escalating to "
+                                                 f"the director instead of another builder round: merge it, revise the bar, "
+                                                 f"or split the issue.")
+                    actions.append(f"PR #{pr['number']} got CHANGES {rounds} times; #{issue_no} escalated")
+                    continue
+                self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
+                actions.append(f"PR #{pr['number']} needs changes; issue #{issue_no} back to ready")
         if any(a.startswith("merged") for a in actions) and not self.dry_run:
             actions += self.deploy()
         for issue in everything:
