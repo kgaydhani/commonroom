@@ -1214,13 +1214,19 @@ class Dispatcher:
         if time.time() - since < DIRECTOR_COOLDOWN:
             return None
         reasons = []
-        open_issues = self.board.open_issues(self.milestone) if self.milestone else []
-        for issue in open_issues:
+        # Escalations and suggestions count whatever their milestone: a suggestion the director hasn't placed
+        # yet has none (commonroom#10). The rest of the checks are about the goal milestone only.
+        every_open = self.board.open_issues(None)
+        for issue in every_open:
             names = labels(issue)
             if "needs:director" in names:
                 reasons.append(f"#{issue['number']} escalated to the director")
             if "kind:suggestion" in names and "triaged" not in names:
                 reasons.append(f"#{issue['number']} is an untriaged owner suggestion")
+        open_issues = [i for i in every_open
+                       if self.milestone and (i.get("milestone") or {}).get("title") == self.milestone]
+        for issue in open_issues:
+            names = labels(issue)
             if "owner:human" in names and any(_after(c, since) for c in owner_comments(issue)):
                 reasons.append(f"#{issue['number']} has a new owner comment (delivery or answer)")
         busy = [i for i in open_issues if labels(i) & {"status:ready", "status:in-progress", "status:review"}]
