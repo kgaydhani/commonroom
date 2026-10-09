@@ -28,6 +28,8 @@ MARK = "[room]"
 STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 DIRECTOR_COOLDOWN = 3600
+STEER_REASON = ("periodic steering: check pace to the goal, the bottleneck and the allocation; "
+                "write the Director log (gamemirage #376)")
 OWNER_COOLDOWN = 300
 SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
 
@@ -956,6 +958,10 @@ class Dispatcher:
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
+        # The director is always on it (owner, 9 Oct; commonroom#41): even with no event, it steers every few hours.
+        steer = float((self.cfg.get("director") or {}).get("steer_every_hours", 3) or 0)
+        if steer and time.time() - since >= steer * 3600:
+            reasons.append(STEER_REASON)
         return "; ".join(reasons) or None
 
     def last_provider(self, task: str, role: str) -> str | None:

@@ -25,7 +25,7 @@ Written in response to [postmortem-v1.md](postmortem-v1.md).
 | Board | GitHub Issues and milestones. Labels: `kind:*`, `role:*`, `owner:human`, `size:*`, `status:*`. Cap on WIP in `status:ready` | v2.0 (by convention) |
 | Dispatcher | `room run`: picks the top ready task whose role passes the gate, launches the worker, records the run, comments on the issue | built 2026-10-05 |
 | Workers | `claude -p` (with the role prompt appended and no MCP) and `codex exec`, each in a dispatcher-made worktree. Session IDs are recorded so any run can be reopened | built 2026-10-05 |
-| Director | An Opus session. It runs interactively with the owner, or headless only on triggers: the milestone has no ready tasks, a PR is ready to merge, or something escalated. Capped at 15% of spend, and each run must change the board or merge something | v2.1 |
+| Director | An Opus session. It runs interactively with the owner, or headless on triggers: the milestone has no ready tasks, a PR is ready to merge, or something escalated. It also runs headless to steer (pace to the goal, the bottleneck, the allocation) once its last run is `[director] steer_every_hours` old (default 3, 0 turns it off; commonroom#41). Capped at 15% of spend, and each run must change the board or merge something | v2.1 |
 | Dashboard | `room dashboard` at http://127.0.0.1:8770: usage against pace, live worker activity, runs with spend and output, the owner's queue, board, pause/resume, suggestion box | built 2026-10-05 |
 
 ## How the owner takes part
