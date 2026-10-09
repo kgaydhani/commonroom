@@ -1,0 +1,41 @@
+# Common Room as a project of its own: the room builds, reviews and merges its own improvements (commonroom#31).
+# The heartbeat ticks this project's dispatcher next to the game's. See docs/design.md, "The room serves itself".
+[project]
+name = "commonroom"
+repo = "kgaydhani/commonroom"
+mission = "Keep the studio improving itself: every autonomous run lands real output, allowance goes where the goal needs it, and nothing the owner relies on breaks."
+# Dispatcher-made worktrees live outside the live checkout (D:/Dev/commonroom), which the room runs from and never edits.
+worktrees = "D:/Dev/commonroom-wt/room"
+
+[goal]
+milestone = "Room v3: the room improves itself"
+
+[share]
+# A guest on the game's plan. It uses the host's budget gate (reserves, pace, burn cap, owner yield are read from the
+# host's room.toml at load, so they can't drift apart) and stops when the host's room-wide breakers are open.
+host = "D:/Dev/gamemirage"
+# The game keeps moving: this project's model runs take at most 15% of all autonomous run time per provider over the
+# trailing 24 h, unless no other project has used that provider for an hour (then nobody is waiting on it).
+max = 0.15
+hours = 24
+idle_minutes = 60
+
+[checks]
+test = "python -m unittest discover -s tests"
+# No GitHub CI on this repo. Housekeeping merges on the reviewer's `REVIEW: APPROVE` posted after the last commit,
+# when it carries `TESTS: PASS <head sha> <test command>: <result>`, and merges one PR per pass.
+ci = false
+
+[roles]
+# All Claude: one Claude dispatcher serves this project. Codex's build prompt and sandbox are set up for the game.
+director = ["claude:opus"]
+builder = ["claude:opus"]
+builder_heavy = ["claude:opus"]
+reviewer = ["claude:opus"]
+reviewer_high_risk = ["claude:opus"]
+scout = ["claude:opus"]
+codex_parallel_builds = false
+
+[parallel]
+# One slot: the heartbeat starts a single Claude dispatcher for this project.
+claude_slots = 1

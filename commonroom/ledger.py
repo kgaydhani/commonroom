@@ -72,7 +72,7 @@ class Ledger:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
-        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER")):
+        for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("cwd", "TEXT")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
@@ -171,6 +171,16 @@ class Ledger:
             row["outputs"] = json.loads(row["outputs"] or "[]")
             result.append(row)
         return result
+
+    def set_cwd(self, run_id: str, cwd: str | Path):
+        with self.db:
+            self.db.execute("UPDATE runs SET cwd=? WHERE id=?", (str(cwd), run_id))
+
+    def worker_dirs(self, since: float) -> list[str]:
+        """Folders where room workers of any project ran at some point since `since` (still running or ended later)."""
+        rows = self.db.execute("SELECT DISTINCT cwd FROM runs WHERE cwd IS NOT NULL AND (status='running' OR ended_at>=?)",
+                               (since,)).fetchall()
+        return [r["cwd"] for r in rows]
 
     def running_runs(self, project: str | None) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM runs WHERE project IS ? AND status='running'", (project,))]

@@ -25,9 +25,19 @@ DEFAULTS = {
     "effort": {"director": "high", "auditor": "high"},
     "director_share_max": 0.15,
     "board": {"ready_cap": 15},
+    # `test` is the project's test command. `ci = false` declares the repo has no GitHub CI: housekeeping then merges on
+    # a reviewer's approval that states a passing run of `test` on the PR head (dispatch.tested_on_head).
     "checks": {},
     "roles": {},
+    # A guest project rides on a host project's plan (commonroom#31). `host` is the host's folder: the guest uses the
+    # host's budget gate and is held by the host's room-wide stops. `max` caps the guest's share of autonomous run time
+    # per provider over the trailing `hours`, unless no other project has used that provider for `idle_minutes`.
+    # Empty: the project is not a guest and has the whole allowance (unchanged behaviour).
+    "share": {},
 }
+
+# What a guest takes from its host, so both pass through one budget gate.
+GATE_KEYS = ("budget", "owner", "freshness_seconds")
 
 
 def merge(base: dict, override: dict) -> dict:
@@ -49,14 +59,29 @@ def find_config(start: Path | None = None) -> Path | None:
     return None
 
 
-def load(path: Path | None = None) -> dict:
-    """Return the merged config; `_path` and `_root` locate the project when one was found."""
+def load(path: Path | None = None, follow_host: bool = True) -> dict:
+    """Return the merged config; `_path` and `_root` locate the project when one was found. A guest (`[share] host`)
+    takes the host's budget gate settings, and `_host` names the host project."""
     path = path or find_config()
     if path is None:
         return merge(DEFAULTS, {"_path": None, "_root": None})
     with open(path, "rb") as handle:
         data = tomllib.load(handle)
-    return merge(DEFAULTS, data) | {"_path": str(path), "_root": str(Path(path).parent)}
+    cfg = merge(DEFAULTS, data) | {"_path": str(path), "_root": str(Path(path).parent)}
+    host = (cfg.get("share") or {}).get("host")
+    if host and follow_host:
+        host_path = Path(host) if str(host).endswith(".toml") else Path(host) / "room.toml"
+        if host_path.is_file():
+            host_cfg = load(host_path, follow_host=False)
+            for key in GATE_KEYS:
+                cfg[key] = copy.deepcopy(host_cfg[key])
+            cfg["_host"] = host_cfg["project"].get("name")
+    return cfg
+
+
+def has_ci(cfg: dict) -> bool:
+    """False only when the project declares `[checks] ci = false`."""
+    return bool((cfg.get("checks") or {}).get("ci", True))
 
 
 def budget(config: dict, provider: str) -> dict:

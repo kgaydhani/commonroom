@@ -18,7 +18,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from commonroom import board as board_mod, config as config_mod, gate, usage
+# Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
+# after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
+from commonroom import board as board_mod, config as config_mod, gate, services, usage
 from commonroom.ledger import Ledger
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -113,7 +115,7 @@ class GitHubBoard:
 
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
-                             "--json", "number,state,headRefName,url,commits,comments,statusCheckRollup,mergeable"])
+                             "--json", "number,state,headRefName,headRefOid,url,commits,comments,statusCheckRollup,mergeable"])
 
     def pr_for_branch(self, branch: str) -> dict | None:
         prs = board_mod.gh(["pr", "list", "--repo", self.repo, "--head", branch, "--state", "all",
@@ -152,18 +154,39 @@ class GitHubBoard:
 
 
 # PR state ----------------------------------------------------------------------------------------
-def latest_review(detail: dict) -> str | None:
-    """The newest REVIEW verdict posted after the PR's latest commit, or None if it needs (re)review."""
+def review_comment(detail: dict) -> dict | None:
+    """The comment holding the newest REVIEW verdict posted after the PR's latest commit."""
     commits = detail.get("commits") or []
     last_commit = max((c.get("committedDate") or "" for c in commits), default="")
-    verdict = None
+    found = None
     for c in detail.get("comments") or []:
-        body = (c.get("body") or "").strip()
-        if (c.get("createdAt") or "") >= last_commit:
-            m = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", body)
-            if m:
-                verdict = m.group(1)
-    return verdict
+        if (c.get("createdAt") or "") >= last_commit and re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c.get("body") or ""):
+            found = c
+    return found
+
+
+def latest_review(detail: dict) -> str | None:
+    """The newest REVIEW verdict posted after the PR's latest commit, or None if it needs (re)review."""
+    c = review_comment(detail)
+    return re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c["body"]).group(1) if c else None
+
+
+def head_sha(detail: dict) -> str:
+    commits = detail.get("commits") or []
+    return detail.get("headRefOid") or (commits[-1].get("oid") or "" if commits else "")
+
+
+TESTS_LINE = re.compile(r"^.*\bTESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
+
+
+def tested_on_head(body: str, head: str, command: str | None) -> bool:
+    """A project without CI merges on its reviewer's word, so the approval must state that the reviewer ran the test
+    command on the PR head and it passed: a line `TESTS: PASS <head sha> <command>: <result>`. The sha matters because a
+    commit pushed while the review ran can still predate the review comment."""
+    matches = list(TESTS_LINE.finditer(body or ""))
+    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches):
+        return False
+    return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
 
 
 def checks_state(detail: dict) -> str:
@@ -202,6 +225,7 @@ HEADLESS_NOTE = ("\n\nYou are running headless, in a single turn: the moment you
                  "if your task requires it, in the foreground. Finish your whole job, including the final comment or PR, before you stop. "
                  "The room already checked the budget before starting you: don't run `room.py gate` yourself.")
 CODEX_CANNOT = {"kind:perf"}   # Codex's Windows sandbox can't start Chrome/Edge (gamemirage#121)
+ROOM_ROOT = Path(__file__).resolve().parent.parent   # the Common Room checkout this code runs from
 ORPHAN_AGE = 7200   # a worker never runs past an hour; a run 'running' for longer has lost its dispatcher
 
 
@@ -257,6 +281,9 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
         # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
         runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider)
         mine = [b for b in ledger.open_breakers(project) if ":" not in b["kind"] or b["kind"].endswith(":" + provider)]
+        # A guest also stops when its host's room-wide stops are open (a pause, no_progress). The host's provider
+        # breakers judge the host's own runs; the guest's runs have breakers of their own.
+        mine += [b for b in ledger.open_breakers(cfg["_host"]) if ":" not in b["kind"]] if cfg.get("_host") else []
         breaker, tripped = gate.breaker_verdict(mine, runs, n)
         if tripped and trip:
             ledger.trip(project, f"{tripped['kind']}:{provider}", tripped["detail"], now=now)
@@ -268,7 +295,9 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
                                     f"{time.strftime('%H:%M', time.localtime(cool['until']))}", v.detail)
         if provider == "claude" and v.allowed:
             owner = cfg.get("owner") or {}
-            elsewhere = usage.owner_active(cfg.get("_root"), owner.get("active_minutes", 20), now=now)
+            minutes = owner.get("active_minutes", 20)
+            elsewhere = usage.owner_active(cfg.get("_root"), minutes, now=now,
+                                           exclude=ledger.worker_dirs(now - minutes * 60))
             if elsewhere:
                 # The owner shares this plan: yield to their own sessions. Running workers finish; nothing new
                 # starts once the 5-hour window passes the cap (no "reserve" wording, so in-flight work isn't stopped).
@@ -292,8 +321,43 @@ def choose_provider(spec: list[str], allowed: dict[str, gate.Verdict], exclude: 
     return None
 
 
-def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit: float = 10.0) -> dict | None:
-    """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker."""
+def run_minutes(ledger: Ledger, provider: str, since: float, now: float) -> dict[str | None, float]:
+    """Autonomous model-run minutes per project on one provider, for runs started since `since` (running runs count
+    up to now). Every project on the ledger shares the plan, so this is how the plan's time is split between them."""
+    minutes: dict[str | None, float] = {}
+    for r in ledger.recent_runs(None, limit=5000, autonomous=True, provider=provider):
+        if r["started_at"] < since:
+            break   # newest first
+        minutes[r["project"]] = minutes.get(r["project"], 0.0) + max(0.0, (r["ended_at"] or now) - r["started_at"]) / 60
+    return minutes
+
+
+def share_verdict(ledger: Ledger, cfg: dict, provider: str, now: float) -> gate.Verdict | None:
+    """A guest project (`[share] max`) may start model work while its share of all projects' autonomous run time on
+    this provider over the trailing `hours` is under `max`, or while no other project has used the provider for
+    `idle_minutes` (nobody is waiting on that allowance). None means no objection; housekeeping is never held."""
+    share = cfg.get("share") or {}
+    if share.get("max") is None:
+        return None
+    project, hours = cfg["project"].get("name"), float(share.get("hours", 24))
+    idle = float(share.get("idle_minutes", 60))
+    others_last = max((r["ended_at"] or now for r in ledger.recent_runs(None, limit=500, autonomous=True, provider=provider)
+                       if r["project"] != project), default=0.0)
+    if idle and now - others_last >= idle * 60:
+        return None
+    minutes = run_minutes(ledger, provider, now - hours * 3600, now)
+    total, mine = sum(minutes.values()), minutes.get(project, 0.0)
+    if total <= 0 or mine / total < float(share["max"]):
+        return None
+    host = cfg.get("_host") or "the other projects"
+    return gate.Verdict(False, f"{provider}: {project} has had its share ({mine / total:.0%} of autonomous {provider} time in "
+                               f"{hours:g}h, cap {float(share['max']):.0%}); {host} goes first")
+
+
+def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit: float = 10.0,
+                   attribute: bool = False) -> dict | None:
+    """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker.
+    With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
     if not any(r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge" for r in runs):
@@ -305,6 +369,9 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
         key = round((r["resets_at"] or 0) / 3600)
         periods.setdefault(key, [r["used_pct"], r["used_pct"]])[1] = r["used_pct"]
     spent = sum(max(0.0, last - first) for first, last in periods.values())
+    if attribute:
+        minutes = run_minutes(ledger, "claude", since, now)
+        spent *= minutes.get(project, 0.0) / (sum(minutes.values()) or 1.0)
     merged = sum(1 for r in runs if r["role"] == "merge")
     if spent > spend_limit and merged == 0:
         return {"kind": "no_progress", "detail": f"{spent:.1f}% of the weekly Claude allowance spent in 24h of room work with nothing merged"}
@@ -335,6 +402,22 @@ class Dispatcher:
         self.roles = cfg.get("roles") or {}
         self.log_dir = Path(ledger.path).parent / "logs" / (self.project or "default")
         self._provider = None
+        self.ci = config_mod.has_ci(cfg)
+        self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
+
+    def worktree_base(self) -> Path:
+        """Where worker worktrees go: `[project] worktrees`, or the project's .claude/worktrees."""
+        configured = self.cfg["project"].get("worktrees")
+        return Path(configured) if configured else self.root / ".claude" / "worktrees"
+
+    def allowed(self, now: float) -> dict[str, gate.Verdict]:
+        """The shared budget gate and breakers, then this project's share of the plan if it is a guest."""
+        result = verdicts(self.ledger, self.cfg, now, trip=True)
+        for provider, v in result.items():
+            held = share_verdict(self.ledger, self.cfg, provider, now) if v.allowed else None
+            if held:
+                result[provider] = gate.Verdict(False, held.reason, v.detail)
+        return result
 
     # Housekeeping (no model) -----------------------------------------------------------------------
     def housekeeping(self) -> list[str]:
@@ -354,6 +437,7 @@ class Dispatcher:
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
                 actions.append(f"#{n} was in review with no open PR; back to ready")
+        merged_here = False
         for pr in prs:
             m = BRANCH.match(pr["headRefName"])
             if not m:
@@ -371,13 +455,21 @@ class Dispatcher:
                     actions.append(f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder")
                 continue
             # Red CI: rerun what never really ran; send real failures back to the builder (never let a PR sit red).
-            if checks == "red" and not self.dry_run:
+            if self.ci and checks == "red" and not self.dry_run:
                 actions += self.handle_red_ci(pr, detail, issue_no, everything)
                 continue
             # Research reports (docs only) skip review: CI green is enough.
-            if "review:skip" in labels(pr) and checks == "green":
+            if self.ci and "review:skip" in labels(pr) and checks == "green":
                 review = "APPROVE"
-            if review == "APPROVE" and checks == "green":
+            if self.ci:
+                mergeable = review == "APPROVE" and checks == "green"
+            else:
+                # No CI: the reviewer's approval is the test, so it must state a passing run on this head.
+                mergeable = review == "APPROVE" and self.tested(detail)
+                if mergeable and merged_here:
+                    actions.append(f"PR #{pr['number']} is approved; it merges next pass (no CI: main moves one merge at a time)")
+                    continue
+            if mergeable:
                 if not self.dry_run:
                     try:
                         self.board.merge(pr["number"])
@@ -388,6 +480,7 @@ class Dispatcher:
                     self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
                 actions.append(f"merged PR #{pr['number']} (issue #{issue_no})")
                 state[issue_no] = "CLOSED"
+                merged_here = True
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
                 if issue and "status:ready" not in labels(issue):
@@ -395,6 +488,7 @@ class Dispatcher:
                     actions.append(f"PR #{pr['number']} needs changes; issue #{issue_no} back to ready")
         if any(a.startswith("merged") for a in actions) and not self.dry_run:
             actions += self.deploy()
+            actions += self.update_live_checkout()
         for issue in everything:
             names = labels(issue)
             if issue["state"] != "OPEN" or "status:blocked" not in names or names & {"needs:director", "owner:human"}:
@@ -426,13 +520,46 @@ class Dispatcher:
                 with log_path.open("a", encoding="utf-8") as log:
                     log.write(f"--- attempt {attempt}, exit {done.returncode}\n{done.stdout}\n{done.stderr}\n")
                 if done.returncode == 0:
-                    from commonroom import services
                     restarted = services.restart_after_deploy(self.cfg, log_dir)
                     return [f"deploy ok{' (after a retry)' if attempt == 2 else ''}" + (f"; {', '.join(restarted)}" if restarted else "")]
             tail = (done.stdout + done.stderr).strip().splitlines()[-1:] or [""]
             return [f"deploy FAILED twice: {tail[0][:120]} (full log: {log_path})"]
         except Exception as exc:
             return [f"deploy FAILED: {type(exc).__name__}: {str(exc)[:160]}"]
+
+    def is_room_repo(self) -> bool:
+        """Is this project the Common Room checkout this code is running from?"""
+        if not self.root:
+            return False
+        return os.path.normcase(str(self.root.resolve())) == os.path.normcase(str(Path(self.room_root).resolve()))
+
+    def update_live_checkout(self) -> list[str]:
+        """After merging the room's own PRs, fast-forward the checkout the room runs from (`git pull --ff-only`; never
+        a reset or a force). Safe while room processes run: python processes keep the modules they loaded at start
+        (dispatch imports every room module up front), workers never run from this checkout, and heartbeat.cmd is one
+        block that cmd.exe reads whole before running. New code takes effect as each process restarts."""
+        if not self.is_room_repo():
+            return []
+        try:
+            branch = git(["rev-parse", "--abbrev-ref", "HEAD"], self.root)
+            if branch != "main":
+                return [f"live checkout not updated: it is on {branch}, not main"]
+            before = git(["rev-parse", "--short", "HEAD"], self.root)
+            git(["pull", "--ff-only", "--quiet"], self.root)
+            after = git(["rev-parse", "--short", "HEAD"], self.root)
+            return [f"live checkout fast-forwarded {before}..{after}; room processes pick it up when they restart"]
+        except Exception as exc:
+            return [f"live checkout update FAILED, left as it was: {str(exc)[:160]}"]
+
+    def tested(self, detail: dict) -> bool:
+        """No CI: the approving review states a passing run of the project's test command on the PR head."""
+        c = review_comment(detail)
+        return bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test"))
+
+    def needs_review(self, detail: dict) -> bool:
+        if not self.ci and latest_review(detail) == "APPROVE" and not self.tested(detail):
+            return True   # an approval that doesn't state a passing test run on this head can't merge: review again
+        return latest_review(detail) is None and (not self.ci or checks_state(detail) != "red")
 
     def handle_red_ci(self, pr: dict, detail: dict, issue_no: int, everything: list[dict]) -> list[str]:
         failed = failed_checks(detail)
@@ -530,10 +657,11 @@ class Dispatcher:
         running = self.ledger.running_tasks(self.project)
         for pr in self.board.open_prs():
             m = BRANCH.match(pr["headRefName"])
-            if not m or "review:skip" in labels(pr) or f"PR #{pr['number']}" in running:
+            # Without CI nothing merges unreviewed, so `review:skip` only applies where CI checks the PR.
+            if not m or ("review:skip" in labels(pr) and self.ci) or f"PR #{pr['number']}" in running:
                 continue
             detail = self.board.pr_detail(pr["number"])
-            if latest_review(detail) is None and checks_state(detail) != "red":
+            if self.needs_review(detail):
                 if issue_labels is None:
                     issue_labels = {i["number"]: labels(i) for i in self.board.all_issues()}
                 # Codex (the smaller subscription) is spent where independence matters most: high-risk changes.
@@ -747,6 +875,7 @@ class Dispatcher:
         try:
             git(["fetch", "--quiet", "origin"], self.root)
             worktree, branch = self.prepare_worktree(job, provider)
+            self.ledger.set_cwd(run_id, worktree)   # so no project mistakes this worker's sessions for the owner
         except Exception as exc:
             self.ledger.finish_run(run_id, "room-error", [], note=f"{type(exc).__name__}: {exc}"[:800])
             raise
@@ -904,6 +1033,8 @@ class Dispatcher:
                      and re.search(r"REVIEW:\s*(APPROVE|CHANGES)", c.get("body") or "")]
             if fresh:
                 verdict = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", fresh[-1]["body"]).group(1)
+                if verdict == "APPROVE" and not self.ci and not self.tested(detail):
+                    return "failed", [], "approval without a `TESTS: PASS <head sha> <command>` line: without CI it can't merge"
                 return "done", [{"kind": "review", "ref": f"PR #{job.pr['number']} {verdict}"}], tail
             return "failed", [], "; ".join(result.errors[-3:]) or "no REVIEW comment posted"
         m = ACTIONS_LINE.search(result.final_text or "")
@@ -962,10 +1093,17 @@ class Dispatcher:
         if job.kind == "review":
             p = job.pr
             m = BRANCH.match(p["headRefName"])
+            test = (self.cfg.get("checks") or {}).get("test") or "the project's tests"
+            no_ci = ("" if self.ci else
+                     f"\nThis repo has no CI: your approval is what merges this PR, so the test run is yours. Run `{test}` "
+                     f"here, on the PR head, and approve only if it passes. Put this line in your comment, with the short "
+                     f"sha from `git rev-parse --short HEAD`: `TESTS: PASS <sha> {test}: <the result line, e.g. Ran 64 "
+                     f"tests ... OK>` (or `TESTS: FAIL <sha> {test}: <what failed>` with REVIEW: CHANGES). An approval "
+                     f"without that line, or for an older commit, does not merge.")
             return (f"Review PR #{p['number']} in {repo} (it implements issue #{m.group(1) if m else '?'}). "
                     f"The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment "
                     f"with `gh pr comment {p['number']} --repo {repo} --body ...` that starts with `[agent:reviewer] REVIEW: APPROVE` "
-                    f"or `[agent:reviewer] REVIEW: CHANGES`.")
+                    f"or `[agent:reviewer] REVIEW: CHANGES`.{no_ci}")
         if job.kind == "audit":
             hours = (self.cfg.get("audit") or {}).get("every_hours", 1)
             room_py = Path(__file__).resolve().parent.parent / "room.py"
@@ -983,7 +1121,7 @@ class Dispatcher:
 
     # Worktrees -------------------------------------------------------------------------------------
     def prepare_worktree(self, job: Job, provider: str | None = None) -> tuple[Path, str | None]:
-        base = self.root / ".claude" / "worktrees"
+        base = self.worktree_base()
         base.mkdir(parents=True, exist_ok=True)
         # Codex's sandbox can only write inside its folder, and a worktree keeps its git metadata in the main
         # repo's .git, so Codex gets a self-contained clone (objects borrowed from the main repo via --reference).
@@ -1100,7 +1238,7 @@ class Dispatcher:
             n = int(m.group(1))
             issue = next((i for i in self.board.open_issues(None) if i["number"] == n), None)
             if self.root:
-                base = self.root / ".claude" / "worktrees"
+                base = self.worktree_base()
                 for path in [*base.glob(f"i{n}-*"), *base.glob(f"codex-i{n}-*")]:
                     branch = path.name.removeprefix("codex-")
                     if issue:
@@ -1120,11 +1258,11 @@ class Dispatcher:
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()
-        trip = check_progress(self.ledger, self.project, now)
+        trip = check_progress(self.ledger, self.project, now, attribute=(self.cfg.get("share") or {}).get("max") is not None)
         if trip:
             self.ledger.trip(self.project, trip["kind"], trip["detail"], now=now)
             self.escalate_breaker(trip)
-        allowed = verdicts(self.ledger, self.cfg, now, trip=True)
+        allowed = self.allowed(now)
         report["verdicts"] = {p: v.reason for p, v in allowed.items()}
         picked = self.pick(allowed)
         if not picked:
