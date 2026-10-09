@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, usage
-from commonroom.dispatch import Dispatcher, verdicts
+from commonroom.dispatch import Dispatcher, runnable_roles, verdicts
 from commonroom.ledger import Ledger
 
 PROVIDERS = ("claude", "codex")
@@ -353,9 +353,11 @@ def digest(cfg: dict, hours: float) -> dict:
         r["minutes"] = round(((r.get("ended_at") or now) - r["started_at"]) / 60, 1)
         r["weekly_delta"] = (round(r["weekly_end"] - r["weekly_start"], 2)
                              if r.get("weekly_end") is not None and r.get("weekly_start") is not None else None)
-    last_role = {}
+    # Every runnable role is listed, a never-run one as None, so a neglected role shows (commonroom#4).
+    last_role = dict.fromkeys(runnable_roles(cfg))
     for r in ledger.recent_runs(project, limit=500):
-        last_role.setdefault(r["role"], r["started_at"])
+        if last_role.get(r["role"]) is None:
+            last_role[r["role"]] = r["started_at"]
     result = {
         "window_hours": hours, "now": now, "project": cfg["project"], "goal": goal,
         "runs": runs,
@@ -369,7 +371,7 @@ def digest(cfg: dict, hours: float) -> dict:
                     "stopped_by_room": len([r for r in runs if r["status"] == "stopped"]),
                     "minutes_lost_to_stops": round(sum(r["minutes"] for r in runs if r["status"] == "stopped"), 1)},
         "efficiency": efficiency(ledger, project, since, now),
-        "hours_since_last": {role: round((now - t) / 3600, 1) for role, t in last_role.items()},
+        "hours_since_last": {role: round((now - t) / 3600, 1) if t is not None else None for role, t in last_role.items()},
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
         "breakers": ledger.open_breakers(project),
     }

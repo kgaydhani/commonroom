@@ -36,6 +36,9 @@ class FakeBoard:
     def comment(self, n, body):
         self.comments = getattr(self, "comments", []) + [(n, body)]
 
+    def close_issue(self, n, body):
+        self.closed = getattr(self, "closed", []) + [(n, body)]
+
     # Merge safety (commonroom#19): by default every branch contains main and main's CI isn't red.
     behind, main_runs = {}, []
 
@@ -629,6 +632,86 @@ class WithLedger(unittest.TestCase):
         self.ledger.finish_run(run, "done")
         job, _, _ = d.pick(allowed)
         self.assertEqual(job.kind, "build")  # within the cooldown the queue carries on
+
+    def agents(self, *names):
+        folder = Path(self.tmp.name) / ".claude" / "agents"
+        folder.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (folder / f"{name}.md").write_text(f"---\nname: {name}\n---\nYou are the {name}.\n", encoding="utf-8")
+
+    def test_a_configured_role_runs_on_demand(self):
+        self.agents("builder", "playtester")
+        cfg = cfg_with(self.tmp.name); cfg["roles"]["playtester"] = ["claude:sonnet"]
+        issues = [issue(80, ["status:ready", "role:playtester"]), issue(81, ["status:ready", "role:builder"]),
+                  issue(82, ["status:ready", "role:playtester"], milestone="M1")]   # outside the goal: never picked
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        job, provider, model = d.pick(allowed)
+        self.assertEqual((job.kind, job.role, job.issue["number"], provider, model), ("role", "playtester", 80, "claude", "sonnet"))
+        self.ledger.start_run("t", "#80", "playtester", "claude")   # claimed: the builder task comes next
+        job, _, _ = d.pick(allowed)
+        self.assertEqual((job.kind, job.role, job.issue["number"]), ("build", "builder", 81))
+        prompt = d.prompt(dispatch.Job("role", "playtester", issue=issues[0]), None)
+        for part in ("issue #80", "[agent:playtester]", "kind:bug", "no code PR", "`STATUS: DONE` or `STATUS: BLOCKED`"):
+            self.assertIn(part, prompt)
+
+    def test_an_unconfigured_role_is_skipped_and_holds_nothing_up(self):
+        self.agents("builder", "playtester", "director")
+        issues = [issue(80, ["status:ready", "role:playtester"]), issue(81, ["status:ready", "role:art-tech"]),
+                  issue(82, ["status:ready", "role:director"]), issue(83, ["status:ready", "role:builder"])]
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        # playtester has an agent file but no [roles] entry; art-tech neither; director is never on demand.
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        job, _, _ = d.pick(allowed)
+        self.assertEqual((job.kind, job.role, job.issue["number"]), ("build", "builder", 83))
+        # A [roles] entry without an agent file isn't runnable either.
+        cfg = cfg_with(self.tmp.name); cfg["roles"]["art-tech"] = ["claude:sonnet"]
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertEqual(d.pick(allowed)[0].issue["number"], 83)
+
+    def test_builder_and_scout_picks_are_unchanged_by_on_demand_roles(self):
+        # gamemirage today: analyst is configured, art-tech has an agent file but no [roles] entry, and the board
+        # carries role:director and role:art-tech labels. Builds and research go exactly as before.
+        self.agents("builder", "scout", "director", "analyst", "art-tech")
+        cfg = cfg_with(self.tmp.name); cfg["roles"]["analyst"] = ["claude:haiku"]; cfg["roles"]["codex_parallel_builds"] = False
+        issues = [issue(50, ["status:ready", "role:art-tech"]), issue(51, ["status:ready", "role:director"]),
+                  issue(60, ["status:ready", "role:builder"]), issue(61, ["status:ready", "role:scout"], milestone="M1")]
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        self.assertEqual(d.ready_on_demand(issues), [])
+        job, _, _ = d.pick(allowed)
+        self.assertEqual((job.kind, job.role, job.issue["number"]), ("build", "scout", 61))
+        run = self.ledger.start_run("t", "#61", "scout", "claude"); self.ledger.finish_run(run, "done", outputs=[{"kind": "pr", "ref": "PR #70"}])
+        job, _, _ = d.pick(allowed)
+        self.assertEqual((job.kind, job.role, job.issue["number"]), ("build", "builder", 60))
+
+    def test_an_on_demand_run_closes_its_issue_with_the_summary(self):
+        board = FakeBoard([issue(80, ["status:in-progress", "role:playtester"])])
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        job = dispatch.Job("role", "playtester", issue=board.issues[0], reason="ready")
+        status, outputs, _ = d.assess(job, None, None, "", workers.WorkerResult(ok=True, final_text="Looks right.\nSTATUS: DONE"))
+        self.assertEqual((status, outputs), ("done", [{"kind": "playtester", "ref": "#80 closed"}]))
+        self.assertEqual(len(board.closed), 1)
+        self.assertIn("Looks right.", board.closed[0][1]); self.assertNotIn("STATUS", board.closed[0][1])
+        status, _, _ = d.assess(job, None, None, "", workers.WorkerResult(ok=True, final_text="No build.\nSTATUS: BLOCKED"))
+        self.assertEqual(status, "blocked")
+        self.assertIn((80, ("status:blocked", "needs:director"), ("status:in-progress",)), board.label_calls)
+        status, _, _ = d.assess(job, None, None, "", workers.WorkerResult(ok=False, errors=["crashed"]))
+        self.assertEqual(status, "failed"); self.assertEqual(len(board.closed), 1)
+        self.assertIn((80, ("status:ready",), ("status:in-progress",)), board.label_calls)
+
+    def test_digest_lists_every_configured_role(self):
+        from commonroom import cli
+        self.agents("builder", "director", "playtester")
+        cfg = cfg_with(self.tmp.name); cfg["project"]["repo"] = None; cfg["roles"]["playtester"] = ["claude:sonnet"]
+        run = self.ledger.start_run("t", "#1", "builder", "claude", now=time.time() - 7200); self.ledger.finish_run(run, "done")
+        orig = cli.Ledger
+        cli.Ledger = lambda: Ledger(self.ledger.path)
+        try:
+            since = cli.digest(cfg, 1)["hours_since_last"]
+        finally:
+            cli.Ledger = orig
+        self.assertEqual(since, {"builder": 2.0, "director": None, "playtester": None})
 
     def test_room_errors_rest_the_task_and_the_third_goes_to_the_director(self):
         # commonroom#9: one leftover folder became five identical room-errors on PR #124 in two minutes.

@@ -80,6 +80,12 @@ When the owner is away, a scheduled heartbeat runs `room run`. It dispatches rea
 | scout | Claude Haiku | Researches tools and approaches, proposes experiments, never edits code |
 | analyst | Claude Haiku | Summarises test and simulation output |
 
+Director, builder, reviewer, scout and auditor have their own triggers. Any other role with a `[roles]` entry and an agent
+file `.claude/agents/<name>.md` (playtester, analyst...) runs on demand: an issue in the goal milestone labelled
+`role:<name>` and `status:ready` queues with the builds by priority, runs that agent in a detached worktree, and is closed
+with the agent's report when it ends with `STATUS: DONE` (commonroom#4). The digest's `hours_since_last` lists every such
+role, a never-run one as `null`.
+
 ## Roadmap
 - **v2.0:** ledger, usage readers, gate, CLI.
 - **v2.1:** dispatcher, worker runner, issue comments, Codex reviewer.
