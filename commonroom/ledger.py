@@ -176,6 +176,12 @@ class Ledger:
             result.append(row)
         return result
 
+    def worker_dirs(self, since: float) -> list[str]:
+        """Folders where room workers of any project ran at some point since `since` (still running or ended later)."""
+        rows = self.db.execute("SELECT DISTINCT worktree FROM runs WHERE worktree IS NOT NULL AND (status='running' OR ended_at>=?)",
+                               (since,)).fetchall()
+        return [r["worktree"] for r in rows]
+
     def running_runs(self, project: str | None) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM runs WHERE project IS ? AND status='running'", (project,))]
 

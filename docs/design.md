@@ -44,6 +44,19 @@ In the room channel:
 - **Suggestions:** open an issue labelled `kind:suggestion`. The director triages each one: accepted (it becomes a task with acceptance criteria), rejected (with reasons), or parked (with what would change the answer).
 - **Playtests:** open an issue labelled `kind:playtest` with what you did and what felt wrong. The director turns those into tasks.
 
+## The room serves itself
+Common Room is a project of its own (commonroom#31). Its `room.toml` points at `kgaydhani/commonroom` and the milestone "Room v3: the room improves itself", and `AGENTS.md` and `.claude/agents/` tell its workers how to work on this repo. The heartbeat starts one Claude dispatcher for it next to the game's, with its own lock (`commonroom-claude.lock`), its own logs (`heartbeat-commonroom-claude.log`, `logs/commonroom/`) and its own worktrees under `D:/Dev/commonroom-wt/room/`. Its workers never touch the live checkout the room runs from.
+
+- **Guest on the game's plan (`[share]`).** One ledger, one meter. The guest reads its budget gate (reserves, pace, burn cap, owner yield) from the host's `room.toml`, so the two can't drift apart. The host's room-wide stops (owner or auditor pause, no_progress) hold the guest too. The guest's model runs take at most `max` (15%) of all projects' autonomous run time per provider over the trailing `hours` (24). The exception is when no other project has used that provider for `idle_minutes` (60): then nobody is waiting on that allowance. The host is never capped by a guest. A guest's progress guarantee charges it only its share of the plan-wide spend.
+- **Room workers are not the owner.** Every run records the folder its worker ran in. When a project checks whether the owner is using Claude elsewhere, it ignores those folders, so neither project mistakes the other's workers for the owner.
+- **Merging without CI (`[checks] ci = false`).** Housekeeping merges on the newest `REVIEW: APPROVE` posted after the last commit, but only when that approval carries `TESTS: PASS <head sha> <test command>: <result>`. The sha has to match the PR head, because a commit pushed during a review can still predate the review comment. An approval without that line goes back for review, and the review run counts as failed, so the no-output breaker stops a loop. `review:skip` doesn't apply without CI. As for every project, main moves one merge per housekeeping pass, and only a branch that is up to date with main merges (commonroom#19). When the room merges main into a branch, the branch gets a new head, so the merged tree is reviewed and tested again before it lands.
+- **Updating the live checkout.** After merging into the room's own repo, housekeeping runs `git pull --ff-only` in the checkout the room runs from. It never resets or forces: a diverged, dirty-conflicting or non-`main` checkout is left alone and reported. This is safe with room processes running:
+  - Running python processes keep the code they loaded. Room modules are imported at start, never inside functions, and a test enforces that.
+  - Workers never run from the live checkout.
+  - `heartbeat.cmd` is one block that cmd.exe reads whole before running any of it.
+
+  Each process picks up new code when it next starts. The until-idle dispatchers restart on the next heartbeat after they go idle.
+
 ## Autonomy and the progress guarantee
 When the owner is away, a scheduled heartbeat runs `room run`. It dispatches ready tasks while the gate allows, and it triggers the director only for the events listed under Parts. One part of autonomous time is reserved for improving the room itself: a daily review of the ledger (spend versus output, failure patterns, slow steps) that can produce at most one improvement PR to this repo.
 
