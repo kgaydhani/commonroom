@@ -356,11 +356,13 @@ class Dispatcher:
                 actions.append(f"#{n} was in review with no open PR; back to ready")
         for pr in prs:
             m = BRANCH.match(pr["headRefName"])
-            if not m:
+            # PRs on other branches (audit-*, director-*, moonshot/*) have no issue to send back to, but `review:skip`
+            # promises a merge once CI is green, whatever the branch (commonroom#22). Others are their author's to land.
+            if not m and "review:skip" not in labels(pr):
                 continue
             detail = self.board.pr_detail(pr["number"])
             review, checks = latest_review(detail), checks_state(detail)
-            issue_no = int(m.group(1))
+            issue_no = int(m.group(1)) if m else None
             # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
             if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
@@ -384,10 +386,11 @@ class Dispatcher:
                     except Exception as exc:  # e.g. another dispatcher merged it a moment ago
                         actions.append(f"merge of PR #{pr['number']} skipped: {str(exc)[:120]}")
                         continue
-                    run = self.ledger.start_run(self.project, f"#{issue_no}", "merge", "none")
+                    run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{pr['number']}", "merge", "none")
                     self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
-                actions.append(f"merged PR #{pr['number']} (issue #{issue_no})")
-                state[issue_no] = "CLOSED"
+                actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
+                if issue_no:
+                    state[issue_no] = "CLOSED"
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
                 if issue and "status:ready" not in labels(issue):
