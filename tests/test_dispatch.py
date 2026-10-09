@@ -53,6 +53,22 @@ class PureLogic(unittest.TestCase):
         body = "Depends on #1 and #2.\nSee also #9.\nBlocked by #12 (owner)."
         self.assertEqual(dispatch.dependencies(body), {1, 2, 12})
 
+    def test_dependencies_stop_at_the_end_of_the_list(self):
+        # Real gamemirage briefs: prose and asides after the list are not dependencies (commonroom#12).
+        cases = {
+            "Depends on #89. Performance is checked separately in #132 (D3), so Codex can take this one (it renders).": {89},
+            "Depends on #279 (PR #369) and the opponent-AI harvest.": {279},
+            "Depends on #127 (C0) and #128 (L2). Headless and data only; Codex can take it.": {127, 128},
+            "Depends on: #180 (PR #238).": {180},
+            "Depends on #8, #9 and #7.": {7, 8, 9},
+            "Depends on #1. Reuse the rendering approach from #4.": {1},
+            "Depends on #165, #180, #65, #162": {65, 162, 165, 180},
+            "Depends on issues #3 & #4; see #5": {3, 4},
+            "Depends on the art pass in #40": set(),
+        }
+        for line, expected in cases.items():
+            self.assertEqual(dispatch.dependencies(line), expected, line)
+
     def test_review_must_postdate_latest_commit(self):
         detail = {"commits": [{"committedDate": "2026-10-05T12:00:00Z"}],
                   "comments": [{"createdAt": "2026-10-05T11:00:00Z", "body": "REVIEW: APPROVE"}]}
@@ -109,6 +125,19 @@ class WithLedger(unittest.TestCase):
         unblocked = {call[0] for call in fake.label_calls if "status:ready" in call[1]}
         self.assertEqual(unblocked, {2, 3})  # 3 unblocks because the merge closed #4; 5 waits for the director
         self.assertTrue(any("merged PR #7" in a for a in actions))
+
+    def test_prose_after_the_dependency_list_does_not_keep_an_issue_blocked(self):
+        # gamemirage#131 sat blocked for an hour: #132, named in the prose, is open and depends back on #131.
+        issues = [issue(89, [], state="CLOSED"),
+                  issue(131, ["status:blocked"], body="Depends on #89. Performance is checked separately in #132 (D3), "
+                                                      "so Codex can take this one (it renders)."),
+                  issue(132, ["status:blocked"], body="Depends on #131 (D2).")]
+        fake = FakeBoard(issues)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertIn((131, ("status:ready",), ("status:blocked",)), fake.label_calls)
+        self.assertFalse(any(call[0] == 132 for call in fake.label_calls))   # #131 is still open
+        self.assertIn("unblocked #131 (dependencies [89] closed)", actions)
 
     def test_director_not_woken_for_work_waiting_on_owner(self):
         issues = [issue(11, ["status:blocked", "role:builder"], body="Blocked by #12"), issue(12, ["owner:human"])]
