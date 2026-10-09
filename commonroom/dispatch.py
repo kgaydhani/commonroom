@@ -399,8 +399,7 @@ def ci_infra_only(detail: dict) -> bool:
 
 HEADLESS_NOTE = ("\n\nYou are running headless, in a single turn: the moment you stop, the session ends and nobody wakes you "
                  "again. Never background a command and wait for it, and don't use Monitor. Run commands in the foreground "
-                 "(the Bash tool allows up to 600000 ms). The slow suite (`tools/test_slow.sh`) runs in CI; run it locally only "
-                 "if your task requires it, in the foreground. Finish your whole job, including the final comment or PR, before you stop. "
+                 "(the Bash tool allows up to 600000 ms). Finish your whole job, including the final comment or PR, before you stop. "
                  "The room already checked the budget before starting you: don't run `room.py gate` yourself. Stop only processes you started, by PID.")
 CODEX_CANNOT = {"kind:perf"}   # Codex's Windows sandbox can't start Chrome/Edge (gamemirage#121)
 ROOM_ROOT = Path(__file__).resolve().parent.parent   # the Common Room checkout this code runs from
@@ -934,9 +933,10 @@ class Dispatcher:
             self.board.comment(issue_no, f"CI is red again on PR #{pr['number']} ({names}) after {bounces} fixes. Escalating to the director.")
             return [f"PR #{pr['number']} still red after {bounces} fixes; #{issue_no} escalated"]
         self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
+        test = (self.cfg.get("checks") or {}).get("test") or "the project's tests"
         self.board.comment(issue_no, f"CI is red on PR #{pr['number']}: {names}. Read the failure with "
                                      f"`gh pr checks {pr['number']}` and `gh run view <run id> --log-failed`, fix it on the same "
-                                     f"branch, and run `bash tools/test.sh` before pushing.")
+                                     f"branch, and run `{test}` before pushing.")
         return [f"PR #{pr['number']} CI red ({names}); #{issue_no} back to its builder"]
 
     # Choosing work ---------------------------------------------------------------------------------
@@ -1281,7 +1281,7 @@ class Dispatcher:
                 labelled = True
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
-            result = run_worker(provider, role, self.prompt(job, branch) + self.why() + HEADLESS_NOTE, worktree, self.ledger, self.log_dir,
+            result = run_worker(provider, role, self.prompt(job, branch) + self.why() + self.headless_note(), worktree, self.ledger, self.log_dir,
                                 model=model, effort=effort,
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
@@ -1486,6 +1486,19 @@ class Dispatcher:
                 outputs.insert(0, {"kind": "report", "ref": "status report"})
         return ("done" if outputs else "failed"), outputs, tail
 
+    def prompt_text(self, key: str) -> str:
+        """Project-specific guidance from room.toml `[prompts]` (commonroom#45); empty when the key isn't set."""
+        return str((self.cfg.get("prompts") or {}).get(key) or "").strip()
+
+    def headless_note(self) -> str:
+        extra = self.prompt_text("headless")
+        return HEADLESS_NOTE + (f" {extra}" if extra else "")
+
+    def codex_note(self) -> str:
+        """The project's Codex sandbox and tooling note (test command, engine, rendering), ending in a space."""
+        extra = self.prompt_text("codex")
+        return f"{extra} " if extra else ""
+
     def prompt(self, job: Job, branch: str | None) -> str:
         repo = self.cfg["project"]["repo"]
         if job.kind == "build":
@@ -1517,14 +1530,7 @@ class Dispatcher:
                         f"You are on branch `{branch}` in a fresh checkout of origin/main. Follow your builder instructions and "
                         f"AGENTS.md, **except for git**: your sandbox keeps .git read-only, so do not commit, push or open a PR. "
                         f"Leave your changes in the working tree, and Common Room will commit, push and open the PR for you. "
-                        f"Git Bash can't start in your sandbox (an upstream Codex limitation), so run the tests with "
-                        f"`python tools/test.py` if it exists, otherwise call Godot directly: "
-                        f"`\"$GODOT\" --headless --path game -s res://tests/run_tests.gd` (GODOT is "
-                        f"D:/Dev/tools/godot/Godot_v4.7.2-stable_win64_console.exe). No browser (Chrome, Edge, Playwright) can start in your "
-                        f"sandbox; the web export and serve.py do work. Rendering does work: for visual checks use "
-                        f"`--write-movie` off-screen (`--position -10000,-10000`), create the output folder first (Godot won't, and "
-                        f"silently writes nothing), use absolute paths inside your checkout, and ignore `user://` log errors. Look at "
-                        f"the frames you render. If something in the sandbox is impossible, finish the rest and say what's left; your "
+                        f"{self.codex_note()}If something in the sandbox is impossible, finish the rest and say what's left; your "
                         f"partial work is kept, not discarded.{extra}\n"
                         f"Finish with: a line `PR_TITLE: <short title>`, then `PR_BODY:` followed by each acceptance criterion and "
                         f"how you verified it, plus anything unverified. Make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
@@ -1553,7 +1559,8 @@ class Dispatcher:
             return (f"Review PR #{p['number']} in {repo} (it implements issue #{m.group(1) if m else '?'}). "
                     f"The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment "
                     f"with `gh pr comment {p['number']} --repo {repo} --body ...` that starts with `[agent:reviewer] REVIEW: APPROVE` "
-                    f"or `[agent:reviewer] REVIEW: CHANGES`.{no_ci}")
+                    f"or `[agent:reviewer] REVIEW: CHANGES`.{no_ci}"
+                    + (f"\n{self.codex_note().rstrip()}" if self._provider == "codex" and self.codex_note() else ""))
         if job.kind == "audit":
             hours = (self.cfg.get("audit") or {}).get("every_hours", 1)
             room_py = Path(__file__).resolve().parent.parent / "room.py"
