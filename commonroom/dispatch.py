@@ -38,6 +38,9 @@ OWNER_COOLDOWN = 300
 ROOM_ERROR_BACKOFF = 600   # a task whose last run was a room-error rests this long, doubling with each one in a row...
 ROOM_ERROR_ESCALATE = 3    # ...and the third in a row goes to the director (commonroom#9)
 SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
+# Roles the room dispatches through their own triggers. Any other role with a `[roles]` entry and an agent file runs on
+# demand from a `role:<name>` + `status:ready` issue (commonroom#4).
+BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
 
 
 def priority(issue: dict) -> tuple:
@@ -67,6 +70,13 @@ def dependencies(body: str | None) -> set[int]:
                 deps.add(int(m.group(1)))
             pos = m.end()
     return deps
+
+
+def runnable_roles(cfg: dict) -> set[str]:
+    """Roles with a `[roles]` entry (a provider list) and an agent file `.claude/agents/<name>.md` in the project."""
+    root = cfg.get("_root")
+    return {name for name, spec in (cfg.get("roles") or {}).items()
+            if isinstance(spec, list) and root and (Path(root) / ".claude" / "agents" / f"{name}.md").is_file()}
 
 
 def find_bash() -> str | None:
@@ -127,6 +137,9 @@ class GitHubBoard:
 
     def comment(self, number: int, body: str):
         board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
+
+    def close_issue(self, number: int, body: str):
+        board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--comment", f"{MARK} {body}"])
 
     def open_prs(self) -> list[dict]:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
@@ -869,6 +882,20 @@ class Dispatcher:
                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                      or any(l.startswith("provider:") for l in labels(i)))]
 
+    def ready_on_demand(self, open_now: list[dict]) -> list[tuple[dict, str]]:
+        """Ready `role:<name>` issues in the goal milestone whose role is configured and has an agent file, each with
+        that role. An issue for a role that isn't configured is skipped and holds nothing else up."""
+        roles = runnable_roles(self.cfg) - BUILT_IN_ROLES
+        running = self.busy_tasks()
+        found = []
+        for i in open_now:
+            names = labels(i)
+            role = next((l.split(":", 1)[1] for l in sorted(names) if l.startswith("role:") and l.split(":", 1)[1] in roles), None)
+            if (role and "status:ready" in names and "owner:human" not in names and f"#{i['number']}" not in running
+                    and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone)):
+                found.append((i, role))
+        return found
+
     def build_spec(self, issue: dict) -> list[str]:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         # Merging main needs `git fetch`, which Codex's sandbox can't do, and little judgement: the cheap Claude model
@@ -988,7 +1015,14 @@ class Dispatcher:
             take = routine[0] if (routine and claude_busy) else (routine[1] if len(routine) >= 2 else None)
             if take and allowed.get("codex") and allowed["codex"].allowed:
                 return Job("build", "builder", issue=take, reason=f"#{take['number']} is ready (parallel Codex build)"), "codex", None
-        for issue in sorted(ready, key=priority):
+        # On-demand roles (playtester, analyst...) queue with the builds by priority, so they never starve behind them.
+        queue = [(i, "builder") for i in ready] + self.ready_on_demand(open_now)
+        for issue, role in sorted(queue, key=lambda pair: priority(pair[0])):
+            if role != "builder":
+                choice = self.choose(self.roles[role], allowed)
+                if choice:
+                    return Job("role", role, issue=issue, reason=f"#{issue['number']} is ready for the {role}"), *choice
+                continue
             choice = self.choose(self.build_spec(issue), allowed)
             # Codex's sandbox can't start a browser, so device-perf work never falls back to it (gamemirage#121),
             # unless the issue is explicitly pinned to Codex.
@@ -1321,6 +1355,24 @@ class Dispatcher:
                 self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
                 self.board.comment(n, f"Attempt {failures} produced no PR. Back to ready.\n\n```\n{diagnosis[-1500:]}\n```")
             return "failed", [], diagnosis
+        if job.kind == "role":
+            n = job.issue["number"]
+            if blocked:
+                self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
+                return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked"}], tail
+            if STATUS_LINE.search(result.final_text or ""):
+                summary = re.sub(r"\n?STATUS:\s*DONE\s*$", "", (result.final_text or "").strip(), flags=re.I).strip()
+                self.board.set_labels(n, remove=["status:in-progress"])
+                self.board.close_issue(n, f"The {job.role} finished this task.\n\n{summary[-3000:]}")
+                return "done", [{"kind": job.role, "ref": f"#{n} closed"}], tail
+            failures = self.ledger.task_failures(self.project, f"#{n}") + 1
+            diagnosis = "; ".join(result.errors[-3:]) or tail or "worker ended without a STATUS line"
+            escalate = failures >= self.cfg["breakers"]["task_failures"]
+            self.board.set_labels(n, add=["status:blocked", "needs:director"] if escalate else ["status:ready"],
+                                  remove=["status:in-progress"])
+            self.board.comment(n, f"The {job.role}'s attempt {failures} ended without a verdict"
+                                  f"{', escalating to the director' if escalate else '. Back to ready'}.\n\n```\n{diagnosis[-1500:]}\n```")
+            return "failed", [], diagnosis
         if job.kind == "review":
             detail = self.board.pr_detail(job.pr["number"])
             fresh = [c for c in detail.get("comments") or [] if (c.get("createdAt") or "") >= started_iso
@@ -1393,6 +1445,14 @@ class Dispatcher:
             return (f"Implement GitHub issue #{n} in {repo}. You are already on branch `{branch}` in a fresh worktree "
                     f"based on origin/main. Follow your builder instructions and AGENTS.md. Push with "
                     f"`git push -u origin {branch}`. Prefix any issue or PR comment you write with `[agent:builder]`.{extra}\n"
+                    f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
+        if job.kind == "role":
+            n, name = job.issue["number"], job.role
+            return (f"Do the task in GitHub issue #{n} in {repo} (read it with `gh issue view {n} --repo {repo} --comments`). "
+                    f"You are in a fresh detached worktree of origin/main. Follow your {name} agent instructions. Prefix every "
+                    f"issue or PR comment with `[agent:{name}]`. File each finding as a new `kind:bug` issue with its evidence "
+                    f"(frames, logs, numbers). Make no code PR unless your agent instructions say to. When you finish, the "
+                    f"room closes issue #{n} with your report, so make the report a summary of what you found.\n"
                     f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
         if job.kind == "review":
             p = job.pr
