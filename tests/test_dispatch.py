@@ -16,7 +16,8 @@ class FakeBoard:
         self.label_calls = []
 
     def open_issues(self, milestone):
-        return [i for i in self.issues if i["state"] == "OPEN"]
+        return [i for i in self.issues if i["state"] == "OPEN"
+                and (not milestone or (i.get("milestone") or {}).get("title") == milestone)]
 
     def all_issues(self):
         return self.issues
@@ -166,6 +167,27 @@ class WithLedger(unittest.TestCase):
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
         self.assertIsNone(d.director_trigger())
         issues.append(issue(20, ["status:blocked", "role:builder"], body="Depends on #99"))
+        self.assertIn("nothing is ready", d.director_trigger())
+
+    def test_director_wakes_for_suggestions_and_escalations_outside_the_milestone(self):
+        # gamemirage#118 waited 16.6 h: unplaced suggestions have no milestone (commonroom#10).
+        issues = [issue(30, ["status:ready", "role:builder"])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        issues.append(issue(118, ["kind:suggestion"], body="[agent:scout] idea", milestone=None))
+        self.assertEqual(d.director_trigger(), "#118 is an untriaged owner suggestion")
+        issues[-1] = issue(118, ["kind:suggestion", "triaged"], milestone=None)
+        self.assertIsNone(d.director_trigger())
+        issues.append(issue(119, ["needs:director"], milestone="Later"))
+        self.assertEqual(d.director_trigger(), "#119 escalated to the director")
+        issues[-1] = issue(119, ["needs:director"], milestone=None)
+        self.assertEqual(d.director_trigger(), "#119 escalated to the director")
+
+    def test_nothing_ready_counts_only_the_goal_milestone(self):
+        issues = [issue(30, ["status:ready", "role:builder"]), issue(31, [], milestone="Later"),
+                  issue(32, [], milestone=None)]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(d.director_trigger())
+        issues[0] = issue(30, ["role:builder"])                        # the goal milestone has work, none ready
         self.assertIn("nothing is ready", d.director_trigger())
 
     def test_director_steers_every_few_hours_without_another_trigger(self):
