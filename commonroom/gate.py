@@ -9,6 +9,8 @@ REQUIRED = ("five_hour", "seven_day")
 STALE_MAX_AGE = 3600   # never act on a reading older than this
 STALE_HEADROOM = 30    # percentage points of headroom needed to act on a stale reading
 MIN_START_HEADROOM = 5 # never start a job on the last few points of a window: it would be refused mid-run
+PAUSE = "pause"        # breaker kinds starting with this are pauses (`room pause`, the dashboard button)...
+HARD = "_hard"         # ...unless they end with this (`room pause --hard`)
 
 
 @dataclass
@@ -16,6 +18,14 @@ class Verdict:
     allowed: bool
     reason: str
     detail: dict = field(default_factory=dict)
+    stop_running: bool = False   # a hold that also stops workers already running, not only new starts
+
+
+def stops_running(kind: str) -> bool:
+    """A pause holds new starts and lets running workers finish: an owner pause killed a builder 23 minutes into a
+    review round (commonroom#23). A hard pause and the automatic breakers (no_output, no_progress) stop them too."""
+    kind = kind.split(":", 1)[0]
+    return not kind.startswith(PAUSE) or kind.endswith(HARD)
 
 
 def _fraction(now: float, resets_at: float, window: str) -> float:
@@ -47,10 +57,11 @@ def usage_verdict(provider: str, readings: dict[str, dict], policy: dict, now: f
     detail.update(weekly_used=week["used_pct"], five_hour_used=session["used_pct"],
                   weekly_resets_at=week.get("resets_at"), five_hour_resets_at=session.get("resets_at"))
 
+    # The reserves are the owner's: a worker that reaches one stops mid-run.
     if 100 - week["used_pct"] <= reserve_w:
-        return Verdict(False, f"{provider}: weekly reserve reached ({week['used_pct']:.0f}% used, {reserve_w}% kept back)", detail)
+        return Verdict(False, f"{provider}: weekly reserve reached ({week['used_pct']:.0f}% used, {reserve_w}% kept back)", detail, True)
     if 100 - session["used_pct"] <= reserve_5:
-        return Verdict(False, f"{provider}: 5-hour reserve reached ({session['used_pct']:.0f}% used, {reserve_5}% kept back)", detail)
+        return Verdict(False, f"{provider}: 5-hour reserve reached ({session['used_pct']:.0f}% used, {reserve_5}% kept back)", detail, True)
     for name, row in (("weekly", week), ("5-hour", session)):
         # Even when running a provider dry, a job started on the last few points fails at once.
         if 100 - row["used_pct"] < MIN_START_HEADROOM:
@@ -71,11 +82,12 @@ def usage_verdict(provider: str, readings: dict[str, dict], policy: dict, now: f
 def breaker_verdict(open_breakers: list[dict], recent_finished_autonomous: list[dict], no_output_runs: int) -> tuple[Verdict, dict | None]:
     """Returns the verdict and, if a new breaker should trip, its record."""
     if open_breakers:
-        b = open_breakers[0]
-        return Verdict(False, f"breaker open: {b['kind']} - {b['detail']}"), None
+        # Name the one that stops running workers, if any: it is the one that explains a stopped run.
+        b = next((x for x in open_breakers if stops_running(x["kind"])), open_breakers[0])
+        return Verdict(False, f"breaker open: {b['kind']} - {b['detail']}", stop_running=stops_running(b["kind"])), None
     window = recent_finished_autonomous[:no_output_runs]
     if no_output_runs and len(window) == no_output_runs and all(not r["outputs"] for r in window):
         detail = (f"last {no_output_runs} autonomous runs produced nothing: "
                   + ", ".join(f"{r['role']}/{r['task'] or '-'}:{r['status']}" for r in window))
-        return Verdict(False, "breaker tripped: " + detail), {"kind": "no_output", "detail": detail}
+        return Verdict(False, "breaker tripped: " + detail, stop_running=True), {"kind": "no_output", "detail": detail}
     return Verdict(True, "no breakers"), None

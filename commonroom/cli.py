@@ -309,19 +309,26 @@ def cmd_peek(args) -> int:
 
 def efficiency(ledger, project, since: float, now: float) -> dict:
     """Are we getting the most out of the allowance? Output per unit of spend, and work that didn't land, by role,
-    model and effort. `api_usd` is Claude's API-equivalent cost of each run, a proxy for its share of the plan."""
+    model and effort. `api_usd` is Claude's API-equivalent cost of each run, a proxy for its share of the plan.
+    `wasted` is work that failed; `stopped` is work the room cut short (a hard pause, a reserve, a breaker, a dead
+    dispatcher), counted apart so it isn't blamed on the role (commonroom#23)."""
     runs = [r for r in ledger.recent_runs(project, limit=2000) if r["started_at"] >= since]
     groups: dict = {}
     for r in runs:
         if r["role"] == "merge":
             continue
         g = groups.setdefault(f"{r['role']}/{r['provider']}:{r['model']}@{r.get('effort') or 'default'}",
-                              {"runs": 0, "done": 0, "wasted": 0, "api_usd": 0.0, "minutes": 0.0})
+                              {"runs": 0, "done": 0, "wasted": 0, "stopped": 0, "stopped_minutes": 0.0,
+                               "api_usd": 0.0, "minutes": 0.0})
+        minutes = ((r.get("ended_at") or now) - r["started_at"]) / 60
         g["runs"] += 1
         g["done"] += r["status"] == "done"
-        g["wasted"] += r["status"] in ("failed", "blocked", "room-error", "stopped")
+        g["wasted"] += r["status"] in ("failed", "blocked", "room-error")
+        if r["status"] == "stopped":
+            g["stopped"] += 1
+            g["stopped_minutes"] = round(g["stopped_minutes"] + minutes, 1)
         g["api_usd"] = round(g["api_usd"] + (r.get("cost_usd") or 0), 2)
-        g["minutes"] = round(g["minutes"] + ((r.get("ended_at") or now) - r["started_at"]) / 60, 1)
+        g["minutes"] = round(g["minutes"] + minutes, 1)
     for g in groups.values():
         g["usd_per_done"] = round(g["api_usd"] / g["done"], 2) if g["done"] else None
     week = ledger.usage_history("claude", "seven_day", since)
@@ -357,7 +364,10 @@ def digest(cfg: dict, hours: float) -> dict:
                     "failed": len([r for r in runs if r["status"] in ("failed", "blocked")]),
                     "no_output": len([r for r in runs if r["role"] != "merge" and not r["outputs"]
                                       and r["status"] not in ("running", "room-error", "limited", "stopped")]),
-                    "limited": len([r for r in runs if r["status"] == "limited"])},
+                    "limited": len([r for r in runs if r["status"] == "limited"]),
+                    # Cut short by the room (pause, reserve, breaker, dead dispatcher), not failed by the agent.
+                    "stopped_by_room": len([r for r in runs if r["status"] == "stopped"]),
+                    "minutes_lost_to_stops": round(sum(r["minutes"] for r in runs if r["status"] == "stopped"), 1)},
         "efficiency": efficiency(ledger, project, since, now),
         "hours_since_last": {role: round((now - t) / 3600, 1) for role, t in last_role.items()},
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
@@ -385,11 +395,17 @@ def cmd_digest(args) -> int:
 
 
 def cmd_pause(args) -> int:
-    """Stop autonomous work with a reason (auditor or owner). Clear it from the dashboard or with `room breaker reset`."""
+    """Pause autonomous work with a reason (auditor or owner): nothing new starts, and running workers finish the job
+    they're on (commonroom#23). `--hard` stops them too; their work is saved as WIP on the branch. Clear either from
+    the dashboard or with `room breaker reset`."""
     cfg, ledger = config_mod.load(), Ledger()
-    ledger.trip(cfg["project"].get("name"), args.kind, args.reason)
+    kind = args.kind + (gate.HARD if args.hard and not args.kind.endswith(gate.HARD) else "")
+    ledger.trip(cfg["project"].get("name"), kind, args.reason)
     ledger.close()
-    print(f"Autonomy paused ({args.kind}): {args.reason}")
+    if gate.stops_running(kind):
+        print(f"Autonomy stopped ({kind}): {args.reason}. Running workers stop now; unfinished work is saved on its branch.")
+    else:
+        print(f"Autonomy paused ({kind}): {args.reason}. Nothing new starts; running workers finish their current job.")
     return 0
 
 
@@ -505,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
     p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
-    p = sub.add_parser("pause", help="stop autonomous work with a reason"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor"); p.set_defaults(func=cmd_pause)
+    p = sub.add_parser("pause", help="pause autonomous work with a reason: nothing new starts, running workers finish"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor", help="kinds starting with 'pause' let running workers finish"); p.add_argument("--hard", action="store_true", help="also stop running workers now (a runaway, a bad merge)"); p.set_defaults(func=cmd_pause)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)

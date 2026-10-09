@@ -363,7 +363,7 @@ MIN_FREE_GB = {"room": 3, "project": 8}
 
 def disk_verdict(cfg: dict, ledger: Ledger) -> str | None:
     """Hold all work when a drive the room writes to is nearly full. A full system drive took the ledger, the dispatchers
-    and a moonshot down at once (2026-10-07). This doesn't contain "reserve" or "breaker", so running workers finish."""
+    and a moonshot down at once (2026-10-07). It holds new starts only, so running workers finish."""
     for label, path in (("room", Path(ledger.path).parent), ("project", Path(cfg.get("_root") or "."))):
         try:
             free = shutil.disk_usage(path).free / 2**30
@@ -383,14 +383,14 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
     result = {}
     disk = disk_verdict(cfg, ledger)
     for provider in ("claude", "codex"):
-        if disk:
-            result[provider] = gate.Verdict(False, disk)
-            continue
         # A provider that keeps producing nothing is held on its own; the other keeps working.
         # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
         runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider)
         mine = [b for b in ledger.open_breakers(project) if ":" not in b["kind"] or b["kind"].endswith(":" + provider)]
         breaker, tripped = gate.breaker_verdict(mine, runs, n)
+        if disk:
+            result[provider] = breaker if mine and breaker.stop_running else gate.Verdict(False, disk)
+            continue
         if tripped and trip:
             ledger.trip(project, f"{tripped['kind']}:{provider}", tripped["detail"], now=now)
         v = gate.usage_verdict(provider, ledger.latest_usage(provider), config_mod.budget(cfg, provider), now,
@@ -404,13 +404,16 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
             elsewhere = usage.owner_active(cfg.get("_root"), owner.get("active_minutes", 20), now=now)
             if elsewhere:
                 # The owner shares this plan: yield to their own sessions. Running workers finish; nothing new
-                # starts once the 5-hour window passes the cap (no "reserve" wording, so in-flight work isn't stopped).
+                # starts once the 5-hour window passes the cap.
                 v.detail["owner_active"] = elsewhere
                 cap = owner.get("new_work_cap_5h", 70)
                 if v.detail.get("five_hour_used", 0) >= cap:
                     v = gate.Verdict(False, f"claude: the owner is using Claude elsewhere; no new work above {cap}% "
                                             f"of the 5-hour window", v.detail)
-        result[provider] = v if (not v.allowed or breaker.allowed) else gate.Verdict(False, breaker.reason, v.detail)
+        # A breaker shows when nothing else holds; one that stops running workers outranks every other hold.
+        if not breaker.allowed and (v.allowed or (breaker.stop_running and not v.stop_running)):
+            v = gate.Verdict(False, breaker.reason, v.detail, breaker.stop_running)
+        result[provider] = v
     return result
 
 
@@ -1309,11 +1312,10 @@ class Dispatcher:
         return row["used_pct"] if row else None
 
     def stop_reason(self, provider: str) -> str | None:
+        """A worker already running finishes its job unless a reserve is hit, a hard pause is set or an automatic
+        breaker trips. A pause, the disk guard, pace and the owner's own use hold new starts only (commonroom#23)."""
         v = verdicts(self.ledger, self.cfg)[provider]
-        # A worker already running may finish its window unless a reserve or breaker is hit.
-        if not v.allowed and ("reserve" in v.reason or "breaker" in v.reason):
-            return v.reason
-        return None
+        return v.reason if not v.allowed and v.stop_running else None
 
     # One pass --------------------------------------------------------------------------------------
     def refresh_readings(self, now: float):
