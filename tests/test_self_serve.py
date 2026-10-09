@@ -20,7 +20,11 @@ TEST = "python -m unittest discover -s tests"
 class MergeBoard:
     def __init__(self, prs, details, issues=()):
         self.prs, self.details, self.issues, self.merged, self.labels = prs, details, list(issues), [], []
+        self.behind, self.updated = {}, []
 
+    def behind_main(self, detail): return self.behind.get(detail["headRefOid"], 0)
+    def update_branch(self, n): self.updated.append(n)
+    def main_checks(self): return []
     def all_issues(self): return self.issues
     def open_issues(self, milestone): return [i for i in self.issues if i["state"] == "OPEN"]
     def open_prs(self): return self.prs
@@ -163,12 +167,24 @@ class NoCiMergeRule(Base):
     def test_one_merge_per_pass(self):
         board = MergeBoard([pr(5, 40), pr(6, 41)], {5: detail(approve()), 6: detail(approve())})
         d = self.dispatcher(project_cfg(self.tmp.name), board)
-        actions = d.housekeeping()
+        d.housekeeping()
         self.assertEqual(board.merged, [5])
-        self.assertTrue(any("PR #6 is approved; it merges next pass" in a for a in actions))
         board.prs = [pr(6, 41)]
         d.housekeeping()
         self.assertEqual(board.merged, [5, 6])
+
+    def test_a_branch_behind_main_is_updated_then_tested_again(self):
+        board = MergeBoard([pr(5, 40)], {5: detail(approve())})
+        board.behind[HEAD] = 2
+        d = self.dispatcher(project_cfg(self.tmp.name), board)
+        d.housekeeping()
+        self.assertEqual((board.merged, board.updated), ([], [5]))      # main merged into it first
+        merged_main = "fedcba9876543210fedcba9876543210fedcba98"           # the update's new head, after the approval
+        board.details[5] = detail(approve(), head=merged_main, committed="2026-10-09T14:00:00Z")
+        board.details[5]["commits"].insert(0, {"oid": HEAD, "committedDate": "2026-10-09T12:00:00Z"})
+        d.housekeeping()
+        self.assertEqual(board.merged, [])                                # the tested sha is no longer the head
+        self.assertTrue(d.needs_review(board.details[5]))                 # so the merged tree is reviewed again
 
     def test_review_skip_needs_a_review_without_ci(self):
         board = MergeBoard([pr(5, 40, labels=["review:skip"])], {5: detail("")})
@@ -196,8 +212,10 @@ class NoCiMergeRule(Base):
                            {5: detail("REVIEW: APPROVE", checks=green), 6: detail("REVIEW: APPROVE", checks=green),
                             7: detail("REVIEW: APPROVE"), 8: detail("", checks=green)})
         d = self.dispatcher(project_cfg(self.tmp.name, name="game", ci=True), board)
-        d.housekeeping()
-        self.assertEqual(board.merged, [5, 6, 8])          # no TESTS line needed, several per pass, CI still required
+        for _ in range(4):                                   # one merge per pass (commonroom#19), as on main
+            d.housekeeping()
+            board.prs = [p for p in board.prs if p["number"] not in board.merged]
+        self.assertEqual(board.merged, [5, 6, 8])          # no TESTS line needed; CI still required (#7 has none)
         job = dispatch.Job("review", "reviewer", pr={"number": 5, "headRefName": "i40-thing"})
         self.assertNotIn("TESTS:", d.prompt(job, None))
         self.assertEqual(d.update_live_checkout(), [])     # not the room's own checkout
