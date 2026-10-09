@@ -24,4 +24,5 @@ The ledger lives at `~/.commonroom/room.sqlite3`.
 ```
 python -m unittest discover -s tests -v
 ```
+The room builds its own improvements: this repo is a project with its own `room.toml`, and the heartbeat runs a dispatcher for it as a guest on the game's allowance. Agents working here read [AGENTS.md](AGENTS.md) first. In short: work in a worktree under `D:/Dev/commonroom-wt/`, never in the live checkout, and never stop room processes. There is no CI here: the reviewer's tested approval is what merges a PR. See [docs/design.md](docs/design.md), "The room serves itself".
 The core uses only the standard library. The optional `/usage` screen reader needs `pywinpty` and `pyte` (`uv pip install pywinpty pyte` into `.venv`).
