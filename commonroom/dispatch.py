@@ -681,11 +681,15 @@ class Dispatcher:
         if time.time() - since < OWNER_COOLDOWN:
             return None
         reasons = []
+        # Agents post as the owner's account, so authorship can't tell them apart. Agent comments start with
+        # `[agent:...]`; the owner-channel bulletin starts with `@<owner>` instead so it reaches his phone.
+        mention = "@" + self.cfg["project"]["repo"].split("/", 1)[0]
         for issue in self.board.open_issues(None):
             names = labels(issue)
             comments = issue.get("comments") or []
             # Only unanswered: the last word must be the owner's, and new since the last director run.
-            last_is_owner = bool(comments) and not (comments[-1].get("body") or "").lstrip().startswith("[")
+            last_body = (comments[-1].get("body") or "").lstrip() if comments else ""
+            last_is_owner = bool(comments) and not last_body.startswith(("[", mention))
             # A brand-new owner suggestion (not one an agent filed) gets the fast lane too.
             fresh_suggestion = ("kind:suggestion" in names and "triaged" not in names and not comments
                                 and not (issue.get("body") or "").lstrip().startswith("[agent:"))
