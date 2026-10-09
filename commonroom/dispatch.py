@@ -124,7 +124,20 @@ class GitHubBoard:
         board_mod.gh(["pr", "edit", str(number), "--repo", self.repo, "--add-label", name])
 
     def merge(self, number: int):
-        board_mod.gh(["pr", "merge", str(number), "--repo", self.repo, "--squash", "--delete-branch"])
+        """Squash-merge, then delete the head branch. PRs stacked on that branch move to its base first: GitHub closes
+        a PR whose base branch is deleted through the API rather than retargeting it (gamemirage#368)."""
+        pr = board_mod.gh(["pr", "view", str(number), "--repo", self.repo, "--json", "headRefName,baseRefName"]) or {}
+        board_mod.gh(["pr", "merge", str(number), "--repo", self.repo, "--squash"])
+        head, base = pr.get("headRefName"), pr.get("baseRefName") or "main"
+        if not head:
+            return
+        for child in board_mod.gh(["pr", "list", "--repo", self.repo, "--base", head, "--state", "open",
+                                   "--json", "number"]) or []:
+            board_mod.gh(["pr", "edit", str(child["number"]), "--repo", self.repo, "--base", base])
+        try:
+            board_mod.gh(["api", "-X", "DELETE", f"repos/{self.repo}/git/refs/heads/{head}"])
+        except RuntimeError:
+            pass   # already gone (deleted by hand or by the repo's own setting): the merge is what matters
 
     def rerun_ci(self, run_id: str, minutes_since: float) -> int | None:
         """Rerun a workflow run's failed or cancelled jobs, backing off during an outage.
@@ -328,7 +341,20 @@ class Dispatcher:
         actions = []
         everything = self.board.all_issues()
         state = {i["number"]: i["state"] for i in everything}
-        for pr in self.board.open_prs():
+        prs = self.board.open_prs()
+        # An issue in review whose PR was closed unmerged (e.g. a stacked base was deleted) has nothing to review:
+        # send it back to its builder, who continues from the preserved branch (gamemirage#278).
+        has_pr = {int(m.group(1)) for pr in prs if (m := BRANCH.match(pr["headRefName"]))}
+        running = self.ledger.running_tasks(self.project)
+        for issue in everything:
+            n = issue["number"]
+            if (issue["state"] == "OPEN" and "status:review" in labels(issue) and n not in has_pr
+                    and f"#{n}" not in running and not self.dry_run):
+                self.board.set_labels(n, add=["status:ready"], remove=["status:review"])
+                self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
+                                      "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
+                actions.append(f"#{n} was in review with no open PR; back to ready")
+        for pr in prs:
             m = BRANCH.match(pr["headRefName"])
             if not m:
                 continue
@@ -536,6 +562,13 @@ class Dispatcher:
             choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
                 return Job("direct", "director", reason=owner), *choice
+        # An escalation stops work that only the director can unblock, so it outranks the build queue too
+        # (commonroom#29: behind 26 ready builds it never ran). DIRECTOR_COOLDOWN still caps it at one run an hour.
+        trigger = self.director_trigger()
+        if trigger:
+            choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
+            if choice:
+                return Job("direct", "director", reason=trigger), *choice
         # The periodic audit: the frontier model steps back, judges everything, acts, and reports to the owner.
         audit = self.audit_due()
         if audit:
@@ -581,11 +614,6 @@ class Dispatcher:
             issue = self.create_sweep_issue(sweep)
             if issue:
                 return Job("build", "scout", issue=issue, reason=f"scheduled capability sweep: {sweep}"), *self.choose(scout_spec, allowed)
-        trigger = self.director_trigger()
-        if trigger:
-            choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
-            if choice:
-                return Job("direct", "director", reason=trigger), *choice
         return None
 
     def last_run_at(self, role: str) -> float:

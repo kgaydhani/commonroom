@@ -31,6 +31,9 @@ class FakeBoard:
     def merge(self, n):
         self.merged = n
 
+    def comment(self, n, body):
+        self.comments = getattr(self, "comments", []) + [(n, body)]
+
 
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
     return {"number": n, "title": f"Issue {n}", "labels": [{"name": l} for l in labels], "body": body,
@@ -470,6 +473,55 @@ class WithLedger(unittest.TestCase):
         run = self.ledger.start_run("t", None, "director", "claude")
         self.ledger.finish_run(run, "done")
         self.assertIsNone(d.director_trigger())
+
+    def test_escalation_outranks_builds(self):
+        issues = [issue(50, ["status:ready", "role:builder"]), issue(51, ["status:blocked", "needs:director"])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        job, provider, model = d.pick(allowed)
+        self.assertEqual((job.kind, provider, model), ("direct", "claude", "opus"))
+        self.assertIn("#51", job.reason)
+        run = self.ledger.start_run("t", None, "director", "claude")
+        self.ledger.finish_run(run, "done")
+        job, _, _ = d.pick(allowed)
+        self.assertEqual(job.kind, "build")  # within the cooldown the queue carries on
+
+    def test_review_without_open_pr_goes_back_to_ready(self):
+        issues = [issue(60, ["status:review"]), issue(61, ["status:review"])]
+        fake = FakeBoard(issues, prs=[{"number": 9, "headRefName": "i61-thing"}],
+                         details={9: {"commits": [], "comments": [], "statusCheckRollup": []}})
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertIn((60, ("status:ready",), ("status:review",)), fake.label_calls)
+        self.assertFalse(any(call[0] == 61 for call in fake.label_calls))   # its PR is open: still in review
+        self.assertTrue(any("#60" in a for a in actions))
+
+
+class StackedMerge(unittest.TestCase):
+    def test_merge_retargets_stacked_prs_before_deleting_the_branch(self):
+        calls = []
+
+        def fake_gh(args, timeout=30):
+            calls.append(args)
+            if args[:2] == ["pr", "view"]:
+                return {"headRefName": "i277-base", "baseRefName": "main"}
+            if args[:2] == ["pr", "list"]:
+                return [{"number": 368}]
+            return None
+
+        orig = dispatch.board_mod.gh
+        dispatch.board_mod.gh = fake_gh
+        try:
+            dispatch.GitHubBoard("o/t").merge(366)
+        finally:
+            dispatch.board_mod.gh = orig
+        merge = next(i for i, c in enumerate(calls) if c[:2] == ["pr", "merge"])
+        retarget = next(i for i, c in enumerate(calls) if c[:3] == ["pr", "edit", "368"])
+        delete = next(i for i, c in enumerate(calls) if c[:3] == ["api", "-X", "DELETE"])
+        self.assertNotIn("--delete-branch", calls[merge])                    # GitHub would close #368 instead
+        self.assertEqual(calls[retarget][-2:], ["--base", "main"])
+        self.assertLess(retarget, delete)
+        self.assertTrue(calls[delete][-1].endswith("/git/refs/heads/i277-base"))
 
 
 if __name__ == "__main__":
