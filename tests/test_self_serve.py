@@ -363,6 +363,40 @@ class DirectorPaths(Base):
             self.dispatcher(self.cfg(), board).housekeeping()
             self.assertEqual(board.merged, [], extra["body"])
 
+    def test_director_changes_sends_the_pr_back_and_the_trigger_leaves_it_out(self):
+        issue = {"number": 40, "state": "OPEN", "labels": [{"name": "status:review"}], "comments": [], "body": ""}
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")}, issues=[issue])
+        board.details[5]["comments"].append(director(verdict="CHANGES"))
+        d = self.dispatcher(self.cfg(), board)
+        actions = d.housekeeping()
+        self.assertEqual(board.merged, [])
+        self.assertIn("PR #5 needs changes; issue #40 back to ready", actions)
+        self.assertIn((40, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), board.labels)
+        self.assertEqual(d.ready_for_director(), [])
+        self.assertNotIn("director paths", d.director_trigger() or "")
+        self.assertFalse(d.needs_review(board.details[5]))              # no reviewer run on a PR the builder now owns
+
+    def test_a_behind_gated_pr_is_updated_before_the_director_is_asked(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        board.behind[HEAD] = 2
+        d = self.dispatcher(self.cfg(), board)
+        self.assertEqual(d.ready_for_director(), [])                    # not the director's yet: main moves first
+        actions = d.housekeeping()
+        self.assertEqual(board.updated, [5])
+        self.assertFalse(any("waits for the director" in a for a in actions))
+        board.behind[HEAD] = 0                                          # up to date (and re-reviewed): now it's theirs
+        self.assertEqual(len(d.ready_for_director()), 1)
+        self.assertIn("waits for the director's approval", " ".join(d.housekeeping()))
+        self.assertEqual(board.merged, [])
+
+    def test_dry_run_reports_the_director_wait(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        d = self.dispatcher(self.cfg(), board)
+        d.dry_run = True
+        actions = d.housekeeping()
+        self.assertIn("PR #5 touches director paths (commonroom/gate.py) and waits for the director's approval", actions)
+        self.assertFalse(any(a.startswith("merged") for a in actions))
+
     def test_director_approval_does_not_replace_the_reviewers_tested_one(self):
         board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
         board.details[5]["comments"] = [director()]

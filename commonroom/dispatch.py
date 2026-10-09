@@ -242,8 +242,8 @@ def latest_review(detail: dict) -> str | None:
 DIRECTOR_MARK = "[agent:director]"
 
 
-def director_approved(detail: dict) -> bool:
-    """Is the newest director verdict posted after the PR's latest commit an APPROVE? Only a comment that starts with
+def director_verdict(detail: dict) -> str | None:
+    """The newest director verdict posted after the PR's latest commit. Only a comment that starts with
     `[agent:director]` counts, and a later commit voids it (commonroom#49)."""
     commits = detail.get("commits") or []
     last_commit = max((c.get("committedDate") or "" for c in commits), default="")
@@ -253,7 +253,11 @@ def director_approved(detail: dict) -> bool:
         m = re.search(r"REVIEW:\s*(APPROVE|CHANGES)", body)
         if m and body.startswith(DIRECTOR_MARK) and (c.get("createdAt") or "") >= last_commit:
             verdict = m.group(1)
-    return verdict == "APPROVE"
+    return verdict
+
+
+def director_approved(detail: dict) -> bool:
+    return director_verdict(detail) == "APPROVE"
 
 
 def head_sha(detail: dict) -> str:
@@ -614,6 +618,9 @@ class Dispatcher:
             detail = self.board.pr_detail(pr["number"])
             review, checks = self.review_verdict(self.reviewer_view(detail)), checks_state(detail)
             issue_no = int(m.group(1)) if m else None
+            # The director's CHANGES on a PR that needs them sends it back to the builder, as a reviewer's does.
+            if self.director_rejected(detail):
+                review = "CHANGES"
             # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
             if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
                 actions += self.back_to_merge_main(pr, issue_no, everything, review)
@@ -631,9 +638,6 @@ class Dispatcher:
                 # No CI: the reviewer's approval is the test, so it must state a passing run on this exact head. A
                 # branch the room brings up to date with main gets a new head, so the merged tree is reviewed again.
                 mergeable = review == "APPROVE" and self.tested(detail)
-            if mergeable and self.waits_for_director(detail):
-                actions.append(self.director_wait(pr["number"], detail))
-                continue
             if mergeable:
                 if not self.dry_run:
                     # One merge per pass, and only of a branch that already contains main, so the CI that passed ran
@@ -662,6 +666,12 @@ class Dispatcher:
                                 else:
                                     actions.append(f"PR #{pr['number']}: updating it with main failed: {str(exc)[:100]}")
                         continue
+                # Asked only once the branch contains main, so the director judges the tree main becomes and an update
+                # doesn't void their approval (commonroom#49).
+                if self.waits_for_director(detail):
+                    actions.append(self.director_wait(pr["number"], detail))
+                    continue
+                if not self.dry_run:
                     try:
                         self.board.merge(pr["number"])
                     except Exception as exc:  # e.g. another dispatcher merged it a moment ago
@@ -839,12 +849,16 @@ class Dispatcher:
     def waits_for_director(self, detail: dict) -> bool:
         return bool(self.director_files(detail)) and not director_approved(detail)
 
+    def director_rejected(self, detail: dict) -> bool:
+        return bool(self.director_files(detail)) and director_verdict(detail) == "CHANGES"
+
     def director_wait(self, number: int, detail: dict) -> str:
         return (f"PR #{number} touches director paths ({', '.join(self.director_files(detail))}) "
                 f"and waits for the director's approval")
 
     def ready_for_director(self) -> list[str]:
-        """PRs with their usual approval that wait only for the director's (commonroom#49)."""
+        """PRs with their usual approval, up to date with main, that wait only for the director's (commonroom#49). One
+        the director already sent back, or one housekeeping still has to update, isn't theirs yet."""
         if not self.director_paths:
             return []
         waiting = []
@@ -852,11 +866,17 @@ class Dispatcher:
             if not BRANCH.match(pr["headRefName"]):
                 continue
             detail = self.board.pr_detail(pr["number"])
-            if not self.waits_for_director(detail):
+            if not self.waits_for_director(detail) or self.director_rejected(detail):
                 continue
             view = self.reviewer_view(detail)
-            if self.review_verdict(view) == "APPROVE" and (checks_state(detail) == "green" if self.ci else self.tested(detail)):
-                waiting.append(self.director_wait(pr["number"], detail))
+            if self.review_verdict(view) != "APPROVE" or not (checks_state(detail) == "green" if self.ci else self.tested(detail)):
+                continue
+            try:
+                if self.board.behind_main(detail):
+                    continue
+            except Exception:
+                continue   # housekeeping reports a PR it can't compare with main
+            waiting.append(self.director_wait(pr["number"], detail))
         return waiting
 
     def tested(self, detail: dict) -> bool:
