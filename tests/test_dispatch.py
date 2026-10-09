@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import tempfile
 import time
@@ -474,6 +476,75 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(v["claude"].allowed or v["codex"].allowed)
         self.assertIn("disk nearly full", v["claude"].reason)
         self.assertNotIn("reserve", v["claude"].reason)                       # running workers finish
+        self.assertFalse(v["claude"].stop_running)
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.ledger.trip("t", "paused_by_owner_hard", "runaway")
+        self.assertIn("paused_by_owner_hard", d.stop_reason("claude"))      # a hard pause still stops them
+
+    def test_a_pause_lets_running_workers_finish_unless_hard(self):
+        # commonroom#23: an owner pause killed a builder 23 minutes into a review round, and a scout.
+        now = time.time()
+        self.fresh_readings(now)
+        cfg = cfg_with(self.tmp.name)
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.ledger.trip("t", "paused_by_owner", "Owner is chatting with the director; pause all autonomous work")
+        v = dispatch.verdicts(self.ledger, cfg)
+        self.assertFalse(v["claude"].allowed or v["codex"].allowed)          # nothing new starts...
+        self.assertIsNone(d.stop_reason("claude"))                             # ...but running workers finish
+        self.assertIsNone(d.stop_reason("codex"))
+        self.ledger.trip("t", "paused_by_owner_hard", "a bad merge")         # the owner wants everything down now
+        self.assertIn("paused_by_owner_hard", d.stop_reason("claude"))
+        self.assertIn("paused_by_owner_hard", d.stop_reason("codex"))
+        self.ledger.clear_breakers("t")
+        self.ledger.trip("t", "no_output:codex", "three empty runs")          # automatic breakers still stop workers
+        self.assertIsNone(d.stop_reason("claude")); self.assertIn("no_output", d.stop_reason("codex"))
+        self.ledger.clear_breakers("t")
+        self.ledger.record_usage([usage.observation("claude", "five_hour", 50, now + 4.5 * 3600, "test")], now=now)
+        self.assertIn("burn cap", dispatch.verdicts(self.ledger, cfg)["claude"].reason)
+        self.assertIsNone(d.stop_reason("claude"))                             # a pace hold lets workers finish...
+        self.ledger.trip("t", "paused_by_auditor_hard", "runaway")
+        self.assertIn("paused_by_auditor_hard", d.stop_reason("claude"))     # ...but can't hide a hard pause
+        self.ledger.clear_breakers("t")
+        self.ledger.record_usage([usage.observation("claude", "five_hour", 95, now + 3600, "test")], now=now)
+        self.ledger.trip("t", "paused_by_owner", "chatting")
+        self.assertIn("5-hour reserve", d.stop_reason("claude"))              # the owner's reserve always stops them
+
+    def test_room_pause_is_graceful_and_hard_is_explicit(self):
+        from commonroom import cli
+        path = Path(self.tmp.name) / "cli.sqlite3"
+        orig = (cli.config_mod.load, cli.Ledger)
+        cli.config_mod.load, cli.Ledger = (lambda: {"project": {"name": "t"}}), (lambda: Ledger(path))
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                cli.main(["pause", "Owner is chatting with the director", "--kind", "paused_by_owner"])
+                cli.main(["pause", "--hard", "runaway"])
+            self.assertIn("running workers finish", out.getvalue())
+        finally:
+            cli.config_mod.load, cli.Ledger = orig
+        ledger = Ledger(path)
+        kinds = [b["kind"] for b in ledger.open_breakers("t")]
+        ledger.close()
+        self.assertEqual(kinds, ["paused_by_owner", "paused_by_auditor_hard"])
+        self.assertEqual([gate.stops_running(k) for k in kinds], [False, True])
+        self.assertTrue(gate.stops_running("no_progress") and gate.stops_running("no_output:codex"))
+
+    def test_runs_the_room_stopped_are_not_blamed_on_the_role(self):
+        from commonroom import cli
+        now = time.time()
+        stopped = self.ledger.start_run("t", "#65", "builder", "claude", "opus", now=now - 1500)
+        self.ledger.finish_run(stopped, "stopped", note="stopped by the room: breaker open: paused_by_owner_hard", now=now - 108)
+        failed = self.ledger.start_run("t", "#66", "builder", "claude", "opus", now=now - 600)
+        self.ledger.finish_run(failed, "failed", now=now - 300)
+        g = cli.efficiency(self.ledger, "t", now - 3600, now)["by_role_model_effort"]["builder/claude:opus@default"]
+        self.assertEqual((g["runs"], g["wasted"], g["stopped"], g["stopped_minutes"]), (2, 1, 1, 23.2))
+        cfg = cfg_with(self.tmp.name); cfg["project"]["repo"] = None          # no board calls
+        orig = cli.Ledger
+        cli.Ledger = lambda: Ledger(self.ledger.path)
+        try:
+            summary = cli.digest(cfg, 1)["summary"]
+        finally:
+            cli.Ledger = orig
+        self.assertEqual((summary["failed"], summary["stopped_by_room"], summary["minutes_lost_to_stops"]), (1, 1, 23.2))
 
     def test_director_cooldown(self):
         issues = [issue(30, ["needs:director"])]
