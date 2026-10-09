@@ -63,6 +63,7 @@ def cfg_with(root):
                                          "roles": {"builder": ["codex", "claude:sonnet"], "director": ["claude:opus"]}})
     cfg["_root"] = str(root)
     cfg["min_free_gb"] = {"room": 0, "project": 0}   # tests mustn't depend on this machine's free space
+    cfg["director"]["steer_every_hours"] = 0         # a fresh ledger has no director run; steering has its own test
     return cfg
 
 
@@ -163,6 +164,24 @@ class WithLedger(unittest.TestCase):
         self.assertIsNone(d.director_trigger())
         issues.append(issue(20, ["status:blocked", "role:builder"], body="Depends on #99"))
         self.assertIn("nothing is ready", d.director_trigger())
+
+    def test_director_steers_every_few_hours_without_another_trigger(self):
+        now = time.time()
+        cfg = cfg_with(self.tmp.name)
+        cfg["director"] = config.DEFAULTS["director"]                  # the default cadence: 3 h
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([issue(30, ["status:ready", "role:builder"])]),
+                                log=lambda *_: None)
+        last = self.ledger.start_run("t", None, "director", "claude", now=now - 2.5 * 3600)
+        self.ledger.finish_run(last, "done", outputs=[{"kind": "director", "ref": "x"}], now=now - 2.4 * 3600)
+        self.assertIsNone(d.director_trigger())                        # no other reason, and not 3 h yet
+        self.ledger.db.execute("UPDATE runs SET started_at=? WHERE id=?", (now - 3 * 3600 - 60, last)); self.ledger.db.commit()
+        self.assertEqual(d.director_trigger(), dispatch.STEER_REASON)  # 3 h on: steer, with no other reason
+        job, provider, _ = d.pick({"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")})
+        self.assertEqual((job.kind, provider, job.reason), ("direct", "claude", dispatch.STEER_REASON))
+        cfg["director"] = {"steer_every_hours": 5}                     # configurable
+        self.assertIsNone(d.director_trigger())
+        cfg["director"] = {"steer_every_hours": 0}                     # 0 turns it off
+        self.assertIsNone(d.director_trigger())
 
     def test_owner_reply_outranks_builds(self):
         issues = [issue(40, ["status:ready", "role:builder"]),
