@@ -183,12 +183,11 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(d.director_trigger(), "#119 escalated to the director")
 
     def test_nothing_ready_counts_only_the_goal_milestone(self):
-        issues = [issue(30, ["status:ready", "role:builder"]), issue(31, [], milestone="Later"),
-                  issue(32, [], milestone=None)]
+        issues = [issue(31, [], milestone="Later"), issue(32, [], milestone=None)]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
-        self.assertIsNone(d.director_trigger())
-        issues[0] = issue(30, ["role:builder"])                        # the goal milestone has work, none ready
-        self.assertIn("nothing is ready", d.director_trigger())
+        self.assertIsNone(d.director_trigger())                        # unlabelled work outside the goal: no wake
+        issues[:] = [issue(30, ["role:builder"]), issue(33, ["status:ready", "role:builder"], milestone="Later")]
+        self.assertIn("nothing is ready", d.director_trigger())        # ready work elsewhere doesn't hide the goal's
 
     def test_director_steers_every_few_hours_without_another_trigger(self):
         now = time.time()
