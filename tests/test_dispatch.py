@@ -639,6 +639,64 @@ class WithLedger(unittest.TestCase):
         self.assertIn("merge-main run", fake.comments[0][1])
 
 
+    def test_second_changes_verdict_goes_to_the_director_not_the_builder(self):
+        """commonroom#32: gamemirage PR #369 went 6+ builder/reviewer rounds on a PR that couldn't change."""
+        def changes(t):
+            return {"createdAt": t, "body": "[agent:reviewer] REVIEW: CHANGES - still wrong"}
+        work = issue(70, ["status:review"])
+        detail = {"commits": [{"committedDate": "2026-10-09T09:00:00Z"}], "comments": [changes("2026-10-09T09:30:00Z")],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        fake = FakeBoard([work], prs=[{"number": 71, "headRefName": "i70-x"}], details={71: detail})
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        to_builder = (70, ("status:ready", "needs:changes"), ("status:review", "status:in-progress"))
+        to_director = (70, ("status:blocked", "needs:director"), ("status:review", "status:in-progress", "needs:changes"))
+
+        d.housekeeping()                                                     # round 1: the builder fixes it
+        self.assertEqual(fake.label_calls, [to_builder])
+        fake.label_calls.clear()
+        detail["commits"].append({"committedDate": "2026-10-09T10:00:00Z"})  # round 2: rejected again
+        detail["comments"].append(changes("2026-10-09T10:30:00Z"))
+        actions = d.housekeeping()
+        self.assertEqual(fake.label_calls, [to_director])
+        self.assertIn("2 review rounds without an approval", fake.comments[-1][1])
+        self.assertTrue(any("escalated" in a for a in actions))
+
+        fake.label_calls.clear()                                             # later passes: no builder, no repeat
+        work["labels"] = [{"name": "status:blocked"}, {"name": "needs:director"}]
+        work["comments"] = [{"createdAt": "2026-10-09T10:40:00Z", "body": fake.comments[-1][1]}]
+        detail["comments"].append(changes("2026-10-09T10:45:00Z"))         # even a third CHANGES on the PR
+        d.housekeeping()
+        self.assertEqual(fake.label_calls, [])
+
+        work["labels"] = [{"name": "status:review"}]                         # the director sent it back with a new bar:
+        d.housekeeping()                                                     # rounds count afresh from the escalation
+        self.assertEqual(fake.label_calls, [to_builder])
+    def test_review_skip_prs_merge_whatever_the_branch(self):
+        """commonroom#22: green review:skip audit PRs on audit-* branches sat open for 8-10 hours."""
+        green = {"commits": [], "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        approved = {**green, "comments": [{"createdAt": "2026-10-09T10:00:00Z", "body": "REVIEW: APPROVE"}]}
+        cancelled = {**green, "statusCheckRollup": [{"name": "Fast tests", "conclusion": "CANCELLED",
+                                                     "detailsUrl": "https://github.com/o/t/actions/runs/33/job/1"}]}
+        skip = [{"name": "review:skip"}]
+        prs = [{"number": 244, "headRefName": "audit-20261007-1200", "labels": skip},
+               {"number": 245, "headRefName": "director-plan", "labels": []},          # not promised: its author lands it
+               {"number": 246, "headRefName": "moonshot/swarm", "labels": skip},
+               {"number": 247, "headRefName": "audit-20261007-1300", "labels": skip}]
+        details = {244: green, 245: approved, 246: cancelled, 247: {**green, "mergeable": "CONFLICTING"}}
+        fake = FakeBoard([issue(1, ["status:ready"])], prs=prs, details=details)
+        fake.merges, fake.reruns = [], []
+        fake.merge = fake.merges.append
+        fake.rerun_ci = lambda run_id, minutes_since: fake.reruns.append(run_id) or 1
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.merges, [244])
+        self.assertIn("merged PR #244 (audit-20261007-1200)", actions)
+        self.assertEqual(fake.reruns, ["33"])                    # a cancelled run is still rerun
+        self.assertEqual(fake.label_calls, [])                   # no issue to relabel for any of them
+        merge = next(r for r in self.ledger.recent_runs("t") if r["role"] == "merge")
+        self.assertEqual(merge["task"], "PR #244")               # counts as progress like any merge
+
+
 class MergesMainOnly(unittest.TestCase):
     """commonroom#14: an approval survives commits that only merge main in. Checked against real git."""
 
@@ -714,8 +772,6 @@ class MergesMainOnly(unittest.TestCase):
         self.assertFalse(dispatch.resolves_only_conflicts(conflicted, "a\nxy\nB\nq\nc\n"))
         self.assertFalse(dispatch.resolves_only_conflicts(conflicted, "a\nb\nc\nextra\n"))
         self.assertFalse(dispatch.resolves_only_conflicts("same\n", "changed\n"))
-
-
 class StackedMerge(unittest.TestCase):
     def test_merge_retargets_stacked_prs_before_deleting_the_branch(self):
         calls = []
@@ -741,6 +797,35 @@ class StackedMerge(unittest.TestCase):
         self.assertEqual(calls[retarget][-2:], ["--base", "main"])
         self.assertLess(retarget, delete)
         self.assertTrue(calls[delete][-1].endswith("/git/refs/heads/i277-base"))
+
+    def test_squash_commit_reads_as_the_pr_not_the_branch_commits(self):
+        """commonroom#21: a branch whose only commit was the room's WIP placeholder put that text on main."""
+        calls = []
+        body = "Closes #229\r\n\r\nImport until the global class cache exists.\r\n" + "x" * 5000 + "\r\nfooter"
+
+        def fake_gh(args, timeout=30):
+            calls.append(args)
+            if args[:2] == ["pr", "view"]:
+                return {"headRefName": "i229-export", "baseRefName": "main",
+                        "title": "Android export: import until the global class cache exists (#229)", "body": body}
+            return [] if args[:2] == ["pr", "list"] else None
+
+        orig = dispatch.board_mod.gh
+        dispatch.board_mod.gh = fake_gh
+        try:
+            dispatch.GitHubBoard("o/t").merge(259)
+        finally:
+            dispatch.board_mod.gh = orig
+        merge = next(c for c in calls if c[:2] == ["pr", "merge"])
+        self.assertIn("--subject=Android export: import until the global class cache exists (#229) (#259)", merge)
+        sent = next(a for a in merge if a.startswith("--body="))[len("--body="):]
+        self.assertTrue(sent.startswith("Closes #229\n\nImport until"))           # the PR's words, LF only
+        self.assertNotIn("\r", sent)
+        self.assertLess(len(sent), dispatch.SQUASH_BODY_MAX + 100)                 # trimmed at a line break
+        self.assertTrue(sent.endswith("(Trimmed: the full description is on PR #259.)"))
+        self.assertNotIn("WIP", " ".join(merge))
+        # A title that already names the PR isn't suffixed twice; an empty body still overrides the commit list.
+        self.assertEqual(dispatch.squash_message(7, "Fix it (#7)", None), ["--subject=Fix it (#7)", "--body="])
 
 
 if __name__ == "__main__":
