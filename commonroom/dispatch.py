@@ -31,6 +31,8 @@ STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 DIRECTOR_COOLDOWN = 3600
 OWNER_COOLDOWN = 300
+ROOM_ERROR_BACKOFF = 600   # a task whose last run was a room-error rests this long, doubling with each one in a row...
+ROOM_ERROR_ESCALATE = 3    # ...and the third in a row goes to the director (commonroom#9)
 SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
 
 
@@ -77,11 +79,17 @@ GIT_REJECTED = ("non-fast-forward", "fetch first", "[rejected]", "Authentication
                 "does not appear to be a git repository")
 
 
+def git_env(cwd) -> dict:
+    """Git never looks above `cwd` for a repository. From a worktree whose `.git` link was deleted, git otherwise finds
+    the owner's main checkout one level up and commits there (commonroom#17); with the ceiling it fails instead."""
+    return {**os.environ, "GIT_CEILING_DIRECTORIES": str(Path(cwd).resolve().parent)}
+
+
 def git(args: list[str], cwd: Path) -> str:
     # GitHub has transient failures (e.g. "remote: error: unable to write file ... index-pack failed"): retry network ops.
     tries = 3 if args and args[0] in NETWORK_GIT else 1
     for attempt in range(tries):
-        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8")
+        done = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8", env=git_env(cwd))
         if done.returncode == 0 or any(s in done.stderr for s in GIT_REJECTED):
             break
         if attempt < tries - 1:
@@ -719,8 +727,16 @@ class Dispatcher:
             return None
         return choice
 
+    def busy_tasks(self) -> set[str]:
+        """Tasks not to start now: running, or resting after room-errors. A room-error used to be retried on the next
+        pass, so one leftover folder became five identical failures in two minutes (commonroom#9)."""
+        now = time.time()
+        resting = {task for task, (count, ended) in self.ledger.room_error_streaks(self.project, now).items()
+                   if now - ended < ROOM_ERROR_BACKOFF * 2 ** min(count - 1, 4)}
+        return self.ledger.running_tasks(self.project) | resting
+
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
-        running = self.ledger.running_tasks(self.project)
+        running = self.busy_tasks()
         return [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)
                 and f"#{i['number']}" not in running
                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
@@ -763,7 +779,7 @@ class Dispatcher:
                 choice = self.choose(self.build_spec(issue), {provider: v})
                 if choice:
                     return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
-        running = self.ledger.running_tasks(self.project)
+        running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
         for issue in sorted(scouting, key=priority):
             choice = self.choose(self.roles.get("scout", ["claude:sonnet"]), {provider: v})
@@ -774,7 +790,7 @@ class Dispatcher:
     def pick_review(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         issue_labels = None
-        running = self.ledger.running_tasks(self.project)
+        running = self.busy_tasks()
         for pr in self.board.open_prs():
             m = BRANCH.match(pr["headRefName"])
             if not m or "review:skip" in labels(pr) or f"PR #{pr['number']}" in running:
@@ -801,7 +817,7 @@ class Dispatcher:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         open_now = self.board.open_issues(None)
         ready = self.ready_builds(open_now)
-        running = self.ledger.running_tasks(self.project)
+        running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
@@ -865,6 +881,11 @@ class Dispatcher:
 
     def last_run_at(self, role: str) -> float:
         return next((r["started_at"] for r in self.ledger.recent_runs(self.project, limit=200) if r["role"] == role), 0.0)
+
+    def report_path(self) -> Path:
+        """Where the auditor writes its report: the run's own working copy, as an absolute path. An auditor whose
+        worktree vanished moved to a new one and still wrote here, and the report was picked up (commonroom#17)."""
+        return Path(getattr(self, "_worktree", ".")).resolve() / ".room-report.md"
 
     def reports_dir(self) -> Path:
         return Path(self.ledger.path).parent / "reports" / (self.project or "default")
@@ -991,11 +1012,13 @@ class Dispatcher:
         if run_id is None:
             self.log(f"   {task} is already being worked on; skipped")
             return {"status": "skipped", "outputs": [], "note": "already running"}
+        self._run_id = run_id
         try:
             git(["fetch", "--quiet", "origin"], self.root)
             worktree, branch = self.prepare_worktree(job, provider)
+            self.ledger.set_worktree(run_id, worktree)
         except Exception as exc:
-            self.ledger.finish_run(run_id, "room-error", [], note=f"{type(exc).__name__}: {exc}"[:800])
+            self.room_error(run_id, job, task, exc)
             raise
         labelled = False
         try:
@@ -1022,20 +1045,41 @@ class Dispatcher:
             self.ledger.db.commit()
         except Exception as exc:
             # A room-side error is not a model failure: put the task back and record the error honestly.
-            if run_id:
-                self.ledger.finish_run(run_id, "room-error", [], note=f"{type(exc).__name__}: {exc}"[:800])
             if labelled:
                 try:
                     self.board.set_labels(job.issue["number"], add=["status:ready"], remove=["status:in-progress"])
                 except Exception:
                     pass
+            if run_id:
+                self.room_error(run_id, job, task, exc)
             raise
         finally:
             self.preserve_work(job, worktree, branch)
-            self.cleanup_worktree(worktree)
+            self.cleanup_worktree(worktree, run_id)
             shutil.rmtree(worker_tmp(worktree), ignore_errors=True)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def room_error(self, run_id: str, job: Job, task: str | None, exc: Exception):
+        """Record a room-side error. The task then rests (`busy_tasks`) instead of being retried on the next pass, and
+        the third in a row goes to the director with the error, the way repeated builder failures do (commonroom#9)."""
+        note = f"{type(exc).__name__}: {exc}"[:800]
+        self.ledger.finish_run(run_id, "room-error", [], note=note)
+        streak = self.ledger.room_error_streaks(self.project).get(task, (0, 0))[0] if task else 0
+        m = BRANCH.match((job.pr or {}).get("headRefName") or "")
+        n = job.issue["number"] if job.issue else int(m.group(1)) if m else None
+        if streak != ROOM_ERROR_ESCALATE or n is None or self.dry_run:
+            return
+        try:
+            if job.issue:   # a build stops here; a review keeps backing off while the director looks
+                self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:ready", "status:in-progress"])
+            else:
+                self.board.set_labels(n, add=["needs:director"])
+            self.board.comment(n, f"{task} hit {streak} room errors in a row (failures in Common Room itself, not the "
+                                  f"agent's), so the room stopped retrying it at once and is escalating to the director. "
+                                  f"Last error:\n\n```\n{note}\n```")
+        except Exception as err:
+            self.log(f"   could not escalate {task}: {str(err)[:160]}")
 
     def why(self) -> str:
         """Workers optimise what they're told. Give them the goal the task serves, not only its acceptance criteria."""
@@ -1160,7 +1204,7 @@ class Dispatcher:
             actions = []
         outputs = [{"kind": job.role, "ref": str(a)[:120]} for a in actions]
         if job.kind == "audit":
-            report = Path(getattr(self, "_worktree", ".")) / ".room-report.md"
+            report = self.report_path()
             if report.exists():
                 folder = self.reports_dir()
                 folder.mkdir(parents=True, exist_ok=True)
@@ -1229,7 +1273,8 @@ class Dispatcher:
             return (f"Common Room audit for {repo}. {job.reason}.\n"
                     f"Start with `python \"{room_py}\" digest --hours {max(1, hours)}`, run from this directory: it lists "
                     f"runs, merges, failures, spend, the board and usage. Follow your auditor instructions. Write the owner's "
-                    f"status report to `.room-report.md` in this directory; the room publishes it to the dashboard. Prefix "
+                    f"status report to `{self.report_path()}`, exactly that path even if you move to another working copy; "
+                    f"the room publishes it to the dashboard. Prefix "
                     f"every comment with `[agent:auditor]`. Any repo file change goes through a branch and PR. End with one "
                     f"line: `ACTIONS: [...]`, a JSON list of short strings naming each concrete change you made.")
         return (f"Common Room triggered a director run for {repo}. Milestone: {self.milestone}.\nTriggers: {job.reason}\n"
@@ -1262,10 +1307,9 @@ class Dispatcher:
         return path, None
 
     def checkout(self, path: Path, start: str, branch: str | None, clone: bool) -> Path:
-        self.cleanup_worktree(path)
+        self.cleanup_worktree(path, getattr(self, "_run_id", None))
         if path.exists():
             # A process from an earlier run (e.g. a test it left running) still holds files there: use a fresh folder.
-            git(["worktree", "prune"], self.root)
             path = path.with_name(f"{path.name}-{int(time.time())}")
         if not clone:
             if branch:
@@ -1292,19 +1336,30 @@ class Dispatcher:
         except RuntimeError:
             return None
 
-    def cleanup_worktree(self, path: Path):
+    def cleanup_worktree(self, path: Path, run_id: str | None = None):
+        """Remove a working copy, then prune git's records of missing ones. Never one that a running run still works in,
+        and every removal and prune is logged with the run that caused it: an auditor's worktree vanished mid-run and
+        nothing showed who removed it (commonroom#17)."""
+        holder = self.ledger.worktree_in_use(path, exclude_run=run_id)
+        if holder:
+            self.log(f"   kept {path}: run {holder['id']} ({holder['role']} {holder['task'] or '-'}) is still working there")
+            return
         if path.exists() and (path / ".git").is_dir():  # a self-contained clone (Codex jobs)
             import shutil, stat
+            self.log(f"   removing clone {path} (run {run_id or '-'})")
             shutil.rmtree(path, onerror=lambda f, p, _: (os.chmod(p, stat.S_IWRITE), f(p)))
         elif path.exists():
+            self.log(f"   removing worktree {path} (run {run_id or '-'})")
             try:
                 git(["worktree", "remove", "--force", str(path)], self.root)
-            except RuntimeError:
-                pass
-        try:
-            git(["worktree", "prune"], self.root)
-        except RuntimeError:
-            pass
+            except RuntimeError as exc:
+                self.log(f"   could not fully remove {path}: {str(exc)[:200]}")
+        # `prune -v` names what it drops on stderr: a worktree whose folder or .git link someone else deleted.
+        done = subprocess.run(["git", "worktree", "prune", "-v"], cwd=self.root, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=git_env(self.root))
+        pruned = [line.strip() for line in (done.stderr or "").splitlines() if line.strip()]
+        if pruned:
+            self.log(f"   git worktree prune (run {run_id or '-'}): " + "; ".join(pruned)[:400])
 
     # Budget ----------------------------------------------------------------------------------------
     def weekly_used(self) -> float | None:
@@ -1358,10 +1413,12 @@ class Dispatcher:
             if self.root:
                 base = self.root / ".claude" / "worktrees"
                 for path in [*base.glob(f"i{n}-*"), *base.glob(f"codex-i{n}-*")]:
+                    if self.ledger.worktree_in_use(path, exclude_run=run["id"]):
+                        continue   # a live run took the task over: its working copy is not the orphan's
                     branch = path.name.removeprefix("codex-")
                     if issue:
                         self.preserve_work(Job("build", run["role"], issue=issue), path, branch)
-                    self.cleanup_worktree(path)
+                    self.cleanup_worktree(path, run["id"])
             if issue and "status:in-progress" in labels(issue):
                 self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
                 self.board.comment(n, "The worker was interrupted (the PC shut down or its dispatcher crashed). "
