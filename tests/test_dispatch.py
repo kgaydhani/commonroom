@@ -505,6 +505,31 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(any(call[0] == 61 for call in fake.label_calls))   # its PR is open: still in review
         self.assertTrue(any("#60" in a for a in actions))
 
+    def test_review_skip_prs_merge_whatever_the_branch(self):
+        """commonroom#22: green review:skip audit PRs on audit-* branches sat open for 8-10 hours."""
+        green = {"commits": [], "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        approved = {**green, "comments": [{"createdAt": "2026-10-09T10:00:00Z", "body": "REVIEW: APPROVE"}]}
+        cancelled = {**green, "statusCheckRollup": [{"name": "Fast tests", "conclusion": "CANCELLED",
+                                                     "detailsUrl": "https://github.com/o/t/actions/runs/33/job/1"}]}
+        skip = [{"name": "review:skip"}]
+        prs = [{"number": 244, "headRefName": "audit-20261007-1200", "labels": skip},
+               {"number": 245, "headRefName": "director-plan", "labels": []},          # not promised: its author lands it
+               {"number": 246, "headRefName": "moonshot/swarm", "labels": skip},
+               {"number": 247, "headRefName": "audit-20261007-1300", "labels": skip}]
+        details = {244: green, 245: approved, 246: cancelled, 247: {**green, "mergeable": "CONFLICTING"}}
+        fake = FakeBoard([issue(1, ["status:ready"])], prs=prs, details=details)
+        fake.merges, fake.reruns = [], []
+        fake.merge = fake.merges.append
+        fake.rerun_ci = lambda run_id, minutes_since: fake.reruns.append(run_id) or 1
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.merges, [244])
+        self.assertIn("merged PR #244 (audit-20261007-1200)", actions)
+        self.assertEqual(fake.reruns, ["33"])                    # a cancelled run is still rerun
+        self.assertEqual(fake.label_calls, [])                   # no issue to relabel for any of them
+        merge = next(r for r in self.ledger.recent_runs("t") if r["role"] == "merge")
+        self.assertEqual(merge["task"], "PR #244")               # counts as progress like any merge
+
 
 class StackedMerge(unittest.TestCase):
     def test_merge_retargets_stacked_prs_before_deleting_the_branch(self):
