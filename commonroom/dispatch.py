@@ -124,10 +124,16 @@ class GitHubBoard:
         board_mod.gh(["pr", "edit", str(number), "--repo", self.repo, "--add-label", name])
 
     def merge(self, number: int):
-        """Squash-merge, then delete the head branch. PRs stacked on that branch move to its base first: GitHub closes
-        a PR whose base branch is deleted through the API rather than retargeting it (gamemirage#368)."""
-        pr = board_mod.gh(["pr", "view", str(number), "--repo", self.repo, "--json", "headRefName,baseRefName"]) or {}
-        board_mod.gh(["pr", "merge", str(number), "--repo", self.repo, "--squash"])
+        """Squash-merge, then delete the head branch. Main's commit is the PR's title and body, whatever the branch's
+        commits say: GitHub's default takes a lone commit's message, which once made the room's WIP placeholder the
+        permanent description of a change (commonroom#21). PRs stacked on that branch move to its base first: GitHub
+        closes a PR whose base branch is deleted through the API rather than retargeting it (gamemirage#368)."""
+        pr = board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
+                           "--json", "headRefName,baseRefName,title,body"]) or {}
+        args = ["pr", "merge", str(number), "--repo", self.repo, "--squash"]
+        if (pr.get("title") or "").strip():
+            args += squash_message(number, pr["title"], pr.get("body"))
+        board_mod.gh(args)
         head, base = pr.get("headRefName"), pr.get("baseRefName") or "main"
         if not head:
             return
@@ -149,6 +155,22 @@ class GitHubBoard:
             return 0
         board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
         return attempt
+
+
+SQUASH_BODY_MAX = 4000   # well inside Windows' 32 767-character command line
+
+
+def squash_message(number: int, title: str, body: str | None) -> list[str]:
+    """`gh pr merge` flags that make the squash commit read as the PR: "<title> (#<n>)" like GitHub's own multi-commit
+    default, and the PR body, trimmed. `--flag=value` so a body starting with "-" can't be read as a flag."""
+    title = " ".join(title.split())
+    subject = title if title.endswith(f"(#{number})") else f"{title} (#{number})"
+    text = (body or "").replace("\r\n", "\n").strip()
+    if len(text) > SQUASH_BODY_MAX:
+        cut = text[:SQUASH_BODY_MAX]
+        text = cut[:cut.rfind("\n")] if "\n" in cut else cut
+        text = text.rstrip() + f"\n\n(Trimmed: the full description is on PR #{number}.)"
+    return [f"--subject={subject}", f"--body={text}"]
 
 
 # PR state ----------------------------------------------------------------------------------------
@@ -364,11 +386,13 @@ class Dispatcher:
                 actions.append(f"#{n} was in review with no open PR; back to ready")
         for pr in prs:
             m = BRANCH.match(pr["headRefName"])
-            if not m:
+            # PRs on other branches (audit-*, director-*, moonshot/*) have no issue to send back to, but `review:skip`
+            # promises a merge once CI is green, whatever the branch (commonroom#22). Others are their author's to land.
+            if not m and "review:skip" not in labels(pr):
                 continue
             detail = self.board.pr_detail(pr["number"])
             review, checks = latest_review(detail), checks_state(detail)
-            issue_no = int(m.group(1))
+            issue_no = int(m.group(1)) if m else None
             # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
             if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
@@ -392,10 +416,11 @@ class Dispatcher:
                     except Exception as exc:  # e.g. another dispatcher merged it a moment ago
                         actions.append(f"merge of PR #{pr['number']} skipped: {str(exc)[:120]}")
                         continue
-                    run = self.ledger.start_run(self.project, f"#{issue_no}", "merge", "none")
+                    run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{pr['number']}", "merge", "none")
                     self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
-                actions.append(f"merged PR #{pr['number']} (issue #{issue_no})")
-                state[issue_no] = "CLOSED"
+                actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
+                if issue_no:
+                    state[issue_no] = "CLOSED"
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
                 if not issue or labels(issue) & {"status:ready", "status:blocked", "needs:director"}:
