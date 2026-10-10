@@ -45,3 +45,8 @@ codex_parallel_builds = false
 [parallel]
 # One slot: the heartbeat starts a single Claude dispatcher for this project.
 claude_slots = 1
+
+[director]
+# Director 2026-10-10: the room's own director used 23% of its 15% share (5 runs, 29 min in 24 h) while builds waited 1.5-3.5 h
+# for review. Steer every 6 h here; the game keeps 3 h. Escalations still wake it at once.
+steer_every_hours = 6
