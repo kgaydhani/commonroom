@@ -42,6 +42,7 @@ SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at mo
 # Roles the room dispatches through their own triggers. Any other role with a `[roles]` entry and an agent file runs on
 # demand from a `role:<name>` + `status:ready` issue (commonroom#4).
 BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
+STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63)
 
 
 def priority(issue: dict) -> tuple:
@@ -71,6 +72,27 @@ def dependencies(body: str | None) -> set[int]:
                 deps.add(int(m.group(1)))
             pos = m.end()
     return deps
+
+
+def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float) -> list[dict]:
+    """Open `status:in-progress` issues that no run holds and that haven't changed for STALE_CLAIM_MINUTES: a moonshot
+    the pace gate stopped a minute after claiming gamemirage#296 left it in progress for 1.5 h (commonroom#63). A running
+    run on `#N` holds it, any running moonshot holds them all (it may be on any issue), and an open `i<N>-*` PR means
+    it's in review whatever its label says."""
+    if any(r["role"] == "moonshot" for r in running_runs):
+        return []
+    held = {r["task"] for r in running_runs if r.get("task")}
+    in_review = {int(m.group(1)) for pr in prs if (m := BRANCH.match(pr.get("headRefName") or ""))}
+    stale = []
+    for issue in issues:
+        n, updated = issue["number"], issue.get("updatedAt")
+        if (issue.get("state", "OPEN") != "OPEN" or "status:in-progress" not in labels(issue) or not updated
+                or n in in_review or f"#{n}" in held):
+            continue
+        minutes = int((now - calendar.timegm(time.strptime(updated[:19], "%Y-%m-%dT%H:%M:%S"))) // 60)
+        if minutes >= STALE_CLAIM_MINUTES:
+            stale.append({"number": n, "title": issue.get("title"), "minutes": minutes})
+    return stale
 
 
 def runnable_roles(cfg: dict) -> set[str]:
@@ -631,6 +653,13 @@ class Dispatcher:
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
                 actions.append(f"#{n} was in review with no open PR; back to ready")
+        for claim in stale_claims(everything, prs, self.ledger.running_runs(self.project), time.time()):
+            n = claim["number"]
+            if not self.dry_run:
+                self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
+                self.board.comment(n, f"Released a stale claim: no room or moonshot run is working on this and it hasn't "
+                                      f"changed for {claim['minutes']} min. Back to ready.")
+            actions.append(f"released stale claim #{n}")
         merged = updated = False
         held = None   # is main red? Read once, when a PR is first ready to merge
         for pr in sorted(prs, key=lambda p: p["number"]):   # oldest first: a stacked base lands before what builds on it

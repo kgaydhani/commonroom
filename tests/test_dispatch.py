@@ -1046,6 +1046,79 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(merge["task"], "PR #244")               # counts as progress like any merge
 
 
+class StaleClaims(unittest.TestCase):
+    """commonroom#63: a moonshot claimed gamemirage#296, the pace gate stopped it a minute later, and the issue sat
+    `status:in-progress` with no run on it for 1.5 h. Housekeeping releases a claim no run holds."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+
+    def tearDown(self):
+        self.ledger.close(); self.tmp.cleanup()
+
+    @staticmethod
+    def claimed(minutes_ago, n=296):
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - minutes_ago * 60))
+        return issue(n, ["status:in-progress", "prio:top"]) | {"updatedAt": stamp}
+
+    def housekeep(self, issues, prs=()):
+        board = FakeBoard(issues, prs=list(prs))
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        return board, d.housekeeping()
+
+    def test_releases_an_unheld_claim_after_30_minutes(self):
+        board, actions = self.housekeep([self.claimed(31)])
+        self.assertEqual(board.label_calls, [(296, ("status:ready",), ("status:in-progress",))])
+        self.assertEqual(board.comments, [(296, "Released a stale claim: no room or moonshot run is working on this and "
+                                                "it hasn't changed for 31 min. Back to ready.")])
+        self.assertIn("released stale claim #296", actions)
+
+    def test_leaves_a_recent_claim_alone(self):
+        board, actions = self.housekeep([self.claimed(29)])
+        self.assertEqual((board.label_calls, actions), ([], []))
+
+    def test_leaves_a_claim_held_by_a_running_run_alone(self):
+        self.ledger.start_run("t", "#296", "builder", "claude")
+        board, actions = self.housekeep([self.claimed(31)])
+        self.assertEqual((board.label_calls, actions), ([], []))
+
+    def test_a_running_moonshot_holds_every_claim(self):
+        self.ledger.start_run("t", "moonshot:harvest_sprint", "moonshot", "claude", "fable")
+        board, actions = self.housekeep([self.claimed(31)])
+        self.assertEqual((board.label_calls, actions), ([], []))
+
+    def test_other_projects_runs_hold_nothing(self):
+        self.ledger.start_run("other", "#296", "builder", "claude")
+        self.ledger.start_run("other", "moonshot:x", "moonshot", "claude")
+        board, actions = self.housekeep([self.claimed(31)])
+        self.assertIn("released stale claim #296", actions)
+
+    def test_an_issue_with_an_open_pr_is_in_review(self):
+        prs = [{"number": 400, "headRefName": "i296-harvest", "labels": []}]
+        detail = {"number": 400, "headRefName": "i296-harvest", "commits": [], "comments": [], "statusCheckRollup": []}
+        board = FakeBoard([self.claimed(31)], prs=prs, details={400: detail})
+        dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None).housekeeping()
+        self.assertEqual(board.label_calls, [])
+
+    def test_digest_lists_stale_claims(self):
+        from commonroom import cli
+
+        class FakeGh:   # stands in for the `board` module the digest reads GitHub through
+            issues = staticmethod(lambda repo, **_: [self.claimed(31), self.claimed(5, n=297)])
+            milestone = staticmethod(lambda repo, title: None)
+            gh = staticmethod(lambda args: [])
+
+        cfg = cfg_with(self.tmp.name)
+        orig = cli.Ledger, cli.board
+        cli.Ledger, cli.board = (lambda: Ledger(self.ledger.path)), FakeGh
+        try:
+            result = cli.digest(cfg, 1)
+        finally:
+            cli.Ledger, cli.board = orig
+        self.assertEqual([c["number"] for c in result["stale_claims"]], [296])
+
+
 class MergesMainOnly(unittest.TestCase):
     """commonroom#14: an approval survives commits that only merge main in. Checked against real git."""
 
