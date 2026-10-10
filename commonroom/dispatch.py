@@ -43,6 +43,12 @@ SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at mo
 # demand from a `role:<name>` + `status:ready` issue (commonroom#4).
 BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
 STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63)
+# Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
+# kind of claim needs (first matching word wins), and how many subjects one run may read.
+CLAIM_MORE = re.compile(r"(?:[\s,/]|\band\b)*#(\d+)\b", re.I)
+CLAIM_EVIDENCE = ((("creat", "opened", "filed"), "created"), (("close",), {"closed"}), (("merge",), {"merged"}),
+                  (("→", "->", "label", "status:", "prio:", "ready", "blocked", "park"), {"labeled", "unlabeled"}))
+CLAIM_SUBJECTS_MAX = 20
 
 
 def priority(issue: dict) -> tuple:
@@ -93,6 +99,77 @@ def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], 
         if minutes >= STALE_CLAIM_MINUTES:
             stale.append({"number": n, "title": issue.get("title"), "minutes": minutes})
     return stale
+
+
+def claim_subjects(claim: str, other_projects=()) -> list[int] | None:
+    """The issues or PRs a claim is about: its first `#N` and any directly after it. None when it has no subject in this
+    repository: no `#N`, or one written with a repo prefix (`name#N`) or after another project's name."""
+    first = re.search(r"#(\d+)", claim)
+    if not first or (first.start() and re.match(r"[\w./-]", claim[first.start() - 1])):
+        return None
+    before = claim[:first.start()].lower()
+    if any(re.search(rf"(?<![\w-]){re.escape(p.lower())}\s+(?:(?:pr|issue)\s+)?$", before) for p in other_projects if p):
+        return None
+    subjects, at = [int(first.group(1))], first.end()
+    while m := CLAIM_MORE.match(claim, at):
+        subjects.append(int(m.group(1)))
+        at = m.end()
+    return subjects
+
+
+def check_claims(claims: list, since: float, fetch, other_projects=()) -> tuple[list[str], list[str]]:
+    """Check ACTIONS claims against GitHub evidence dated after `since`. `fetch(number, kind)` returns the issue or PR
+    (`kind="issue"`, for `created_at`) or its timeline events (`kind="timeline"`). Returns (checked, unverified) claims.
+    A skipped claim (another repository, or past the subject limit) or one whose read failed is in neither."""
+    cache: dict[tuple[int, str], object] = {}
+
+    def read(n: int, kind: str):
+        if (n, kind) not in cache:
+            try:
+                cache[(n, kind)] = fetch(n, kind)
+            except Exception:
+                cache[(n, kind)] = None
+        return cache[(n, kind)]
+
+    def after(stamp) -> bool:
+        try:
+            return calendar.timegm(time.strptime(str(stamp or "")[:19], "%Y-%m-%dT%H:%M:%S")) >= since
+        except ValueError:
+            return False
+
+    seen: set[int] = set()
+    checked, unverified = [], []
+    for claim in map(str, claims):
+        subjects = claim_subjects(claim, other_projects)
+        if not subjects or len(seen | set(subjects)) > CLAIM_SUBJECTS_MAX:
+            continue
+        seen |= set(subjects)
+        low = claim.lower()
+        wanted = next((rule for words, rule in CLAIM_EVIDENCE if any(w in low for w in words)), None)
+        results = []
+        for n in subjects:
+            if wanted == "created":
+                record = read(n, "issue")
+                results.append(None if record is None else after(record.get("created_at")))
+                continue
+            events = read(n, "timeline")
+            results.append(None if events is None else any(
+                (wanted is None or e.get("event") in wanted) and after(e.get("created_at") or e.get("submitted_at"))
+                for e in events))
+        if False in results:
+            checked.append(claim)
+            unverified.append(claim)
+        elif None not in results:
+            checked.append(claim)
+    return checked, unverified
+
+
+def actions_of(text: str | None) -> list:
+    m = ACTIONS_LINE.search(text or "")
+    try:
+        return json.loads(m.group(1)) if m else []
+    except ValueError:
+        return []
 
 
 def runnable_roles(cfg: dict) -> set[str]:
@@ -163,6 +240,13 @@ class GitHubBoard:
 
     def close_issue(self, number: int, body: str):
         board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--comment", f"{MARK} {body}"])
+
+    def claim_record(self, number: int, kind: str):
+        """One read for checking ACTIONS claims (commonroom#68): the issue or PR, or its timeline events."""
+        if kind == "issue":
+            return board_mod.gh(["api", f"repos/{self.repo}/issues/{number}"])
+        pages = board_mod.gh(["api", "--paginate", "--slurp", f"repos/{self.repo}/issues/{number}/timeline?per_page=100"])
+        return [e for page in pages or [] for e in page]
 
     def open_prs(self) -> list[dict]:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
@@ -1347,6 +1431,8 @@ class Dispatcher:
             self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
                                    (weekly_start, self.weekly_used(), run_id))
             self.ledger.db.commit()
+            if job.kind not in ("build", "role", "review") and status not in ("limited", "stopped"):
+                self.verify_actions(run_id, result, started_iso)
         except Exception as exc:
             # A room-side error is not a model failure: put the task back and record the error honestly.
             if labelled:
@@ -1363,6 +1449,22 @@ class Dispatcher:
             shutil.rmtree(worker_tmp(worktree), ignore_errors=True)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def verify_actions(self, run_id: str, result, started_iso: str):
+        """Record the ACTIONS claims GitHub doesn't show (commonroom#68). Records only: the run's status, outputs and
+        breakers stay as they were, and a failure here is logged, never raised."""
+        fetch = getattr(self.board, "claim_record", None)
+        actions = actions_of(result.final_text)
+        if not fetch or not actions:
+            return
+        try:
+            since = calendar.timegm(time.strptime(started_iso, "%Y-%m-%dT%H:%M:%SZ"))
+            checked, unverified = check_claims(actions, since, fetch, self.ledger.projects() - {self.project})
+            self.ledger.record_claims(run_id, len(checked), unverified)
+            if unverified:
+                self.log(f"   {len(unverified)} of {len(checked)} reported actions didn't apply: {'; '.join(unverified)[:300]}")
+        except Exception as exc:
+            self.log(f"   could not check the run's actions: {str(exc)[:160]}")
 
     def room_error(self, run_id: str, job: Job, task: str | None, exc: Exception):
         """Record a room-side error. The task then rests (`busy_tasks`) instead of being retried on the next pass, and
@@ -1521,11 +1623,7 @@ class Dispatcher:
                     return "failed", [], "approval without a `TESTS: PASS <head sha> <command>` line: without CI it can't merge"
                 return "done", [{"kind": "review", "ref": f"PR #{job.pr['number']} {verdict}"}], tail
             return "failed", [], "; ".join(result.errors[-3:]) or "no REVIEW comment posted"
-        m = ACTIONS_LINE.search(result.final_text or "")
-        try:
-            actions = json.loads(m.group(1)) if m else []
-        except ValueError:
-            actions = []
+        actions = actions_of(result.final_text)
         outputs = [{"kind": job.role, "ref": str(a)[:120]} for a in actions]
         if job.kind == "audit":
             report = self.report_path()
