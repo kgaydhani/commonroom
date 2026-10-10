@@ -287,6 +287,10 @@ class GitHubBoard:
                             "--json", "number,state,url,headRefName"]) or []
         return prs[0] if prs else None
 
+    def close_pr(self, number: int, body: str):
+        """Close a PR unmerged with a room comment. Its branch stays, so nothing on it is lost."""
+        board_mod.gh(["pr", "close", str(number), "--repo", self.repo, "--comment", f"{MARK} {body}"])
+
     def label_pr(self, number: int, name: str):
         board_mod.gh(["pr", "edit", str(number), "--repo", self.repo, "--add-label", name])
 
@@ -774,6 +778,12 @@ class Dispatcher:
                 review = "CHANGES"
             # A PR that conflicts with main can't merge (and CI may never run): send it back to its builder.
             if detail.get("mergeable") == "CONFLICTING" and not self.dry_run:
+                closed = self.close_if_superseded(pr, detail, issue_no, review)
+                if closed:
+                    actions += closed
+                    if issue_no:
+                        state[issue_no] = "CLOSED"
+                    continue
                 actions += self.back_to_merge_main(pr, issue_no, everything, review)
                 continue
             # Red CI: rerun what never really ran; send real failures back to the builder (never let a PR sit red).
@@ -805,6 +815,12 @@ class Dispatcher:
                         actions.append(f"PR #{pr['number']}: couldn't compare it with main, not merged: {str(exc)[:100]}")
                         continue
                     if behind:
+                        closed = self.close_if_superseded(pr, detail, issue_no, review)
+                        if closed:
+                            actions += closed
+                            if issue_no:
+                                state[issue_no] = "CLOSED"
+                            continue
                         if not updated:   # one branch at a time: each update reruns CI
                             updated = True
                             try:
@@ -885,6 +901,32 @@ class Dispatcher:
         except RuntimeError:
             return False
         return all(merges_main_only(self.root, oid) for oid in oids)
+
+    def own_diff_empty(self, detail: dict) -> bool:
+        """Is everything this PR changes already on main? `git diff origin/main origin/<branch> -- <its files>` is empty
+        once another PR built on top of it has merged (gamemirage #238 after #255). Any doubt: no."""
+        branch = detail.get("headRefName") or ""
+        files = [f["path"] for f in detail.get("files") or [] if f.get("path")]
+        if not self.root or not branch or not files:
+            return False
+        try:
+            git(["fetch", "--quiet", "origin", "main", branch], self.root)
+            return git(["diff", "--name-only", "origin/main", f"origin/{branch}", "--", *files], self.root) == ""
+        except RuntimeError:
+            return False
+
+    def close_if_superseded(self, pr: dict, detail: dict, issue_no: int | None, review: str | None) -> list[str]:
+        """An approved PR whose content main already has would go back to its builder for a rebase that leaves it
+        empty (commonroom#42). Close it as superseded instead, and its issue as met. Returns [] if it isn't."""
+        if review != "APPROVE" or not self.own_diff_empty(detail):
+            return []
+        self.board.close_pr(pr["number"], "Superseded: everything this PR changes is already on main, so there is "
+                                          "nothing left to merge. Closed unmerged; the branch is kept.")
+        if issue_no:
+            self.board.close_issue(issue_no, f"Met: the content of its approved PR #{pr['number']} is already on main "
+                                             f"(another PR carried it). PR #{pr['number']} was closed as superseded.")
+        return [f"PR #{pr['number']} closed as superseded: its content is already on main"
+                + (f"; issue #{issue_no} closed as met" if issue_no else "")]
 
     def back_to_merge_main(self, pr: dict, issue_no: int, everything: list[dict], review: str | None) -> list[str]:
         """A PR that conflicts with main goes back to its builder. Unless review asked for changes, that is a merge-main
