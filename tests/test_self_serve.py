@@ -329,8 +329,14 @@ def touching(*paths, **kw):
     return d
 
 
-def director(at="2026-10-09T14:00:00Z", verdict="APPROVE"):
-    return {"createdAt": at, "body": f"[agent:director] REVIEW: {verdict}\nThe budget change is what the issue asks for."}
+def director(at="2026-10-09T14:00:00Z", verdict="APPROVE", head=HEAD[:7]):
+    line = f"HEAD: {head}\n" if head else ""
+    return {"createdAt": at, "body": f"[agent:director] REVIEW: {verdict}\n{line}The budget change is what the issue asks for."}
+
+
+def waits(why):
+    return (f"PR #5 {why} and waits for the director's approval: post `[agent:director] REVIEW: APPROVE` "
+            f"with the line `HEAD: {HEAD}`")
 
 
 class DirectorPaths(Base):
@@ -348,7 +354,7 @@ class DirectorPaths(Base):
         d = self.dispatcher(self.cfg(), board)
         actions = d.housekeeping()
         self.assertEqual(board.merged, [])
-        wait = "PR #5 touches director paths (commonroom/gate.py) and waits for the director's approval"
+        wait = waits("touches director paths (commonroom/gate.py)")
         self.assertIn(wait, actions)
         self.assertIn(wait, d.director_trigger())
         self.assertFalse(d.needs_review(board.details[5]))              # the reviewer's part is done: no re-review loop
@@ -407,7 +413,7 @@ class DirectorPaths(Base):
         d = self.dispatcher(self.cfg(), board)
         d.dry_run = True
         actions = d.housekeeping()
-        self.assertIn("PR #5 touches director paths (commonroom/gate.py) and waits for the director's approval", actions)
+        self.assertIn(waits("touches director paths (commonroom/gate.py)"), actions)
         self.assertFalse(any(a.startswith("merged") for a in actions))
 
     def test_director_approval_does_not_replace_the_reviewers_tested_one(self):
@@ -447,6 +453,42 @@ class DirectorPaths(Base):
         d.housekeeping()
         self.assertEqual(board.merged, [5])
 
+    def test_director_approval_naming_an_older_head_does_not_merge_and_the_trigger_still_names_it(self):
+        # commonroom#55: a commit made before the approval and pushed after it keeps an older committedDate.
+        for head in ("fedcba9", "fedcba9876543210fedcba9876543210fedcba98", HEAD[:6]):
+            board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+            board.details[5]["comments"].append(director(head=head))
+            d = self.dispatcher(self.cfg(), board)
+            self.assertFalse(dispatch.director_approved(board.details[5]), head)
+            self.assertIn(waits("touches director paths (commonroom/gate.py)"), d.housekeeping())
+            self.assertEqual(board.merged, [], head)
+            self.assertIn(waits("touches director paths (commonroom/gate.py)"), d.director_trigger())
+            self.assertFalse(d.needs_review(board.details[5]))          # not CHANGES: the reviewer's part stays done
+
+    def test_director_approval_without_a_head_line_does_not_merge(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        board.details[5]["comments"].append(director(head=None))
+        d = self.dispatcher(self.cfg(), board)
+        d.housekeeping()
+        self.assertEqual(board.merged, [])
+        self.assertEqual(len(d.ready_for_director()), 1)                # not approved yet, not sent back
+
+    def test_director_approval_naming_the_full_head_merges(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        board.details[5]["comments"].append(director(head=HEAD.upper()))
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [5])
+
+    def test_the_trigger_text_names_the_head_sha(self):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        trigger = self.dispatcher(self.cfg(), board).director_trigger()
+        self.assertIn(f"HEAD: {HEAD}", trigger)
+        self.assertIn("[agent:director] REVIEW: APPROVE", trigger)
+
+    def test_the_director_prompt_asks_for_the_head_line(self):
+        text = (REPO / ".claude" / "agents" / "director.md").read_text(encoding="utf-8")
+        self.assertIn("HEAD: <sha>", text)
+
     def test_commonrooms_room_toml_names_the_budget_and_safety_files(self):
         cfg = config.load(REPO / "room.toml", follow_host=False)
         self.assertEqual(cfg["merge"]["director_paths"], self.PATHS)
@@ -460,7 +502,7 @@ def labelled(*names, **kw):
 
 class NeedsDirectorLabel(Base):
     """commonroom#65: a PR that needs lines in another project's room.toml waits for the director, as director paths do."""
-    WAIT = "PR #5 is labelled needs:director and waits for the director's approval"
+    WAIT = waits("is labelled needs:director")
 
     def board(self, *names, **kw):
         return MergeBoard([pr(5, 40, labels=names)], {5: labelled(*names, **kw)})
@@ -509,7 +551,7 @@ class NeedsDirectorLabel(Base):
         cfg = project_cfg(self.tmp.name)
         cfg["merge"] = {"director_paths": ["room.toml"]}
         self.assertEqual(self.dispatcher(cfg, board).ready_for_director(),
-                         ["PR #5 touches director paths (room.toml) and waits for the director's approval"])
+                         [waits("touches director paths (room.toml)")])
 
     def test_the_builder_prompt_and_agents_md_say_when_to_add_the_label(self):
         for doc in (REPO / ".claude" / "agents" / "builder.md", REPO / "AGENTS.md"):
