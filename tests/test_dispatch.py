@@ -40,6 +40,9 @@ class FakeBoard:
     def close_issue(self, n, body):
         self.closed = getattr(self, "closed", []) + [(n, body)]
 
+    def close_pr(self, n, body):
+        self.closed_prs = getattr(self, "closed_prs", []) + [(n, body)]
+
     # Merge safety (commonroom#19): by default every branch contains main and main's CI isn't red.
     behind, main_runs = {}, []
 
@@ -954,6 +957,70 @@ class WithLedger(unittest.TestCase):
         d.housekeeping()
         self.assertIn("merge-main run", fake.comments[0][1])
 
+
+    def test_approved_pr_already_on_main_is_closed_not_bounced(self):
+        """commonroom#42: gamemirage PR #238 was all on main once #255 (built on it) merged, yet went back to its
+        builder for a rebase that would have left it empty."""
+        def fake_git(own_diff):
+            calls = []
+            def run(args, cwd):
+                calls.append(args)
+                return own_diff if args[0] == "diff" else ""
+            return calls, run
+
+        def setup(mergeable="CONFLICTING", review=True):
+            detail = self.approved_pr(238, "i230-x") | {"mergeable": mergeable, "files": [{"path": "a.gd"}, {"path": "b.gd"}]}
+            if not review:
+                detail["comments"] = []
+            fake = FakeBoard([issue(230, ["status:review"])], prs=[{"number": 238, "headRefName": "i230-x"}],
+                             details={238: detail})
+            fake.merges = []
+            fake.merge = fake.merges.append
+            return fake, dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+
+        original = dispatch.git
+        self.addCleanup(setattr, dispatch, "git", original)
+
+        calls, dispatch.git = fake_git("")                                # empty own-diff, conflicting: close it
+        fake, d = setup()
+        actions = d.housekeeping()
+        self.assertIn(["diff", "--name-only", "origin/main", "origin/i230-x", "--", "a.gd", "b.gd"], calls)
+        self.assertEqual([n for n, _ in fake.closed_prs], [238])
+        self.assertEqual([n for n, _ in fake.closed], [230])
+        self.assertIn("Superseded", fake.closed_prs[0][1])
+        self.assertEqual(fake.label_calls, [])                            # not bounced to its builder
+        self.assertFalse(getattr(fake, "comments", []))
+        self.assertTrue(any("closed as superseded" in a for a in actions))
+
+        calls, dispatch.git = fake_git("")                                # empty own-diff, behind main: close, no update
+        fake, d = setup(mergeable="MERGEABLE")
+        fake.behind = {238: 2}
+        d.housekeeping()
+        self.assertEqual([n for n, _ in fake.closed_prs], [238])
+        self.assertFalse(getattr(fake, "updated", []))
+        self.assertEqual(fake.merges, [])
+
+        calls, dispatch.git = fake_git("a.gd")                            # own-diff not empty: left alone, bounced as before
+        fake, d = setup()
+        d.housekeeping()
+        self.assertFalse(getattr(fake, "closed_prs", []))
+        self.assertFalse(getattr(fake, "closed", []))
+        self.assertIn((230, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+        self.assertIn("merge-main run", fake.comments[0][1])
+
+        calls, dispatch.git = fake_git("a.gd")                            # not empty and behind: updated as before
+        fake, d = setup(mergeable="MERGEABLE")
+        fake.behind = {238: 2}
+        d.housekeeping()
+        self.assertFalse(getattr(fake, "closed_prs", []))
+        self.assertEqual(fake.updated, [238])
+
+        calls, dispatch.git = fake_git("")                                # unapproved: never checked, never closed
+        fake, d = setup(review=False)
+        d.housekeeping()
+        self.assertEqual(calls, [])
+        self.assertFalse(getattr(fake, "closed_prs", []))
+        self.assertIn((230, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
 
     def test_second_changes_verdict_goes_to_the_director_not_the_builder(self):
         """commonroom#32: gamemirage PR #369 went 6+ builder/reviewer rounds on a PR that couldn't change."""
