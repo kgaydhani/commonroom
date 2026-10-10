@@ -85,7 +85,10 @@ When the owner is away, a scheduled heartbeat runs `room run`. It dispatches rea
 Director, builder, reviewer, scout and auditor have their own triggers. Any other role with a `[roles]` entry and an agent
 file `.claude/agents/<name>.md` (playtester, analyst...) runs on demand: an issue in the goal milestone labelled
 `role:<name>` and `status:ready` queues with the builds by priority, runs that agent in a detached worktree, and is closed
-with the agent's report when it ends with `STATUS: DONE` (commonroom#4). The digest's `hours_since_last` lists every such
+with the agent's report when it ends with `STATUS: DONE` (commonroom#4). With a `[playtester]` table (`paths` globs,
+`every_hours`, default 6), housekeeping opens `Playtest after merges: #a` (`role:playtester`, `status:ready`, goal
+milestone) when a PR it merges changes a matching file. Later matching merges join the open one, and none opens within
+`every_hours` of the last one closing. Without the table nothing happens (commonroom#53). The digest's `hours_since_last` lists every such
 role, a never-run one as `null`.
 
 ## Roadmap

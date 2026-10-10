@@ -57,7 +57,11 @@ class FakeBoard:
 
     def create_issue(self, title, body, labels=(), milestone=None):
         self.created = getattr(self, "created", []) + [(title, tuple(labels), milestone)]
+        self.created_bodies = getattr(self, "created_bodies", []) + [body]
         return 900
+
+    def edit_issue(self, n, title, body):
+        self.edited = getattr(self, "edited", []) + [(n, title, body)]
 
 
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
@@ -164,6 +168,68 @@ class WithLedger(unittest.TestCase):
         unblocked = {call[0] for call in fake.label_calls if "status:ready" in call[1]}
         self.assertEqual(unblocked, {2, 3})  # 3 unblocks because the merge closed #4; 5 waits for the director
         self.assertTrue(any("merged PR #7" in a for a in actions))
+
+    def playtest_pass(self, cfg, issues, n, files):
+        """One housekeeping pass that merges PR #n, which changes `files`."""
+        detail = {"number": n, "headRefName": f"i{n}-x", "files": [{"path": f} for f in files],
+                  "commits": [{"committedDate": "2026-10-05T12:00:00Z"}],
+                  "comments": [{"createdAt": "2026-10-05T13:00:00Z", "body": "REVIEW: APPROVE"}],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        fake = FakeBoard(issues, prs=[{"number": n, "headRefName": f"i{n}-x", "title": f"Change {n}"}], details={n: detail})
+        actions = dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertEqual(fake.merged, n)
+        return fake, actions
+
+    def test_merges_touching_playtest_paths_open_then_extend_one_playtest_issue(self):
+        """commonroom#53: visual PRs landed unchecked by eye and broken visuals were found hours later."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["playtester"] = {"paths": ["game/view/**", "art/**"]}
+        issues = []
+        fake, actions = self.playtest_pass(cfg, issues, 7, ["game/view/hud.gd", "README.md"])
+        self.assertEqual(fake.created, [("Playtest after merges: #7", ("role:playtester", "status:ready"), "M0")])
+        self.assertIn("- PR #7: Change 7", fake.created_bodies[0])
+        self.assertIn("PR #7 touches playtest paths: opened playtest #900", actions)
+
+        # While it's open, the next matching merge joins it instead of opening another.
+        fake, actions = self.playtest_pass(cfg, issues, 8, ["art/units/tank.png"])
+        self.assertFalse(hasattr(fake, "created"))
+        (n, title, body), = fake.edited
+        self.assertEqual((n, title), (900, "Playtest after merges: #7, #8"))
+        self.assertIn("- PR #7: Change 7\n- PR #8: Change 8\n", body)
+
+        # A merge touching no playtest path does nothing.
+        fake, actions = self.playtest_pass(cfg, issues, 9, ["docs/notes.md", "game/viewer.gd"])
+        self.assertFalse(hasattr(fake, "created") or hasattr(fake, "edited"))
+        self.assertFalse(any("playtest" in a for a in actions))
+
+    def test_no_playtest_opens_within_every_hours_of_the_last_one_closing(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["playtester"] = {"paths": ["game/view/**"], "every_hours": 6}
+        stamp = lambda hours_ago: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours_ago * 3600))
+        last = issue(50, ["role:playtester"], state="CLOSED") | {"title": "Playtest after merges: #40", "closedAt": stamp(2)}
+        fake, actions = self.playtest_pass(cfg, [last], 7, ["game/view/hud.gd"])
+        self.assertFalse(hasattr(fake, "created") or hasattr(fake, "edited"))
+        self.assertTrue(any("under [playtester] every_hours (6)" in a for a in actions))
+
+        last["closedAt"] = stamp(7)
+        fake, _ = self.playtest_pass(cfg, [last], 7, ["game/view/hud.gd"])
+        self.assertEqual(fake.created[0][0], "Playtest after merges: #7")
+
+        # The default gap is 6 h too.
+        del cfg["playtester"]["every_hours"]
+        last["closedAt"] = stamp(5)
+        fake, _ = self.playtest_pass(cfg, [last], 7, ["game/view/hud.gd"])
+        self.assertFalse(hasattr(fake, "created"))
+
+    def test_without_a_playtester_table_merges_never_open_a_playtest(self):
+        # commonroom, and gamemirage until its director configures one: behaviour is unchanged.
+        self.assertNotIn("playtester", config.load(Path(__file__).resolve().parents[1] / "room.toml", follow_host=False))
+        last = issue(50, ["role:playtester"]) | {"title": "Playtest after merges: #40"}
+        for issues in ([], [last]):
+            fake, actions = self.playtest_pass(cfg_with(self.tmp.name), issues, 7,
+                                               ["game/view/hud.gd", "art/x.png", "commonroom/dispatch.py"])
+            self.assertFalse(hasattr(fake, "created") or hasattr(fake, "edited"))
+            self.assertFalse(any("playtest" in a for a in actions))
 
     def test_prose_after_the_dependency_list_does_not_keep_an_issue_blocked(self):
         # gamemirage#131 sat blocked for an hour: #132, named in the prose, is open and depends back on #131.
