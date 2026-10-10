@@ -315,12 +315,17 @@ class OwnerAndWorktrees(Base):
         self.ledger.finish_run(run, "done", now=now - 3600)
         self.assertEqual(self.ledger.worker_dirs(now - 1200), [])
 
-    def test_worktree_base_is_configurable_and_defaults_as_before(self):
-        cfg = project_cfg(self.tmp.name)
+    def test_worktree_base_is_configurable_and_defaults_next_to_the_project(self):
+        # commonroom#48: the default is no longer the project's .claude/worktrees, which Claude Code manages too.
+        root = Path(self.tmp.name) / "gamemirage"
+        cfg = project_cfg(root, name="gamemirage")                                 # no `[project] worktrees`, as the game
         d = self.dispatcher(cfg, MergeBoard([], {}))
-        self.assertEqual(d.worktree_base(), Path(self.tmp.name) / ".claude" / "worktrees")
+        self.assertEqual(d.worktree_base(), Path(self.tmp.name) / "gamemirage-wt" / "room")
+        self.assertEqual(d.worktree_bases(), [d.worktree_base(), root / ".claude" / "worktrees"])   # live runs at the switch
         cfg["project"]["worktrees"] = "D:/Dev/commonroom-wt/room"
-        self.assertEqual(self.dispatcher(cfg, MergeBoard([], {})).worktree_base(), Path("D:/Dev/commonroom-wt/room"))
+        d = self.dispatcher(cfg, MergeBoard([], {}))
+        self.assertEqual(d.worktree_base(), Path("D:/Dev/commonroom-wt/room"))
+        self.assertEqual(d.worktree_bases(), [Path("D:/Dev/commonroom-wt/room")])
 
 
 def touching(*paths, **kw):
