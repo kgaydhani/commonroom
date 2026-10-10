@@ -42,6 +42,8 @@ SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at mo
 # Roles the room dispatches through their own triggers. Any other role with a `[roles]` entry and an agent file runs on
 # demand from a `role:<name>` + `status:ready` issue (commonroom#4).
 BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
+PLAYTEST_TITLE = "Playtest after merges:"   # the room's playtest issues (commonroom#53)
+PLAYTEST_PR = re.compile(r"^- PR #(\d+)\b", re.M)
 STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63)
 # Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
 # kind of claim needs (first matching word wins), and how many subjects one run may read.
@@ -224,7 +226,7 @@ class GitHubBoard:
 
     def all_issues(self) -> list[dict]:
         return board_mod.gh(["issue", "list", "--repo", self.repo, "--state", "all", "--limit", "500",
-                             "--json", "number,state,labels,title,body,comments,updatedAt"]) or []
+                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt"]) or []
 
     def set_labels(self, number: int, add=(), remove=()):
         args = ["issue", "edit", str(number), "--repo", self.repo]
@@ -240,6 +242,9 @@ class GitHubBoard:
 
     def close_issue(self, number: int, body: str):
         board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--comment", f"{MARK} {body}"])
+
+    def edit_issue(self, number: int, title: str, body: str):
+        board_mod.gh(["issue", "edit", str(number), "--repo", self.repo, "--title", title, "--body", body])
 
     def claim_record(self, number: int, kind: str):
         """One read for checking ACTIONS claims (commonroom#68): the issue or PR, or its timeline events."""
@@ -863,6 +868,8 @@ class Dispatcher:
                     run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{pr['number']}", "merge", "none")
                     self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
                 actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
+                if not self.dry_run:
+                    actions += self.playtest_after_merge(pr, detail, everything)
                 if issue_no:
                     state[issue_no] = "CLOSED"
             elif review == "CHANGES" and not self.dry_run:
@@ -1040,6 +1047,45 @@ class Dispatcher:
             return [f"live checkout fast-forwarded {before}..{after}; room processes pick it up when they restart"]
         except Exception as exc:
             return [f"live checkout update FAILED, left as it was: {str(exc)[:160]}"]
+
+    def playtest_after_merge(self, pr: dict, detail: dict, everything: list[dict]) -> list[str]:
+        """A merged PR that changes a file matching `[playtester] paths` gets the game played (commonroom#53): it joins
+        the open playtest issue, or opens one unless the last closed within `every_hours`. No table: nothing happens."""
+        spec = self.cfg.get("playtester") or {}
+        globs = list(spec.get("paths") or [])
+        if not any(f.get("path") and any(fnmatch.fnmatchcase(f["path"], g) for g in globs) for f in detail.get("files") or []):
+            return []
+        number = pr["number"]
+        name = pr.get("title") or detail.get("headRefName")
+        line = f"- PR #{number}: {name}" if name else f"- PR #{number}"
+        playtests = [i for i in everything if (i.get("title") or "").startswith(PLAYTEST_TITLE)
+                     and "role:playtester" in labels(i)]
+        try:
+            current = next((i for i in playtests if i["state"] == "OPEN"), None)
+            if current:
+                listed = [int(n) for n in PLAYTEST_PR.findall(current.get("body") or "")]
+                if number in listed:
+                    return []
+                body = (current.get("body") or "").rstrip("\n") + "\n" + line + "\n"
+                title = f"{PLAYTEST_TITLE} " + ", ".join(f"#{n}" for n in listed + [number])
+                self.board.edit_issue(current["number"], title, body)
+                current["body"], current["title"] = body, title
+                return [f"PR #{number} touches playtest paths: added to playtest #{current['number']}"]
+            every = float(spec.get("every_hours", 6))
+            closed = max((_stamp(i.get("closedAt")) for i in playtests), default=0.0)
+            if closed and time.time() - closed < every * 3600:
+                return [f"PR #{number} touches playtest paths; no playtest opened: the last closed "
+                        f"{(time.time() - closed) / 3600:.1f} h ago, under [playtester] every_hours ({every:g})"]
+            title = f"{PLAYTEST_TITLE} #{number}"
+            body = (f"{MARK} Merged work touches the paths in `[playtester] paths`. Play the game as it is on main and "
+                    f"report what looks or feels wrong.\n\nMerged PRs:\n{line}\n")
+            created = self.board.create_issue(title, body, labels=("role:playtester", "status:ready"),
+                                              milestone=self.milestone)
+            everything.append({"number": created, "title": title, "body": body, "state": "OPEN", "comments": [],
+                               "labels": [{"name": "role:playtester"}, {"name": "status:ready"}]})
+            return [f"PR #{number} touches playtest paths: opened playtest #{created}"]
+        except Exception as exc:   # the merge already happened; a failed board call is reported, never fatal
+            return [f"PR #{number} touches playtest paths; updating the playtest issue failed: {str(exc)[:100]}"]
 
     def director_files(self, detail: dict) -> list[str]:
         """The PR's changed files that match `[merge] director_paths`."""
@@ -2005,3 +2051,11 @@ def _after(comment: dict, since: float) -> bool:
         return calendar.timegm(time.strptime(created[:19], "%Y-%m-%dT%H:%M:%S")) > since
     except ValueError:
         return False
+
+
+def _stamp(iso: str | None) -> float:
+    """Seconds since the epoch for a GitHub timestamp; 0 when there is none."""
+    try:
+        return float(calendar.timegm(time.strptime(str(iso or "")[:19], "%Y-%m-%dT%H:%M:%S")))
+    except ValueError:
+        return 0.0
