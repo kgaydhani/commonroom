@@ -1,10 +1,12 @@
 """Launch one headless worker (Claude Code or Codex) in a directory, stream its output, record usage."""
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import queue
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -129,9 +131,16 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     tmp = worker_tmp(cwd)
     tmp.mkdir(parents=True, exist_ok=True)
     env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
-    process = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    tree = ProcessTree()
+    process = tree.start(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    try:
+        return _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeout, stop_check)
+    finally:
+        tree.end()   # every process the run started ends with it (commonroom#50)
+
+
+def _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeout, stop_check) -> WorkerResult:
     lines: queue.Queue = queue.Queue()
 
     def pump(stream, channel):
@@ -144,7 +153,7 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
         threading.Thread(target=pump, args=(stream, channel), daemon=True).start()
     process.stdin.write(stdin_text)
     process.stdin.close()
-    deadline, ended, last_text = time.monotonic() + timeout, set(), ""
+    deadline, ended, last_text, drained = time.monotonic() + timeout, set(), "", None
     with log_path.open("w", encoding="utf-8") as log:
         while len(ended) < 2:
             reason = stop_check() if stop_check else None
@@ -152,11 +161,18 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
                 result.errors.append(reason or f"timed out after {timeout:.0f}s")
                 if reason:
                     result.interrupted = reason
-                _kill(process)
+                tree.end()
                 break
             try:
                 channel, line = lines.get(timeout=.5)
             except queue.Empty:
+                if process.poll() is not None:
+                    # A leftover child that inherited the worker's stdout or stderr would hold the pipe open until
+                    # the timeout. Ending the tree closes it; a pipe still open after that grace period is abandoned.
+                    tree.end()
+                    drained = drained or time.monotonic() + 15
+                    if time.monotonic() > drained:
+                        break
                 continue
             if line is None:
                 ended.add(channel)
@@ -177,7 +193,7 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
                     ledger.record_usage(observations)
                 if usage.claude_overage(event):
                     result.errors.append("Claude reported extra-usage billing; worker stopped")
-                    _kill(process)
+                    tree.end()
                     break
                 if event.get("type") == "assistant":
                     for block in (event.get("message") or {}).get("content") or []:
@@ -208,7 +224,7 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     try:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        _kill(process)
+        tree.end()
     if process.returncode not in (0, None):
         result.ok = False
     if not result.ok:
@@ -216,11 +232,77 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     return result
 
 
-def _kill(process):
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    else:
-        process.kill()
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32), ("SchedulingClass", ctypes.c_uint32)]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", ctypes.c_uint64 * 6),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+
+
+class ProcessTree:
+    """A worker and everything it starts (commonroom#50). On Windows the worker runs in a Job Object with
+    KILL_ON_JOB_CLOSE, so its children, and their orphans, can't escape it; elsewhere it leads a new process group.
+    `end()` kills whatever is left. Only the worker is put in the job: the dispatcher and the services it starts
+    stay out. If the job can't be made, `end()` falls back to `taskkill /T`, which reaches only live descendants."""
+
+    def __init__(self):
+        self.process = None
+        self.job = None
+        self.ended = False
+
+    def start(self, cmd, **popen_kwargs) -> subprocess.Popen:
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        else:
+            popen_kwargs["start_new_session"] = True
+        self.process = subprocess.Popen(cmd, **popen_kwargs)
+        if os.name == "nt":
+            self.job = _job_for(self.process)
+        return self.process
+
+    def end(self) -> None:
+        """Kill the worker's whole tree. Only the first call acts, so a later process can't inherit the kill."""
+        if self.process is None or self.ended:
+            return
+        self.ended = True
+        if os.name != "nt":
+            try:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        elif self.job is not None:
+            kernel32 = ctypes.WinDLL("kernel32")
+            kernel32.TerminateJobObject(ctypes.c_void_p(self.job), 1)
+            kernel32.CloseHandle(ctypes.c_void_p(self.job))
+            self.job = None
+        elif self.process.poll() is None:
+            subprocess.run(["taskkill", "/PID", str(self.process.pid), "/T", "/F"], capture_output=True,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _job_for(process) -> int | None:
+    """A kill-on-close Job Object holding `process`, or None. The worker is assigned right after it starts, before
+    its runtime has loaded far enough to start anything of its own."""
+    kernel32 = ctypes.WinDLL("kernel32")
+    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    limits = _ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if (kernel32.SetInformationJobObject(ctypes.c_void_p(job), JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                                         ctypes.byref(limits), ctypes.sizeof(limits))
+            and kernel32.AssignProcessToJobObject(ctypes.c_void_p(job), ctypes.c_void_p(int(process._handle)))):
+        return job
+    kernel32.CloseHandle(ctypes.c_void_p(job))
+    return None
