@@ -89,6 +89,21 @@ class PromptGuidance(unittest.TestCase):
         self.assertIn("Git Bash can't start", d.prompt(dispatch.Job("review", "reviewer", pr={"number": 5, "headRefName": "i7-x"}), None))
         self.assertIn("run `bash tools/test.sh` before pushing", self.bounce(d))
 
+    def test_codex_build_with_open_pr_is_never_told_to_merge(self):
+        """commonroom#51: "merge origin/main" contradicted "do not commit", and Codex copied main's files in instead."""
+        d = self.gamemirage()
+        d.board.pr_for_branch = lambda branch: {"number": 5, "state": "OPEN"}
+        d._provider = "codex"
+        build = d.prompt(dispatch.Job("build", "builder", issue=issue(7)), "i7-thing")
+        self.assertIn("The room handles any conflicts with main", build)
+        for word in ("merge origin/main", "git fetch", "git merge", "push to the same branch"):
+            self.assertNotIn(word, build)
+        self.assertIn(GAMEMIRAGE_PROMPTS["codex"], build)                 # the game's Codex guidance stays
+        d._provider = "claude"                                            # Claude's wording is unchanged
+        build = d.prompt(dispatch.Job("build", "builder", issue=issue(7)), "i7-thing")
+        self.assertIn("If the PR conflicts with main, first merge origin/main into the branch and resolve the conflicts, "
+                      "then rerun the tests.", build)
+
     def test_claude_reviews_get_no_codex_note(self):
         d = self.gamemirage()
         d._provider = "claude"

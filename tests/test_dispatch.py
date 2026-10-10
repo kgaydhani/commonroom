@@ -409,6 +409,45 @@ class WithLedger(unittest.TestCase):
         anyone = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
         self.assertIsNone(anyone.pick(held))                                 # ...even when Claude is held (gamemirage#121)
 
+    def test_conflicting_pr_with_changes_review_never_goes_to_codex(self):
+        """commonroom#51: Codex can't fetch or commit, so a CHANGES-reviewed PR that conflicts with main went to it as
+        an ordinary build, and it copied main's files into the tree instead (gamemirage#223, #238)."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["codex", "claude:sonnet"], builder_heavy=["claude:opus"])
+        work = issue(174, ["status:review"])
+        rejected = {"commits": [{"committedDate": "2026-10-07T01:00:00Z"}], "mergeable": "CONFLICTING",
+                    "comments": [{"createdAt": "2026-10-07T02:30:00Z", "body": "REVIEW: CHANGES - fix y"}]}
+        fake = FakeBoard([work], prs=[{"number": 181, "headRefName": "i174-x"}], details={181: rejected})
+        d = dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        note = dict(fake.comments)[174]
+        self.assertNotIn("merge-main run", note)                          # a full run: it also addresses the review
+        work["comments"] = [{"body": "[room] " + note}]
+        self.assertTrue(dispatch.conflicts_main(work))
+        self.assertEqual(d.build_spec(work), ["claude:sonnet"])          # 1. a Claude choice, though Codex comes first
+        work["labels"] = [{"name": n} for n in ("status:ready", "role:builder", "size:S", "provider:codex")]
+        self.assertEqual(d.build_spec(work), ["claude:sonnet"])          # ...even over a `provider:codex` pin
+
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        work["labels"] = [{"name": n} for n in ("status:ready", "role:builder", "size:S")]
+        other = issue(175, ["status:ready", "role:builder", "size:S"])
+        issues = [other, work]
+        codex = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="codex")
+        busy = self.ledger.start_run("t", "#99", "builder", "claude")    # Claude busy: Codex may take the top task
+        job, provider, _ = codex.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (175, "codex"))  # 4. a non-conflicting issue still goes to Codex
+        issues.remove(other)
+        self.assertIsNone(codex.pick(allowed))                            # 2. the parallel path and fallback skip it
+        work["labels"].append({"name": "provider:codex"})
+        self.assertIsNone(codex.pick(allowed))                            # ...and so does the pinned path
+        self.ledger.finish_run(busy, "done", outputs=[{"kind": "pr", "ref": "PR #1"}])
+        claude = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="claude")
+        job, provider, _ = claude.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (174, "claude"))
+        work["comments"].append({"body": "[room] Attempt 1 produced no PR. Back to ready."})
+        self.assertFalse(dispatch.conflicts_main(work))                   # the room's latest word decides
+        self.assertEqual(d.build_spec(work), ["codex"])
+
     def fresh_readings(self, now):
         for provider in ("claude", "codex"):
             self.ledger.record_usage([usage.observation(provider, "five_hour", 5, now + 3600, "test"),
