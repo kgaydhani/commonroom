@@ -374,7 +374,10 @@ def digest(cfg: dict, hours: float) -> dict:
                     "limited": len([r for r in runs if r["status"] == "limited"]),
                     # Cut short by the room (pause, reserve, breaker, dead dispatcher), not failed by the agent.
                     "stopped_by_room": len([r for r in runs if r["status"] == "stopped"]),
-                    "minutes_lost_to_stops": round(sum(r["minutes"] for r in runs if r["status"] == "stopped"), 1)},
+                    "minutes_lost_to_stops": round(sum(r["minutes"] for r in runs if r["status"] == "stopped"), 1),
+                    # ACTIONS claims checked against GitHub, and how many GitHub didn't show (commonroom#68).
+                    "actions_reported": sum(r.get("actions_checked") or 0 for r in runs),
+                    "actions_unverified": sum(len(r["unverified"]) for r in runs)},
         "efficiency": efficiency(ledger, project, since, now),
         "hours_since_last": {role: round((now - t) / 3600, 1) if t is not None else None for role, t in last_role.items()},
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},

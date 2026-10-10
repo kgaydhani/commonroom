@@ -78,7 +78,8 @@ class Ledger:
         self.db.executescript(SCHEMA)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
         for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT"),
-                           ("five_hour_start", "REAL")):
+                           ("five_hour_start", "REAL"), ("unverified", "TEXT NOT NULL DEFAULT '[]'"),
+                           ("actions_checked", "INTEGER")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
@@ -175,8 +176,18 @@ class Ledger:
         for r in rows:
             row = dict(r)
             row["outputs"] = json.loads(row["outputs"] or "[]")
+            row["unverified"] = json.loads(row["unverified"] or "[]")
             result.append(row)
         return result
+
+    def record_claims(self, run_id: str, checked: int, unverified: list[str]):
+        """How many of a run's ACTIONS claims were checked against GitHub, and the ones that didn't check out."""
+        with self.db:
+            self.db.execute("UPDATE runs SET actions_checked=?, unverified=? WHERE id=?",
+                            (checked, json.dumps(unverified), run_id))
+
+    def projects(self) -> set[str]:
+        return {r[0] for r in self.db.execute("SELECT DISTINCT project FROM runs WHERE project IS NOT NULL")}
 
     def worker_dirs(self, since: float) -> list[str]:
         """Folders where room workers of any project ran at some point since `since` (still running or ended later)."""
