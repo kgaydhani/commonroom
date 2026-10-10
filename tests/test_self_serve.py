@@ -452,6 +452,72 @@ class DirectorPaths(Base):
         self.assertEqual(cfg["merge"]["director_paths"], self.PATHS)
 
 
+def labelled(*names, **kw):
+    d = touching("commonroom/dispatch.py", **kw)
+    d["labels"] = [{"name": n} for n in names]
+    return d
+
+
+class NeedsDirectorLabel(Base):
+    """commonroom#65: a PR that needs lines in another project's room.toml waits for the director, as director paths do."""
+    WAIT = "PR #5 is labelled needs:director and waits for the director's approval"
+
+    def board(self, *names, **kw):
+        return MergeBoard([pr(5, 40, labels=names)], {5: labelled(*names, **kw)})
+
+    def test_a_labelled_pr_with_a_tested_approval_waits_and_the_director_is_told(self):
+        for name in ("commonroom", "gamemirage"):                       # no director paths needed: the label alone holds it
+            board = self.board("needs:director")
+            d = self.dispatcher(project_cfg(self.tmp.name, name=name), board)
+            self.assertTrue(d.tested(board.details[5]))
+            self.assertEqual(d.ready_for_director(), [self.WAIT])
+            self.assertIn(self.WAIT, d.housekeeping())
+            self.assertEqual(board.merged, [], name)
+            self.assertIn(self.WAIT, d.director_trigger())
+            self.assertFalse(d.needs_review(board.details[5]))
+
+    def test_the_directors_approval_after_the_last_commit_merges_it(self):
+        board = self.board("needs:director")
+        board.details[5]["comments"].append(director())
+        d = self.dispatcher(project_cfg(self.tmp.name), board)
+        self.assertEqual(d.ready_for_director(), [])
+        d.housekeeping()
+        self.assertEqual(board.merged, [5])
+
+    def test_an_approval_before_the_last_commit_or_a_changes_does_not_merge_it(self):
+        for extra, waiting in ((director(at="2026-10-09T11:00:00Z"), [self.WAIT]), (director(verdict="CHANGES"), [])):
+            board = self.board("needs:director")
+            board.details[5]["comments"].insert(0, extra)
+            d = self.dispatcher(project_cfg(self.tmp.name), board)
+            d.housekeeping()
+            self.assertEqual(board.merged, [], extra)
+            self.assertEqual(d.ready_for_director(), waiting)           # a stale approval still waits; CHANGES goes back
+
+    def test_without_the_label_it_merges_on_the_reviewers_approval_as_before(self):
+        for name in ("commonroom", "gamemirage"):
+            board = self.board("kind:bug")
+            d = self.dispatcher(project_cfg(self.tmp.name, name=name), board)
+            board.pr_detail = lambda n: self.fail("no director paths and no label: nothing to fetch")
+            self.assertEqual(d.ready_for_director(), [])
+            board.pr_detail = lambda n: board.details[n]
+            d.housekeeping()
+            self.assertEqual(board.merged, [5], name)
+
+    def test_the_label_and_director_paths_name_the_files(self):
+        board = self.board("needs:director")
+        board.details[5]["files"] = [{"path": "room.toml", "additions": 1, "deletions": 0}]
+        cfg = project_cfg(self.tmp.name)
+        cfg["merge"] = {"director_paths": ["room.toml"]}
+        self.assertEqual(self.dispatcher(cfg, board).ready_for_director(),
+                         ["PR #5 touches director paths (room.toml) and waits for the director's approval"])
+
+    def test_the_builder_prompt_and_agents_md_say_when_to_add_the_label(self):
+        for doc in (REPO / ".claude" / "agents" / "builder.md", REPO / "AGENTS.md"):
+            text = doc.read_text(encoding="utf-8")
+            self.assertIn("`needs:director`", text, doc.name)
+            self.assertIn("another project's `room.toml`", text, doc.name)
+
+
 class LiveCheckout(Base):
     def setUp(self):
         super().setUp()
