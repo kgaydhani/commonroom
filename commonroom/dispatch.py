@@ -373,22 +373,36 @@ DIRECTOR_MARK = "[agent:director]"
 DIRECTOR_LABEL = "needs:director"   # on a PR: it needs lines in another project's room.toml or prompts (commonroom#65)
 
 
-def director_verdict(detail: dict) -> str | None:
-    """The newest director verdict posted after the PR's latest commit. Only a comment that starts with
+def director_comment(detail: dict) -> dict | None:
+    """The newest director verdict comment posted after the PR's latest commit. Only a comment that starts with
     `[agent:director]` counts, and a later commit voids it (commonroom#49)."""
     commits = detail.get("commits") or []
     last_commit = max((c.get("committedDate") or "" for c in commits), default="")
-    verdict = None
+    found = None
     for c in detail.get("comments") or []:
         body = (c.get("body") or "").strip()
-        found = verdict_of(body)
-        if found and body.startswith(DIRECTOR_MARK) and (c.get("createdAt") or "") >= last_commit:
-            verdict = found
-    return verdict
+        if verdict_of(body) and body.startswith(DIRECTOR_MARK) and (c.get("createdAt") or "") >= last_commit:
+            found = c
+    return found
+
+
+def director_verdict(detail: dict) -> str | None:
+    c = director_comment(detail)
+    return verdict_of((c.get("body") or "").strip()) if c else None
+
+
+HEAD_LINE = re.compile(r"^\s*HEAD:\s*([0-9a-f]{7,40})\s*$", re.M | re.I)
 
 
 def director_approved(detail: dict) -> bool:
-    return director_verdict(detail) == "APPROVE"
+    """The director approved this exact head: the approval has a line `HEAD: <sha>`, at least 7 characters and a prefix
+    of the PR's head sha. A commit made before the approval but pushed after it predates the comment, so the timestamp
+    alone can't void the approval (commonroom#55). No such line, or a stale one, means "not approved yet"."""
+    c = director_comment(detail)
+    body = (c.get("body") or "").strip() if c else ""
+    head = head_sha(detail).lower()
+    return (verdict_of(body) == "APPROVE" and bool(head)
+            and any(head.startswith(m.group(1).lower()) for m in HEAD_LINE.finditer(body)))
 
 
 def head_sha(detail: dict) -> str:
@@ -997,7 +1011,8 @@ class Dispatcher:
     def director_wait(self, number: int, detail: dict) -> str:
         files = self.director_files(detail)
         why = f"touches director paths ({', '.join(files)})" if files else f"is labelled {DIRECTOR_LABEL}"
-        return f"PR #{number} {why} and waits for the director's approval"
+        return (f"PR #{number} {why} and waits for the director's approval: post `{DIRECTOR_MARK} REVIEW: APPROVE` "
+                f"with the line `HEAD: {head_sha(detail)}`")
 
     def ready_for_director(self) -> list[str]:
         """PRs with their usual approval, up to date with main, that wait only for the director's (commonroom#49). One
