@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, usage
-from commonroom.dispatch import Dispatcher, runnable_roles, verdicts
+from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom.ledger import Ledger
 
 PROVIDERS = ("claude", "codex")
@@ -380,6 +380,7 @@ def digest(cfg: dict, hours: float) -> dict:
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
         "breakers": ledger.open_breakers(project),
     }
+    running = ledger.running_runs(project)
     ledger.close()
     if repo:
         try:
@@ -391,6 +392,8 @@ def digest(cfg: dict, hours: float) -> dict:
             result["open_prs"] = board.gh(["pr", "list", "--repo", repo, "--state", "open", "--json", "number,title,headRefName,labels"]) or []
             result["merged_prs"] = board.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "15",
                                              "--json", "number,title,mergedAt"]) or []
+            # What housekeeping would release now (commonroom#63), so the auditor sees a claim nobody holds.
+            result["stale_claims"] = stale_claims(issues, result["open_prs"], running, now)
         except Exception as exc:
             result["board_error"] = str(exc)[:300]
     return result
