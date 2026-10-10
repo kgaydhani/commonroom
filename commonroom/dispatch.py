@@ -724,9 +724,16 @@ class Dispatcher:
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
 
     def worktree_base(self) -> Path:
-        """Where worker worktrees go: `[project] worktrees`, or the project's .claude/worktrees."""
+        """Where worker worktrees go: `[project] worktrees`, or `<project>-wt/room` next to the project. Not the
+        project's .claude/worktrees: Claude Code creates and removes its own worktrees there (commonroom#48)."""
         configured = self.cfg["project"].get("worktrees")
-        return Path(configured) if configured else self.root / ".claude" / "worktrees"
+        return Path(configured) if configured else self.root.parent / f"{self.root.name}-wt" / "room"
+
+    def worktree_bases(self) -> list[Path]:
+        """Where the room's worktrees may be: the base, then the project's .claude/worktrees, the default before
+        commonroom#48, so runs live at the switch are still recovered. Only room-named folders are looked for there."""
+        legacy = self.root / ".claude" / "worktrees"
+        return [self.worktree_base()] + ([legacy] if not self.cfg["project"].get("worktrees") else [])
 
     def allowed(self, now: float) -> dict[str, gate.Verdict]:
         """The shared budget gate and breakers, then this project's share of the plan if it is a guest."""
@@ -1796,6 +1803,10 @@ class Dispatcher:
             branch = self.find_branch(n) or f"i{n}-{slug(job.issue['title'])}"
             start = f"origin/{branch}" if self.remote_head(branch) else "origin/main"
             path = base / (f"codex-{branch}" if clone else branch)
+            for old in self.worktree_bases()[1:]:
+                # A leftover copy in the old folder holds the branch, and `worktree add -B` would refuse it.
+                if (old / path.name).exists():
+                    self.cleanup_worktree(old / path.name, getattr(self, "_run_id", None))
             path = self.checkout(path, start, branch, clone)
             return path, branch
         if job.kind == "review":
@@ -1916,8 +1927,7 @@ class Dispatcher:
             n = int(m.group(1))
             issue = next((i for i in self.board.open_issues(None) if i["number"] == n), None)
             if self.root:
-                base = self.worktree_base()
-                for path in [*base.glob(f"i{n}-*"), *base.glob(f"codex-i{n}-*")]:
+                for path in [p for base in self.worktree_bases() for p in (*base.glob(f"i{n}-*"), *base.glob(f"codex-i{n}-*"))]:
                     if self.ledger.worktree_in_use(path, exclude_run=run["id"]):
                         continue   # a live run took the task over: its working copy is not the orphan's
                     branch = path.name.removeprefix("codex-")

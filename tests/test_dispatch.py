@@ -1264,7 +1264,7 @@ class MergesMainOnly(unittest.TestCase):
 
 
 class WorktreeLifecycle(unittest.TestCase):
-    """Real git: a main checkout with the room's worktrees under .claude/worktrees, as on the owner's PC."""
+    """Real git: a main checkout with the room's worktrees in its default folder next to it, as on the owner's PC."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1281,7 +1281,8 @@ class WorktreeLifecycle(unittest.TestCase):
         self.board.comments = []
         self.board.comment = lambda n, body: self.board.comments.append((n, body))
         self.d = dispatch.Dispatcher(cfg_with(self.root), self.ledger, board=self.board, log=self.lines.append)
-        self.base = self.root / ".claude" / "worktrees"
+        self.base = self.d.worktree_base()
+        self.legacy = self.root / ".claude" / "worktrees"   # the default before commonroom#48, Claude Code's own folder
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
@@ -1355,6 +1356,39 @@ class WorktreeLifecycle(unittest.TestCase):
         self.d.cleanup_worktree(self.base / "unrelated", "run-b")
         self.assertTrue(any("prune (run run-b)" in line and "auditor-2" in line for line in self.lines))
         self.assertIsNotNone(orphan)
+
+    def test_the_default_base_is_outside_the_project_and_outside_claude_codes_folder(self):
+        self.assertEqual(self.base, self.root.parent / "game-wt" / "room")
+        self.git("init", "-q", "--bare", str(Path(self.tmp.name) / "origin.git"))
+        self.git("remote", "add", "origin", str(Path(self.tmp.name) / "origin.git"))
+        self.git("push", "-q", "origin", "main")
+        self.git("fetch", "-q", "origin")
+        leftover = self.legacy / "i5-issue-5"                                       # left by a run before the switch
+        self.git("worktree", "add", "-q", "-b", "i5-issue-5", str(leftover), "main")
+        claude = self.legacy / "agent-a28b11fedd424a3e8"                            # Claude Code's own subagent worktree
+        self.git("worktree", "add", "-q", "--detach", str(claude), "main")
+        path, branch = self.d.prepare_worktree(dispatch.Job("build", "builder", issue=self.board.issues[0]), "claude")
+        self.assertEqual((path, branch), (self.base / "i5-issue-5", "i5-issue-5"))
+        self.assertTrue((path / ".git").exists())
+        self.assertFalse(leftover.exists())                                         # it held the branch: removed
+        self.assertTrue((claude / ".git").exists())                                 # never touched
+        path, _ = self.d.prepare_worktree(dispatch.Job("audit", "auditor"), "claude")
+        self.assertEqual(path.parent, self.base)
+
+    def test_orphan_recovery_finds_room_worktrees_in_the_legacy_folder_and_nothing_else(self):
+        wt = self.legacy / "i5-x"
+        self.git("worktree", "add", "-q", "-b", "i5-x", str(wt), "main")
+        (wt / "work.txt").write_text("unsaved")
+        others = [self.legacy / name for name in ("agent-a1", "ms-i5-x", "day-1", "i6-y")]
+        for other in others:
+            other.mkdir(parents=True); (other / "keep.txt").write_text("k")
+        self.ledger.start_run("t", "#5", "builder", "claude", now=time.time() - 3 * 3600)   # its dispatcher died
+        self.assertEqual(len(self.d.recover_orphans()), 1)
+        self.assertFalse(wt.exists())                                               # recovered and removed...
+        self.assertTrue(any(line.strip().startswith(f"removing worktree {wt}") for line in self.lines))
+        self.assertIn("unfinished work preserved", self.git("log", "-1", "--format=%B", "i5-x"))       # ...after its work was saved
+        for other in others:
+            self.assertTrue((other / "keep.txt").exists(), other)                   # not the room's, or not this task's
 
     def test_the_audit_report_path_is_absolute_and_picked_up(self):
         self.d._worktree = self.base / "auditor-3"
