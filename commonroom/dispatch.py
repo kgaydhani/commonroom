@@ -503,6 +503,7 @@ CI_RERUNS = 6          # infrastructure cancellations are rerun at most this man
 CI_BACKOFF_MINUTES = 20  # ...waiting 20, 40, 60... minutes between reruns, so an outage can't use them all up
 CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this often before the director steps in
 MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back only to merge main into it
+CONFLICTS_MAIN = "conflicts with main"   # marks the room's comment that sends a conflicting PR back to its builder
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
 
 
@@ -510,6 +511,13 @@ def merge_main_only(issue: dict) -> bool:
     """Did the room's latest word on this issue send it back only to merge main into its PR (commonroom#14)?"""
     room = [c for c in issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
     return bool(room) and MERGE_MAIN in (room[-1].get("body") or "")
+
+
+def conflicts_main(issue: dict) -> bool:
+    """Did the room's latest word on this issue say its PR conflicts with main (commonroom#51)? Merging main needs
+    `git fetch` and a commit, which Codex's sandbox can't do, so such an issue never goes to Codex."""
+    room = [c for c in issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
+    return bool(room) and CONFLICTS_MAIN in (room[-1].get("body") or "")
 
 
 REVIEW_ROUNDS = 2      # this many CHANGES verdicts on one PR go to the director, not back to the builder (commonroom#32)
@@ -943,10 +951,10 @@ class Dispatcher:
             return []
         self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
         if review == "CHANGES":
-            self.board.comment(issue_no, f"PR #{pr['number']} conflicts with main. The next builder run merges "
+            self.board.comment(issue_no, f"PR #{pr['number']} {CONFLICTS_MAIN}. The next Claude builder run merges "
                                          f"origin/main into the branch, resolves the conflicts and reruns the tests.")
             return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder"]
-        self.board.comment(issue_no, f"PR #{pr['number']} conflicts with main. A {MERGE_MAIN} merges origin/main into the "
+        self.board.comment(issue_no, f"PR #{pr['number']} {CONFLICTS_MAIN}. A {MERGE_MAIN} merges origin/main into the "
                                      f"branch, resolves only the conflicts and reruns the tests. Nothing else changes, so "
                                      f"{'its approval stands' if review == 'APPROVE' else 'the review still sees only the PR'}.")
         return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder for a {MERGE_MAIN}"]
@@ -1180,7 +1188,13 @@ class Dispatcher:
         pinned = [l.split(":", 1)[1] for l in labels(issue) if l.startswith("provider:")]
         # Large, high-risk and integration work goes to the heavy builder (Opus); routine work to the standard one.
         heavy = labels(issue) & {"size:L", "risk:high", "builder:heavy"}
-        return pinned or (self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec)
+        default = self.roles.get("builder_heavy", builder_spec) if heavy else builder_spec
+        if conflicts_main(issue):
+            # Review asked for changes and the PR conflicts: the run merges main too, so Claude takes it even over a
+            # `provider:codex` pin (commonroom#51).
+            claude = [e for e in [*pinned, *default] if e.partition(":")[0] == "claude"]
+            return claude or ["claude:sonnet"]
+        return pinned or default
 
     def pick_extra(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         """An extra slot for the same provider, only while another is busy, weekly use sits well under the pace line
@@ -1276,7 +1290,8 @@ class Dispatcher:
             if choice:
                 issue = min(scouting, key=priority)
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
-        pinned_here = [i for i in ready if f"provider:{self.only_provider}" in labels(i)] if self.only_provider else []
+        pinned_here = [i for i in ready if f"provider:{self.only_provider}" in labels(i)
+                       and not (self.only_provider == "codex" and conflicts_main(i))] if self.only_provider else []
         if self.only_provider == "codex" and self.roles.get("codex_parallel_builds", True) and not pinned_here:
             # Work only Codex can do (pinned, e.g. image generation) comes before routine parallel builds.
             # Codex shouldn't idle while there's a queue: it takes the second routine task in parallel,
@@ -1284,7 +1299,7 @@ class Dispatcher:
             # Codex renders Godot off-screen fine in its sandbox (gamemirage#101); device-level perf work stays with Claude.
             routine = [i for i in sorted(ready, key=priority)
                        if not labels(i) & ({"size:L", "risk:high", "builder:heavy"} | CODEX_CANNOT)
-                       and not any(l.startswith("provider:") for l in labels(i)) and not merge_main_only(i)]
+                       and not any(l.startswith("provider:") for l in labels(i)) and not conflicts_main(i)]
             claude_busy = any(r["provider"] == "claude" and r["status"] == "running"
                               for r in self.ledger.recent_runs(self.project, limit=20))
             # Leave the top routine task for Claude, unless Claude is already busy on something else.
@@ -1718,9 +1733,15 @@ class Dispatcher:
         if job.kind == "build":
             n = job.issue["number"]
             pr = self.board.pr_for_branch(branch)
+            # Codex can't fetch or commit, so its prompt never asks it to merge main: the room handles conflicts (commonroom#51).
+            conflicts = ("The room handles any conflicts with main: don't merge, fetch or copy main's files in."
+                         if self._provider == "codex" else
+                         "If the PR conflicts with main, first merge origin/main into the branch and resolve the "
+                         "conflicts, then rerun the tests.")
+            push = "the room pushes your changes to the same branch" if self._provider == "codex" else "push to the same branch"
             extra = (f"\nA PR already exists for this branch (#{pr['number']}). Read its review comments with "
-                     f"`gh pr view {pr['number']} --repo {repo} --comments`, address every point, and push to the same branch. If the PR conflicts with main, first merge origin/main into "
-                     f"the branch and resolve the conflicts, then rerun the tests. If its CI is red (`gh pr checks {pr['number']} --repo {repo}`), "
+                     f"`gh pr view {pr['number']} --repo {repo} --comments`, address every point, and {push}. {conflicts} "
+                     f"If its CI is red (`gh pr checks {pr['number']} --repo {repo}`), "
                      f"read the failing log (`gh run view <run id> --repo {repo} --log-failed`) and fix that first."
                      if pr and pr["state"] == "OPEN" else "")
             if pr and pr["state"] == "OPEN" and merge_main_only(job.issue):
