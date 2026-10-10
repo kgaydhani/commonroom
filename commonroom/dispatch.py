@@ -149,7 +149,7 @@ class GitHubBoard:
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                              "--json", "number,state,headRefName,headRefOid,baseRefName,url,commits,comments,"
-                                       "statusCheckRollup,mergeable,files"])
+                                       "statusCheckRollup,mergeable,files,labels"])
 
     def behind_main(self, detail: dict) -> int:
         """Commits on the PR's base branch that its head doesn't contain yet."""
@@ -264,6 +264,7 @@ def latest_review(detail: dict) -> str | None:
 
 
 DIRECTOR_MARK = "[agent:director]"
+DIRECTOR_LABEL = "needs:director"   # on a PR: it needs lines in another project's room.toml or prompts (commonroom#65)
 
 
 def director_verdict(detail: dict) -> str | None:
@@ -861,33 +862,39 @@ class Dispatcher:
         return [f["path"] for f in detail.get("files") or [] if f.get("path")
                 and any(fnmatch.fnmatchcase(f["path"], glob) for glob in self.director_paths)]
 
+    def needs_director(self, detail: dict) -> bool:
+        """The PR touches director paths, or is labelled `needs:director` because it needs lines in another project's
+        room.toml or prompts, which the director lands there before approving (commonroom#65)."""
+        return bool(self.director_files(detail)) or DIRECTOR_LABEL in labels(detail)
+
     def reviewer_view(self, detail: dict) -> dict:
         """On a PR that needs the director, the usual approval is the reviewer's: the director's own verdict is a
         second gate, so it neither stands in for the reviewer's nor hides it as the newest REVIEW comment."""
-        if not self.director_files(detail):
+        if not self.needs_director(detail):
             return detail
         return detail | {"comments": [c for c in detail.get("comments") or []
                                       if not (c.get("body") or "").strip().startswith(DIRECTOR_MARK)]}
 
     def waits_for_director(self, detail: dict) -> bool:
-        return bool(self.director_files(detail)) and not director_approved(detail)
+        return self.needs_director(detail) and not director_approved(detail)
 
     def director_rejected(self, detail: dict) -> bool:
-        return bool(self.director_files(detail)) and director_verdict(detail) == "CHANGES"
+        return self.needs_director(detail) and director_verdict(detail) == "CHANGES"
 
     def director_wait(self, number: int, detail: dict) -> str:
-        return (f"PR #{number} touches director paths ({', '.join(self.director_files(detail))}) "
-                f"and waits for the director's approval")
+        files = self.director_files(detail)
+        why = f"touches director paths ({', '.join(files)})" if files else f"is labelled {DIRECTOR_LABEL}"
+        return f"PR #{number} {why} and waits for the director's approval"
 
     def ready_for_director(self) -> list[str]:
         """PRs with their usual approval, up to date with main, that wait only for the director's (commonroom#49). One
         the director already sent back, or one housekeeping still has to update, isn't theirs yet."""
-        if not self.director_paths:
-            return []
         waiting = []
         for pr in self.board.open_prs():
             if not BRANCH.match(pr["headRefName"]):
                 continue
+            if not self.director_paths and DIRECTOR_LABEL not in labels(pr):
+                continue   # nothing can make it wait: skip fetching its detail
             detail = self.board.pr_detail(pr["number"])
             if not self.waits_for_director(detail) or self.director_rejected(detail):
                 continue

@@ -17,6 +17,7 @@ Every agent working on this repo reads this first: Claude Code (through `CLAUDE.
 ## How work flows
 - Every change belongs to a GitHub issue in the goal milestone. No issue, no work.
 - Branch `i<issue>-<slug>`. Make small commits and small PRs (aim for under about 300 changed lines of code), each with tests for the behaviour it adds or fixes. The PR body says `Closes #<issue>`, lists each acceptance criterion with how you verified it, and lists what you couldn't verify.
+- **A change that needs lines in another project's `room.toml` or prompts** (for example gamemirage's `[prompts]`) would break that project the moment it merges. Add the `needs:director` label to the PR and put the exact lines in its body. The PR then waits for the director's `[agent:director] REVIEW: APPROVE`, and the director opens the companion PR in that project before approving.
 - **Tests:** `python -m unittest discover -s tests`, run from the worktree root. It must pass before you push. The core uses only the standard library.
 - **No CI.** Nothing on GitHub runs the tests. The reviewer runs them on the PR head and states the result in the review, and housekeeping merges on that approval, one PR per pass.
 - **Blocked:** comment on the issue with exactly what's missing, then stop. Don't retry the same approach.
