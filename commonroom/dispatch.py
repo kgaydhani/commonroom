@@ -9,6 +9,7 @@ One pass (`run_once`):
 from __future__ import annotations
 
 import calendar
+import datetime
 import fnmatch
 import os
 import json
@@ -35,6 +36,9 @@ ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 DIRECTOR_COOLDOWN = 3600
 STEER_REASON = ("periodic steering: check pace to the goal, the bottleneck and the allocation; "
                 "write the Director log (gamemirage #376)")
+BULLETIN_REASON = ("bulletin missed (due {due}): post a short text digest to #{issue} starting with @{owner} (merges since "
+                   "the last bulletin, open problems, a pointer to the Director log), and add a Director log entry saying "
+                   "the interactive session's schedules need recreating")
 OWNER_COOLDOWN = 300
 ROOM_ERROR_BACKOFF = 600   # a task whose last run was a room-error rests this long, doubling with each one in a row...
 ROOM_ERROR_ESCALATE = 3    # ...and the third in a row goes to the director (commonroom#9)
@@ -245,6 +249,12 @@ class GitHubBoard:
 
     def edit_issue(self, number: int, title: str, body: str):
         board_mod.gh(["issue", "edit", str(number), "--repo", self.repo, "--title", title, "--body", body])
+
+    def issue_comments(self, number: int, since: float) -> list[dict]:
+        """Every comment on an issue updated since `since`, as `createdAt` and `body`: `issue list` stops at 100."""
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+        pages = board_mod.gh(["api", "--paginate", "--slurp", f"repos/{self.repo}/issues/{number}/comments?since={stamp}&per_page=100"])
+        return [{"createdAt": c.get("created_at"), "body": c.get("body")} for page in pages or [] for c in page]
 
     def claim_record(self, number: int, kind: str):
         """One read for checking ACTIONS claims (commonroom#68): the issue or PR, or its timeline events."""
@@ -1495,11 +1505,34 @@ class Dispatcher:
         if machine_open and not busy:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
         reasons += self.ready_for_director()
+        bulletin = self.bulletin_missed(since)
+        if bulletin:
+            reasons.append(bulletin)
         # The director is always on it (owner, 9 Oct; commonroom#41): even with no event, it steers every few hours.
         steer = float((self.cfg.get("director") or {}).get("steer_every_hours", 3) or 0)
         if steer and time.time() - since >= steer * 3600:
             reasons.append(STEER_REASON)
         return "; ".join(reasons) or None
+
+    def bulletin_missed(self, last_director: float, now: float | None = None) -> str | None:
+        """The owner's digest is due by each `[bulletin] deadlines` time (commonroom#82). Missed: the latest passed
+        deadline has no `@<owner>` comment on `[bulletin] issue` since the deadline before it (bulletins go out early),
+        and no director run started after it. Any such run was given this reason, so it fires once per deadline."""
+        cfg = self.cfg.get("bulletin") or {}
+        if not cfg.get("issue") or not cfg.get("deadlines"):
+            return None
+        previous, due, label = bulletin_window(cfg["deadlines"], time.time() if now is None else now)
+        if last_director > due:
+            return None
+        owner = self.cfg["project"]["repo"].split("/", 1)[0]
+        try:
+            comments = self.board.issue_comments(int(cfg["issue"]), previous)
+        except Exception as exc:
+            self.log(f"   bulletin check failed: {exc}")
+            return None
+        if any(_after(c, previous) and (c.get("body") or "").lstrip().startswith("@" + owner) for c in comments):
+            return None
+        return BULLETIN_REASON.format(due=label, issue=cfg["issue"], owner=owner)
 
     def last_provider(self, task: str, role: str) -> str | None:
         for r in self.ledger.recent_runs(self.project, limit=200):
@@ -2043,6 +2076,19 @@ class Dispatcher:
                 "decide in an executive session what changes. Clear the stop with `python D:/Dev/commonroom/room.py breaker reset`.")
         board_mod.gh(["issue", "create", "--repo", self.cfg["project"]["repo"], "--title", title, "--body", body,
                       "--label", "owner:human", "--assignee", "kgaydhani"])
+
+
+def bulletin_window(deadlines: list[str], now: float) -> tuple[float, float, str]:
+    """(previous deadline, latest passed deadline, its HH:MM) for local `HH:MM` deadlines, looking back two days."""
+    today = datetime.datetime.fromtimestamp(now).date()
+    stamps = []
+    for back in (2, 1, 0):
+        day = today - datetime.timedelta(days=back)
+        for text in deadlines:
+            hour, minute = (int(part) for part in str(text).split(":", 1))
+            stamps.append((datetime.datetime.combine(day, datetime.time(hour, minute)).timestamp(), f"{hour:02d}:{minute:02d}"))
+    passed = sorted(s for s in stamps if s[0] <= now)
+    return passed[-2][0], passed[-1][0], passed[-1][1]
 
 
 def _after(comment: dict, since: float) -> bool:

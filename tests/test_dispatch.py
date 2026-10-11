@@ -1,10 +1,12 @@
 import contextlib
+import datetime
 import io
 import os
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from commonroom import config, dispatch, gate, usage, workers
 from commonroom.ledger import Ledger
@@ -62,6 +64,10 @@ class FakeBoard:
 
     def edit_issue(self, n, title, body):
         self.edited = getattr(self, "edited", []) + [(n, title, body)]
+
+    def issue_comments(self, n, since):
+        self.comment_reads = getattr(self, "comment_reads", []) + [n]
+        return next((i["comments"] for i in self.issues if i["number"] == n), [])
 
 
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
@@ -288,6 +294,76 @@ class WithLedger(unittest.TestCase):
         self.assertIsNone(d.director_trigger())
         cfg["director"] = {"steer_every_hours": 0}                     # 0 turns it off
         self.assertIsNone(d.director_trigger())
+
+    def bulletin_setup(self, bulletin=True):
+        cfg = cfg_with(self.tmp.name)
+        if bulletin:
+            cfg["bulletin"] = {"issue": 286, "deadlines": ["10:00", "21:00"]}
+        digest = issue(286, [], milestone=None)
+        board = FakeBoard([issue(30, ["status:ready", "role:builder"]), digest])
+        return dispatch.Dispatcher(cfg, self.ledger, board=board, log=lambda *_: None), board, digest
+
+    @staticmethod
+    def local(day, hour, minute=0):
+        return datetime.datetime(2026, 10, day, hour, minute).timestamp()
+
+    @staticmethod
+    def said(body, stamp):
+        return {"body": body, "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stamp))}
+
+    def test_bulletin_window_is_the_latest_passed_deadline_and_the_one_before(self):
+        self.assertEqual(dispatch.bulletin_window(["10:00", "21:00"], self.local(11, 12)),
+                         (self.local(10, 21), self.local(11, 10), "10:00"))
+        self.assertEqual(dispatch.bulletin_window(["21:00", "10:00"], self.local(11, 9)),     # before today's first
+                         (self.local(10, 10), self.local(10, 21), "21:00"))
+        self.assertEqual(dispatch.bulletin_window(["9:30"], self.local(11, 9, 30)),           # a single daily slot
+                         (self.local(10, 9, 30), self.local(11, 9, 30), "09:30"))
+
+    def test_missed_bulletin_wakes_the_director(self):
+        """commonroom#82: the session crons that post the owner's digest were wiped silently."""
+        d, board, digest = self.bulletin_setup()
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
+            reason = d.director_trigger()
+            self.assertEqual(reason, dispatch.BULLETIN_REASON.format(due="10:00", issue=286, owner="o"))
+            self.assertIn("bulletin missed (due 10:00): post a short text digest to #286 starting with @o", reason)
+            # Agent comments don't count, nor does the bulletin for the previous slot (posted before its deadline).
+            digest["comments"] += [self.said("[agent:director] @o morning digest", self.local(11, 8)),
+                                   self.said("@o evening digest", self.local(10, 19, 19))]
+            self.assertIn("bulletin missed (due 10:00)", d.director_trigger())
+            self.assertEqual(board.comment_reads, [286, 286])
+
+    def test_bulletin_posted_early_counts(self):
+        d, _, digest = self.bulletin_setup()
+        digest["comments"].append(self.said("@o morning digest: 3 merges", self.local(11, 8, 14)))   # before the 10:00 slot
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
+            self.assertIsNone(d.director_trigger())
+        digest["comments"][-1] = self.said("  @o late digest", self.local(11, 11))
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
+            self.assertIsNone(d.director_trigger())
+
+    def test_bulletin_fires_once_per_deadline(self):
+        d, _, digest = self.bulletin_setup()
+        run = self.ledger.start_run("t", None, "director", "claude", now=self.local(11, 10, 30))
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "director", "ref": "x"}], now=self.local(11, 10, 40))
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
+            self.assertIsNone(d.director_trigger())        # that run was given the reason; no second wake for 10:00
+        digest["comments"].append(self.said("@o morning digest", self.local(11, 10, 35)))
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 22)):
+            self.assertIsNone(d.director_trigger())        # it posted after 10:00, which counts for 21:00
+        digest["comments"].clear()
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 22)):
+            self.assertIn("bulletin missed (due 21:00)", d.director_trigger())
+
+    def test_no_bulletin_table_leaves_the_reasons_unchanged(self):
+        # gamemirage today: no [bulletin], so no comment read and the same reasons as before.
+        d, board, _ = self.bulletin_setup(bulletin=False)
+        with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
+            self.assertIsNone(d.director_trigger())
+            board.issues[0] = issue(30, ["role:builder"])
+            self.assertEqual(d.director_trigger(),
+                             "the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
+        self.assertFalse(hasattr(board, "comment_reads"))
+        self.assertEqual(config.DEFAULTS["bulletin"], {})
 
     def test_owner_reply_outranks_builds(self):
         issues = [issue(40, ["status:ready", "role:builder"]),
