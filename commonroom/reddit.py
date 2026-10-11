@@ -1,8 +1,9 @@
 """Read-only Reddit research through public archives (owner decision, 2026-10-06: "reddit yes", small reads only).
 
 Reddit itself is closed to agents: Claude's WebFetch/WebSearch refuse it, and robots.txt plus its terms forbid
-automated reads (gamemirage docs/scouting/2026-10-06-limitation-reddit.md). Arctic Shift and Pullpush are volunteer
-archives that answer without an account. Rules: an honest user agent, at most one request every 5 s across every
+automated reads (gamemirage docs/scouting/2026-10-06-limitation-reddit.md). Arctic Shift is a volunteer archive that
+answers without an account. Pullpush is not used: it answers agents with 429 "This website does not provide free scraping
+resources for agents", and we take it at its word (commonroom#38). Rules: an honest user agent, at most one request every 5 s across every
 process, a short-lived cache of query results only, no bulk collection, never used for training.
 """
 from __future__ import annotations
@@ -19,11 +20,12 @@ from pathlib import Path
 
 USER_AGENT = "commonroom-research/0.1 (read-only research; github.com/kgaydhani/commonroom)"
 ARCTIC = "https://arctic-shift.photon-reddit.com/api"
-PULLPUSH = "https://api.pullpush.io/reddit/search"
 MIN_INTERVAL = 5.0       # seconds between any two requests, across all processes
 CACHE_TTL = 24 * 3600    # query results only, for a day
 MAX_LIMIT = 50
 RETRY_WAIT = 10.0        # Arctic Shift answers a slow full-text search with 422 "Timeout. Maybe slow down a bit"
+NEEDS_SUB = ("a subreddit is required: Pullpush refuses agents and Arctic Shift's keyword search needs a subreddit, "
+             "so pass --sub <name>")
 
 
 def home() -> Path:
@@ -77,8 +79,10 @@ def normalize(item: dict, source: str) -> dict:
 
 def search(query: str, subreddit: str | None = None, comments: bool = False, limit: int = 25,
            fetch=_get, cache_dir: Path | None = None, now: float | None = None, sleep=time.sleep) -> list[dict]:
-    """Arctic Shift when a subreddit is given (its keyword search needs one), Pullpush otherwise or as the fallback.
+    """Arctic Shift only; its keyword search needs a subreddit, so none raises ValueError(NEEDS_SUB) before any request.
     Arctic Shift searches `title` (posts) or `body` (comments); it rejects `query`."""
+    if not subreddit:
+        raise ValueError(NEEDS_SUB)
     limit = max(1, min(limit, MAX_LIMIT))
     now = time.time() if now is None else now
     cache_dir = cache_dir or home() / "cache" / "reddit"
@@ -86,34 +90,22 @@ def search(query: str, subreddit: str | None = None, comments: bool = False, lim
     cached = cache_dir / f"{key}.json"
     if cached.exists() and now - cached.stat().st_mtime < CACHE_TTL:
         return json.loads(cached.read_text(encoding="utf-8"))
-    results, errors = None, []
-    if subreddit:
-        # No `sort`: results already come newest first, and `sort=desc` made the same title search of r/ClaudeCode
-        # time out where the unsorted one answered (2026-10-09).
-        params = {"subreddit": subreddit, "limit": limit, ("body" if comments else "title"): query}
-        url = f"{ARCTIC}/{'comments' if comments else 'posts'}/search?{urllib.parse.urlencode(params)}"
-        for attempt in (1, 2):
-            try:
-                data = fetch(url)
-                if data.get("data") is None:
-                    raise RuntimeError(data.get("error") or "no data")
-                results = [normalize(i, "arctic-shift") for i in data["data"]]
-                break
-            except Exception as exc:
-                if attempt == 1 and re.search(r"time(d)? ?out", str(exc), re.I):
-                    sleep(RETRY_WAIT)   # a timeout is the archive under load: back off and ask once more
-                    continue
-                errors.append(f"arctic-shift: {exc}")
-                break
-    if results is None:
-        params = {"q": query, "size": limit, **({"subreddit": subreddit} if subreddit else {})}
+    # No `sort`: results already come newest first, and `sort=desc` made the same title search of r/ClaudeCode
+    # time out where the unsorted one answered (2026-10-09).
+    params = {"subreddit": subreddit, "limit": limit, ("body" if comments else "title"): query}
+    url = f"{ARCTIC}/{'comments' if comments else 'posts'}/search?{urllib.parse.urlencode(params)}"
+    for attempt in (1, 2):
         try:
-            data = fetch(f"{PULLPUSH}/{'comment' if comments else 'submission'}/?{urllib.parse.urlencode(params)}")
-            results = [normalize(i, "pullpush") for i in data.get("data") or []]
+            data = fetch(url)
+            if data.get("data") is None:
+                raise RuntimeError(data.get("error") or "no data")
+            results = [normalize(i, "arctic-shift") for i in data["data"]]
+            break
         except Exception as exc:
-            errors.append(f"pullpush: {exc}")
-    if results is None:
-        raise RuntimeError("; ".join(errors) or "no archive answered")
+            if attempt == 1 and re.search(r"time(d)? ?out", str(exc), re.I):
+                sleep(RETRY_WAIT)   # a timeout is the archive under load: back off and ask once more
+                continue
+            raise RuntimeError(f"arctic-shift: {exc}") from None
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached.write_text(json.dumps(results), encoding="utf-8")
     return results

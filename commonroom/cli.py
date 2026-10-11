@@ -505,6 +505,9 @@ def cmd_reddit(args) -> int:
     from commonroom import reddit
     try:
         results = reddit.search(args.query, subreddit=args.sub, comments=args.comments, limit=args.limit)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     except RuntimeError as exc:
         print(f"no archive answered: {exc}")
         return 1
@@ -515,7 +518,7 @@ def cmd_reddit(args) -> int:
         print(f"{r['date']}  r/{r['subreddit']}  score {r['score']}  {r['title'][:100]}\n    {r['url']}")
         if r["excerpt"]:
             print(f"    {r['excerpt'][:200]}")
-    print(f"{len(results)} result(s) via {results[0]['source'] if results else 'archives'}")
+    print(f"{len(results)} result(s) via arctic-shift")
     return 0
 
 
@@ -540,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)
     p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
     p = sub.add_parser("submit", help="owner: deliver an assigned task"); p.add_argument("issue", type=int); p.add_argument("--note"); p.set_defaults(func=cmd_submit)
-    p = sub.add_parser("reddit", help="read-only Reddit research through public archives (small reads only)"); p.add_argument("query"); p.add_argument("--sub", help="subreddit (uses Arctic Shift)"); p.add_argument("--comments", action="store_true"); p.add_argument("--limit", type=int, default=25); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_reddit)
+    p = sub.add_parser("reddit", help="read-only Reddit research through public archives (small reads only)"); p.add_argument("query"); p.add_argument("--sub", help="subreddit (required: Arctic Shift needs one)"); p.add_argument("--comments", action="store_true"); p.add_argument("--limit", type=int, default=25); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_reddit)
     p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
     sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
     sub.add_parser("guard-command", help="PreToolUse hook: block filter-based process kills (hook JSON on stdin)").set_defaults(func=cmd_guard_command)
