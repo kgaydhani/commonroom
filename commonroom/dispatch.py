@@ -1777,26 +1777,30 @@ class Dispatcher:
                           "--title", title[:200], "--body", f"Closes #{job.issue['number']}\n\n{body}\n\n_Built by Codex; published by Common Room._"])
 
     def codex_handoff(self, job: Job, branch: str | None, text: str) -> bool:
-        """A Codex build that ended BLOCKED but left changes usually finished the work and only couldn't run the gate
-        in its sandbox. `preserve_work` pushes those changes to the branch, so a Claude builder continues from them
-        instead of the director (commonroom#84). Work pinned `provider:codex` still escalates, and so does any Claude
-        build, so this can't loop."""
-        worktree = getattr(self, "_worktree", None)
-        if (self._provider != "codex" or job.role != "builder" or not branch or not worktree
+        """A Codex build that ended BLOCKED usually hit its sandbox (no `gh` auth, a gate it can't run), not the task.
+        A Claude builder doesn't have those limits, so it gets the issue instead of the director: from the changes
+        `preserve_work` pushes to the branch (commonroom#84), or from the issue when Codex stopped before editing
+        anything (commonroom#91). Work pinned `provider:codex` still escalates, and so does any Claude build, so this
+        can't loop."""
+        if (self._provider != "codex" or job.role != "builder" or not branch
                 or "provider:codex" in labels(job.issue)):
             return False
+        worktree = getattr(self, "_worktree", None)
         try:
-            if not git(["status", "--porcelain"], worktree):
-                return False
+            changed = bool(worktree and git(["status", "--porcelain"], worktree))
         except (RuntimeError, OSError):
-            return False
+            changed = False
         n = job.issue["number"]
         if hasattr(self.board, "ensure_label"):
             self.board.ensure_label("provider:claude")
         self.board.set_labels(n, add=["status:ready", "provider:claude"], remove=["status:in-progress"])
-        self.board.comment(n, f"Codex finished part or all of this but ended BLOCKED. Its work is preserved on branch "
-                              f"`{branch}`. A Claude builder continues from it: run the gate, finish what's left, open "
-                              f"the PR.\n\n```\n{text.strip()[-1500:]}\n```")
+        if changed:
+            lead = (f"Codex finished part or all of this but ended BLOCKED. Its work is preserved on branch `{branch}`. "
+                    f"A Claude builder continues from it: run the gate, finish what's left, open the PR.")
+        else:
+            lead = (f"Codex ended BLOCKED before changing anything, so this run left nothing on branch `{branch}`. "
+                    f"A Claude builder starts from the issue: build it, run the gate, open the PR.")
+        self.board.comment(n, f"{lead}\n\n```\n{text.strip()[-1500:]}\n```")
         return True
 
     def assess(self, job: Job, branch: str | None, before: str | None, started_iso: str, result) -> tuple[str, list, str]:
