@@ -97,6 +97,33 @@ def codex_command(model: str | None, effort: str | None, cwd: Path, writable: bo
     return cmd + ["-"]
 
 
+def scratch_dirs(cwd, names: list[str]) -> dict[str, str]:
+    """Make `<cwd>/.scratch/<name lowercased>` for each variable name and return the env entries pointing at them.
+    The Codex sandbox writes only inside the worktree, so tools that write under e.g. %APPDATA% (Godot) fail there
+    (commonroom#81). `.scratch/` goes in the repo's git exclude so it never shows in `git status`."""
+    cwd = Path(cwd)
+    env = {}
+    for name in names:
+        folder = cwd / ".scratch" / str(name).lower()
+        folder.mkdir(parents=True, exist_ok=True)
+        env[str(name)] = str(folder)
+    exclude_scratch(cwd)
+    return env
+
+
+def exclude_scratch(cwd: Path):
+    done = subprocess.run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=cwd, capture_output=True, text=True)
+    if done.returncode != 0 or not done.stdout.strip():
+        return   # not a git working copy: nothing to keep clean
+    exclude = Path(cwd) / done.stdout.strip()   # shared by every worktree of the repo
+    text = exclude.read_text(encoding="utf8") if exclude.exists() else ""
+    if "/.scratch/" in text.splitlines():
+        return
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    with exclude.open("a", encoding="utf8", newline="\n") as f:
+        f.write(("\n" if text and not text.endswith("\n") else "") + "/.scratch/\n")
+
+
 def worker_tmp(cwd) -> Path:
     """Per-worktree scratch space on the same drive as the worktree, outside the repo."""
     cwd = Path(cwd)
@@ -105,8 +132,9 @@ def worker_tmp(cwd) -> Path:
 
 def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger, log_dir: Path,
                model: str | None = None, effort: str | None = None, timeout: float = 3600,
-               stop_check=None, resume_session: str | None = None) -> WorkerResult:
-    """Run to completion. `stop_check()` returning a reason string aborts the worker (e.g. the gate closed)."""
+               stop_check=None, resume_session: str | None = None, scratch_env: list[str] | None = None) -> WorkerResult:
+    """Run to completion. `stop_check()` returning a reason string aborts the worker (e.g. the gate closed).
+    `scratch_env` names variables a Codex worker gets pointed at `<cwd>/.scratch/<name>` (`[codex] scratch_env`)."""
     log_dir.mkdir(parents=True, exist_ok=True)
     session_id = resume_session or str(uuid.uuid4())
     log_path = log_dir / f"{int(time.time())}-{provider}-{role.name}.jsonl"
@@ -131,6 +159,8 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     tmp = worker_tmp(cwd)
     tmp.mkdir(parents=True, exist_ok=True)
     env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
+    if provider == "codex" and scratch_env:
+        env.update(scratch_dirs(cwd, scratch_env))
     tree = ProcessTree()
     process = tree.start(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
