@@ -1255,10 +1255,27 @@ class Dispatcher:
                     done.append(f"PR #{pr['number']}: CI was cancelled/timed out (not a test failure); rerun attempt {attempt + 1}")
             return done
         issue = next((i for i in everything if i["number"] == issue_no), None)
+        # While main itself is red, a PR fails for main's reason: only the fix task's own PR goes back (commonroom#43).
+        fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
+        if fix and fix["number"] != issue_no:
+            return [f"PR #{pr['number']}: CI red while main is red; left alone until #{fix['number']} lands"]
         # Only once the builder has finished (status:review); a builder still pushing will retrigger CI itself.
         if not issue or issue["state"] != "OPEN" or "status:review" not in labels(issue):
             return []
         names = ", ".join(sorted({c.get("name") or c.get("context") or "check" for c in failed}))
+        # Failed before the last red main was fixed: bring main's fix into the branch so CI reruns on it, once. The
+        # new run ends after the fix, so a failure on it is the PR's own and goes back to the builder.
+        ended = max((c.get("completedAt") or "" for c in failed), default="")[:19]
+        fixed = max((i.get("closedAt") or "" for i in everything
+                     if i["state"] != "OPEN" and i["title"].startswith(MAIN_RED)), default="")[:19]
+        if ended and ended < fixed:
+            try:
+                if self.board.behind_main(detail):
+                    self.board.update_branch(pr["number"])
+                    return [f"PR #{pr['number']}: CI failed while main was red; merged main into it so CI reruns"]
+            except Exception as exc:
+                if "conflict" not in str(exc).lower():
+                    return [f"PR #{pr['number']}: updating it with main after main's fix failed: {str(exc)[:100]}"]
         bounces = sum(1 for c in issue.get("comments") or [] if "CI is red" in (c.get("body") or ""))
         if bounces >= CI_BOUNCES:
             self.board.set_labels(issue_no, add=["status:blocked", "needs:director"], remove=["status:review"])
