@@ -160,6 +160,10 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     tmp.mkdir(parents=True, exist_ok=True)
     env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
     if provider == "codex" and scratch_env:
+        # gh keeps its login under %APPDATA%\GitHub CLI: pin it before APPDATA moves, or every Codex run that needs
+        # GitHub ends BLOCKED with "authentication missing" (gamemirage#428, 11 Oct).
+        if "APPDATA" in scratch_env and "GH_CONFIG_DIR" not in env and env.get("APPDATA"):
+            env["GH_CONFIG_DIR"] = str(Path(env["APPDATA"]) / "GitHub CLI")
         env.update(scratch_dirs(cwd, scratch_env))
     tree = ProcessTree()
     process = tree.start(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
