@@ -43,6 +43,9 @@ DEFAULTS = {
     # `scratch_env`: environment variables a Codex worker gets pointed at `<worktree>/.scratch/<name lowercased>`,
     # because its sandbox writes only inside the worktree (commonroom#81). Empty: the environment is unchanged.
     "codex": {},
+    # `issue` and `deadlines` (local "HH:MM"): the owner's digest is due on that issue by each deadline. A missed one
+    # wakes the director to post it (commonroom#82). Empty: no check.
+    "bulletin": {},
 }
 
 # What a guest takes from its host, so both pass through one budget gate.
