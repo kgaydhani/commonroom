@@ -65,11 +65,15 @@ class ScratchEnv(unittest.TestCase):
         self.assertEqual(exclude.read_text().splitlines().count("/.scratch/"), 1)
         for name in ("LOCALAPPDATA", "USERPROFILE"):                                  # Codex's own config stays put
             self.assertEqual(env.get(name), os.environ.get(name))
+        # gh's login stays reachable: GH_CONFIG_DIR points at the real %APPDATA%\GitHub CLI (gamemirage#428)
+        if os.environ.get("APPDATA") and not os.environ.get("GH_CONFIG_DIR"):
+            self.assertEqual(Path(env["GH_CONFIG_DIR"]), Path(os.environ["APPDATA"]) / "GitHub CLI")
 
     def test_claude_workers_and_codex_without_scratch_env_keep_appdata(self):
         for provider, scratch in (("claude", ["APPDATA"]), ("codex", None), ("codex", [])):
             env = self.start(provider, scratch_env=scratch)
             self.assertEqual(env.get("APPDATA"), os.environ.get("APPDATA"), (provider, scratch))
+            self.assertEqual(env.get("GH_CONFIG_DIR"), os.environ.get("GH_CONFIG_DIR"), (provider, scratch))
         self.assertFalse((self.wt / ".scratch").exists())
 
     def test_the_dispatcher_passes_the_projects_list_and_nothing_by_default(self):
