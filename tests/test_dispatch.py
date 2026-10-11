@@ -606,11 +606,27 @@ class WithLedger(unittest.TestCase):
         job, provider, _ = claude.pick(allowed)
         self.assertEqual((job.issue["number"], provider), (84, "claude"))
 
+    def test_codex_blocked_with_no_changes_goes_to_a_claude_builder(self):
+        """commonroom#91: Codex lost `gh` auth before it edited anything (gamemirage#418, #419), and the task sat
+        `needs:director` until the director requeued it by hand."""
+        board, added = self.blocked_build("codex", [], changed=False)
+        self.assertEqual(board.label_calls, [(84, ("status:ready", "provider:claude"), ("status:in-progress",))])
+        self.assertEqual(board.ensured, ["provider:claude"])
+        self.assertFalse(added & {"needs:director", "status:blocked"})
+        (n, body), = board.comments
+        self.assertEqual(n, 84)
+        self.assertIn("left nothing on branch `i84-handoff`", body)
+        self.assertIn("A Claude builder starts from the issue", body)
+        self.assertNotIn("preserved", body)
+        self.assertIn("PermissionError in tools/test.py", body)
+        self.assertNotIn("Implemented the fix.", body)   # only the last ~1500 characters
+
     def test_other_blocked_builds_still_escalate(self):
         escalate = [(84, ("status:blocked", "needs:director"), ("status:in-progress",))]
-        for provider, labels, changed in [("codex", [], False),                    # Codex left nothing behind
-                                          ("codex", ["provider:codex"], True),     # only Codex can do it
+        for provider, labels, changed in [("codex", ["provider:codex"], True),     # only Codex can do it
+                                          ("codex", ["provider:codex"], False),
                                           ("claude", [], True),                    # Claude, e.g. the continuation
+                                          ("claude", [], False),
                                           ("claude", ["provider:claude"], True)]:  # so a handoff can't loop
             with self.subTest(provider=provider, labels=labels, changed=changed):
                 board, _ = self.blocked_build(provider, labels, changed)
