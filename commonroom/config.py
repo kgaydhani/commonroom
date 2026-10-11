@@ -40,6 +40,9 @@ DEFAULTS = {
     # `director_paths`: globs of repo-relative files. A PR that changes one merges only once a `[agent:director]`
     # `REVIEW: APPROVE` follows its last commit, on top of the usual approval (commonroom#49). Empty: no extra gate.
     "merge": {},
+    # `scratch_env`: environment variables a Codex worker gets pointed at `<worktree>/.scratch/<name lowercased>`,
+    # because its sandbox writes only inside the worktree (commonroom#81). Empty: the environment is unchanged.
+    "codex": {},
 }
 
 # What a guest takes from its host, so both pass through one budget gate.

@@ -1543,7 +1543,7 @@ class Dispatcher:
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
             result = run_worker(provider, role, self.prompt(job, branch) + self.why() + self.headless_note(), worktree, self.ledger, self.log_dir,
-                                model=model, effort=effort,
+                                model=model, effort=effort, scratch_env=(self.cfg.get("codex") or {}).get("scratch_env"),
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
                 status, outputs, note = self.requeue(job, provider, result)
