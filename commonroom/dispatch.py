@@ -241,6 +241,14 @@ class GitHubBoard:
         if len(args) > 4:
             board_mod.gh(args)
 
+    def ensure_label(self, name: str):
+        """`issue edit --add-label` fails on a label the repo doesn't have yet: create it, keeping one that exists."""
+        try:
+            board_mod.gh(["label", "create", name, "--repo", self.repo])
+        except RuntimeError as exc:
+            if "already exists" not in str(exc):
+                raise
+
     def comment(self, number: int, body: str):
         board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
 
@@ -1723,6 +1731,29 @@ class Dispatcher:
             board_mod.gh(["pr", "create", "--repo", self.cfg["project"]["repo"], "--head", branch, "--base", "main",
                           "--title", title[:200], "--body", f"Closes #{job.issue['number']}\n\n{body}\n\n_Built by Codex; published by Common Room._"])
 
+    def codex_handoff(self, job: Job, branch: str | None, text: str) -> bool:
+        """A Codex build that ended BLOCKED but left changes usually finished the work and only couldn't run the gate
+        in its sandbox. `preserve_work` pushes those changes to the branch, so a Claude builder continues from them
+        instead of the director (commonroom#84). Work pinned `provider:codex` still escalates, and so does any Claude
+        build, so this can't loop."""
+        worktree = getattr(self, "_worktree", None)
+        if (self._provider != "codex" or job.role != "builder" or not branch or not worktree
+                or "provider:codex" in labels(job.issue)):
+            return False
+        try:
+            if not git(["status", "--porcelain"], worktree):
+                return False
+        except (RuntimeError, OSError):
+            return False
+        n = job.issue["number"]
+        if hasattr(self.board, "ensure_label"):
+            self.board.ensure_label("provider:claude")
+        self.board.set_labels(n, add=["status:ready", "provider:claude"], remove=["status:in-progress"])
+        self.board.comment(n, f"Codex finished part or all of this but ended BLOCKED. Its work is preserved on branch "
+                              f"`{branch}`. A Claude builder continues from it: run the gate, finish what's left, open "
+                              f"the PR.\n\n```\n{text.strip()[-1500:]}\n```")
+        return True
+
     def assess(self, job: Job, branch: str | None, before: str | None, started_iso: str, result) -> tuple[str, list, str]:
         tail = (result.final_text or "").strip()[-600:]
         blocked = bool(re.search(r"STATUS:\s*BLOCKED", result.final_text or "", re.I))
@@ -1741,6 +1772,8 @@ class Dispatcher:
                 # while the issue sat in the queue). That's a finished task, not a failed attempt.
                 self.board.set_labels(n, add=["status:review"], remove=["status:in-progress", "needs:changes"])
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (no changes needed)"}], tail
+            if blocked and self.codex_handoff(job, branch, result.final_text or ""):
+                return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked, handed to Claude"}], tail
             if blocked:
                 self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
                 return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked"}], tail
