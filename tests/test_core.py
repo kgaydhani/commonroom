@@ -178,24 +178,65 @@ class Config(unittest.TestCase):
 
 
 class RedditResearch(unittest.TestCase):
-    def test_archive_fallback_and_cache(self):
+    def test_arctic_shift_failure_is_reported_without_fallback_and_success_is_cached(self):
+        # commonroom#38: Pullpush refuses agents, so an Arctic Shift failure is the answer, never a hand-off to Pullpush.
         calls = []
         def fetch(url):
             calls.append(url)
-            if "arctic-shift" in url:
-                return {"data": None, "error": "Timeout. Maybe slow down a bit"}
-            return {"data": [{"title": "Miragine War tips", "subreddit": "AndroidGaming", "created_utc": 1500000000,
-                              "score": 12, "num_comments": 3, "selftext": "Spam  cheap units\nearly",
-                              "permalink": "/r/AndroidGaming/comments/x/tips/"}]}
+            return {"data": None, "error": "Timeout. Maybe slow down a bit"}
         with tempfile.TemporaryDirectory() as tmp:
-            rows = reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500,
-                                 sleep=lambda s: None)
-            self.assertEqual(len(calls), 3)                                   # Arctic Shift timed out twice, Pullpush answered
-            self.assertIn("size=50", calls[2])                                 # limit is capped
+            with self.assertRaises(RuntimeError) as caught:
+                reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), sleep=lambda s: None)
+            self.assertEqual(str(caught.exception), "arctic-shift: Timeout. Maybe slow down a bit")
+            self.assertEqual(len(calls), 2)                                   # timed out, retried once, then stopped
+            self.assertTrue(all(c.startswith(reddit.ARCTIC) for c in calls))
+            calls.clear()
+            with self.assertRaises(RuntimeError) as caught:
+                reddit.search("miragine", subreddit="AndroidGaming", fetch=lambda u: calls.append(u) or 1 / 0,
+                              cache_dir=Path(tmp), sleep=lambda s: None)
+            self.assertEqual((str(caught.exception), len(calls)), ("arctic-shift: division by zero", 1))
+            def answer(url):
+                calls.append(url)
+                return {"data": [{"title": "Miragine War tips", "subreddit": "AndroidGaming", "created_utc": 1500000000,
+                                  "score": 12, "num_comments": 3, "selftext": "Spam  cheap units\nearly",
+                                  "permalink": "/r/AndroidGaming/comments/x/tips/"}]}
+            calls.clear()
+            rows = reddit.search("miragine", subreddit="AndroidGaming", fetch=answer, cache_dir=Path(tmp), limit=500)
+            self.assertIn("limit=50", calls[0])                                # limit is capped
             self.assertEqual(rows[0]["url"], "https://www.reddit.com/r/AndroidGaming/comments/x/tips/")
-            self.assertEqual((rows[0]["excerpt"], rows[0]["date"], rows[0]["source"]), ("Spam cheap units early", "2017-07-14", "pullpush"))
-            reddit.search("miragine", subreddit="AndroidGaming", fetch=fetch, cache_dir=Path(tmp), limit=500)
-            self.assertEqual(len(calls), 3)                                   # second identical query comes from the cache
+            self.assertEqual((rows[0]["excerpt"], rows[0]["date"], rows[0]["source"]), ("Spam cheap units early", "2017-07-14", "arctic-shift"))
+            reddit.search("miragine", subreddit="AndroidGaming", fetch=answer, cache_dir=Path(tmp), limit=500)
+            self.assertEqual(len(calls), 1)                                   # second identical query comes from the cache
+
+    def test_no_subreddit_makes_no_request_and_cli_says_pass_sub(self):
+        # commonroom#38: without --sub the only archive was Pullpush, which refuses agents.
+        import contextlib, io, os
+        from commonroom import cli
+        requested = []
+        def record(req, timeout=None):
+            requested.append(req.full_url)
+            raise AssertionError("no request expected")
+        orig, home = reddit.urllib.request.urlopen, os.environ.get("COMMONROOM_HOME")
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["COMMONROOM_HOME"] = tmp
+            reddit.urllib.request.urlopen = record
+            try:
+                with self.assertRaises(ValueError):
+                    reddit.search("miragine", fetch=requested.append, cache_dir=Path(tmp))
+                with self.assertRaises(ValueError):
+                    reddit.search("miragine", comments=True, cache_dir=Path(tmp))
+                with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                    code = cli.main(["reddit", "miragine"])
+            finally:
+                reddit.urllib.request.urlopen = orig
+                os.environ.pop("COMMONROOM_HOME") if home is None else os.environ.update(COMMONROOM_HOME=home)
+        self.assertEqual((code, requested), (2, []))
+        self.assertIn("Pullpush refuses agents", err.getvalue())
+        self.assertIn("pass --sub <name>", err.getvalue())
+        self.assertFalse(hasattr(reddit, "PULLPUSH"))
+        source = Path(reddit.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("pullpush.io", source)                               # no Pullpush URL on any path
 
     def test_arctic_shift_timeout_is_retried_once_with_title_search(self):
         # commonroom#26: Arctic Shift answered 422 "Timeout. Maybe slow down a bit"; the tool reported only the status.
