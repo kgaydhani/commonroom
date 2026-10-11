@@ -551,6 +551,70 @@ class WithLedger(unittest.TestCase):
         anyone = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
         self.assertIsNone(anyone.pick(held))                                 # ...even when Claude is held (gamemirage#121)
 
+    def blocked_build(self, provider, labels, changed):
+        """One builder run on #84 that ends `STATUS: BLOCKED`, in a real git worktree with or without changes."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:sonnet", "codex"], builder_heavy=["claude:opus"])
+        work = issue(84, ["status:in-progress", "role:builder", "size:S", *labels])
+        board = FakeBoard([work])
+        board.pr_for_branch = lambda branch: None
+        board.ensured = []
+        board.ensure_label = board.ensured.append
+        d = dispatch.Dispatcher(cfg, self.ledger, board=board, log=lambda *_: None)
+        wt = Path(self.tmp.name) / f"wt-{provider}-{len(labels)}-{changed}"
+        wt.mkdir()
+        dispatch.git(["init", "-q"], wt)
+        if changed:
+            (wt / "done.py").write_text("print('finished')\n")
+        d._provider, d._worktree = provider, wt
+        d.remote_head = lambda branch: None
+        report = "Implemented the fix.\n" + "x" * 2000 + "\nPermissionError in tools/test.py, can't run the gate.\nSTATUS: BLOCKED"
+        job = dispatch.Job("build", "builder", issue=work, reason="ready")
+        status, _, _ = d.assess(job, "i84-handoff", None, "", workers.WorkerResult(ok=True, final_text=report))
+        self.assertEqual(status, "blocked")   # still counts toward [breakers] task_failures
+        added = {l for _, add, _ in board.label_calls for l in add}
+        return board, added
+
+    def test_codex_blocked_with_changes_goes_to_a_claude_builder(self):
+        """commonroom#84: Codex finished the work but couldn't run the gate in its sandbox."""
+        board, added = self.blocked_build("codex", [], changed=True)
+        self.assertEqual(board.label_calls, [(84, ("status:ready", "provider:claude"), ("status:in-progress",))])
+        self.assertEqual(board.ensured, ["provider:claude"])
+        self.assertFalse(added & {"needs:director", "status:blocked"})
+        (n, body), = board.comments
+        self.assertEqual(n, 84)
+        self.assertIn("Its work is preserved on branch `i84-handoff`", body)
+        self.assertIn("A Claude builder continues from it", body)
+        self.assertIn("PermissionError in tools/test.py", body)
+        self.assertNotIn("Implemented the fix.", body)   # only the last ~1500 characters
+        # Pinned provider:claude, the next pick is a Claude build, not the parallel Codex one.
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:sonnet", "codex"], builder_heavy=["claude:opus"])
+        issues = [issue(84, ["status:ready", "role:builder", "size:S", "provider:claude"]),
+                  issue(85, ["status:ready", "role:builder", "size:S"]), issue(86, ["status:ready", "role:builder", "size:S"])]
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        codex = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="codex")
+        claude = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, only_provider="claude")
+        job, provider, _ = codex.pick(allowed)
+        self.assertNotEqual(job.issue["number"], 84)
+        self.assertEqual(provider, "codex")
+        issues[:] = issues[:1]
+        self.assertIsNone(codex.pick(allowed))
+        job, provider, _ = claude.pick(allowed)
+        self.assertEqual((job.issue["number"], provider), (84, "claude"))
+
+    def test_other_blocked_builds_still_escalate(self):
+        escalate = [(84, ("status:blocked", "needs:director"), ("status:in-progress",))]
+        for provider, labels, changed in [("codex", [], False),                    # Codex left nothing behind
+                                          ("codex", ["provider:codex"], True),     # only Codex can do it
+                                          ("claude", [], True),                    # Claude, e.g. the continuation
+                                          ("claude", ["provider:claude"], True)]:  # so a handoff can't loop
+            with self.subTest(provider=provider, labels=labels, changed=changed):
+                board, _ = self.blocked_build(provider, labels, changed)
+                self.assertEqual(board.label_calls, escalate)
+                self.assertFalse(getattr(board, "comments", []))
+                self.assertEqual(board.ensured, [])
+
     def test_conflicting_pr_with_changes_review_never_goes_to_codex(self):
         """commonroom#51: Codex can't fetch or commit, so a CHANGES-reviewed PR that conflicts with main went to it as
         an ordinary build, and it copied main's files into the tree instead (gamemirage#223, #238)."""
