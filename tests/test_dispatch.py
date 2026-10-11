@@ -1268,6 +1268,57 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(fake.merges, [224])
         self.assertFalse(hasattr(fake, "reruns") or hasattr(fake, "created"))
 
+    def red_pr(self, n, branch, ended="2026-10-07T03:00:00Z"):
+        return {"number": n, "headRefName": branch, "mergeable": "MERGEABLE", "commits": [], "comments": [],
+                "statusCheckRollup": [{"name": "Fast tests", "conclusion": "FAILURE", "completedAt": ended,
+                                       "detailsUrl": f"https://github.com/o/t/actions/runs/{n}/job/1"}]}
+
+    def test_red_main_leaves_other_red_prs_alone_until_it_is_fixed(self):
+        """commonroom#43: while main is red, a PR fails for main's reason; bouncing it costs a builder run for nothing."""
+        fix = issue(900, ["status:review"]) | {"title": "Main is red: Fast tests failing on 1f411c0"}
+        issues = [issue(200, ["status:review"]), fix]
+        fake = FakeBoard(issues, prs=[{"number": 224, "headRefName": "i200-x"}, {"number": 901, "headRefName": "i900-fix-main"}],
+                         details={224: self.red_pr(224, "i200-x"), 901: self.red_pr(901, "i900-fix-main")})
+        fake.comments = []
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertFalse(any(n == 200 for n, *_ in fake.label_calls))      # not relabelled...
+        self.assertFalse(any(n == 200 for n, _ in fake.comments))          # ...nor commented on
+        self.assertIn("PR #224: CI red while main is red; left alone until #900 lands", actions)
+        self.assertIn((900, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+        self.assertTrue(any(n == 900 and "CI is red on PR #901" in body for n, body in fake.comments))
+
+        # Main's fix lands: the PR that failed before it gets main merged in so CI reruns, not a builder run.
+        fix |= {"state": "CLOSED", "closedAt": "2026-10-07T04:00:00Z"}
+        issues[1] = fix
+        fake.prs.pop()
+        fake.behind = {224: 1}
+        fake.label_calls, fake.comments = [], []
+        actions = d.housekeeping()
+        self.assertEqual(fake.updated, [224])
+        self.assertEqual((fake.label_calls, fake.comments), ([], []))
+
+        # CI on the updated branch fails too: that one is the PR's own, and goes back to its builder.
+        fake.details[224] = self.red_pr(224, "i200-x", ended="2026-10-07T05:00:00Z")
+        d.housekeeping()
+        self.assertEqual(fake.updated, [224])
+        self.assertIn((200, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+
+    def test_a_main_is_red_issue_changes_nothing_without_ci(self):
+        """commonroom#43: commonroom (`ci = false`) merges on its reviewer's tested approval, Main is red issue or not."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["checks"] = {"ci": False}
+        fix = issue(900, ["status:ready"]) | {"title": "Main is red: Fast tests failing on 1f411c0"}
+        pr = self.approved_pr(224, "i200-x") | {"headRefOid": "224aaaa", "statusCheckRollup": []}
+        pr["comments"][0]["body"] += "\nTESTS: PASS 224aaaa: Ran 9 tests OK"
+        fake = FakeBoard([issue(200, ["status:review"]), fix], prs=[{"number": 224, "headRefName": "i200-x"}], details={224: pr})
+        fake.merges = []
+        fake.merge = fake.merges.append
+        d = dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        self.assertEqual(fake.merges, [224])
+        self.assertFalse(any(n == 200 and "needs:changes" in add for n, add, _ in fake.label_calls))
+
     def test_conflicts_on_an_approved_pr_get_a_cheap_claude_merge_main_run(self):
         """commonroom#14 and #19: a one-line conflict cost a full builder run plus a re-review, and Codex can't fetch."""
         cfg = cfg_with(self.tmp.name)
