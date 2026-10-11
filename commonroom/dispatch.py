@@ -294,7 +294,24 @@ class GitHubBoard:
         """Main's latest check runs, shaped like a PR's statusCheckRollup."""
         runs = board_mod.gh(["api", f"repos/{self.repo}/commits/main/check-runs?per_page=100", "--jq",
                              "[.check_runs[] | {name, conclusion: (.conclusion // .status), detailsUrl: .html_url, sha: .head_sha}]"])
-        return runs or []
+        runs = runs or []
+        # Each check's workflow run and that run's attempt, so a red main is rerun once before a fix task opens
+        # (commonroom#88). The attempt comes from GitHub, not from memory, so a restarted dispatcher can't loop.
+        for c in runs:
+            if m := RUN_URL.search(c.get("detailsUrl") or ""):
+                c["runUrl"], c["runId"] = m.group(1), m.group(2)
+        if any(c.get("runId") for c in runs):
+            listed = board_mod.gh(["run", "list", "--repo", self.repo, "--branch", "main", "--limit", "50",
+                                   "--json", "databaseId,attempt"]) or []
+            attempts = {str(r.get("databaseId")): r.get("attempt") for r in listed}
+            for c in runs:
+                if c.get("runId"):
+                    c["attempt"] = attempts.get(c["runId"])
+        return runs
+
+    def rerun_failed(self, run_id: str):
+        """Rerun a workflow run's failed jobs. No backoff and no cap here: the caller decides from the run's attempt."""
+        board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
 
     def create_issue(self, title: str, body: str, labels=(), milestone: str | None = None) -> int:
         args = ["issue", "create", "--repo", self.repo, "--title", title, "--body", body]
@@ -528,6 +545,7 @@ CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this ofte
 MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back only to merge main into it
 CONFLICTS_MAIN = "conflicts with main"   # marks the room's comment that sends a conflicting PR back to its builder
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
+RUN_URL = re.compile(r"(.*/actions/runs/(\d+))")   # a check's workflow run, from its details URL
 
 
 def merge_main_only(issue: dict) -> bool:
@@ -556,6 +574,14 @@ def changes_rounds(detail: dict, since: str = "") -> int:
 def failed_checks(detail: dict) -> list[dict]:
     return [c for c in detail.get("statusCheckRollup") or []
             if (c.get("conclusion") or c.get("state") or "").upper() in ("FAILURE", "ERROR", "ACTION_REQUIRED", *INFRA_CONCLUSIONS)]
+
+
+def attempt_links(check: dict) -> str:
+    """A failed check's link, or one link per attempt of its workflow run once it has been rerun (commonroom#88)."""
+    attempt = check.get("attempt") or 1
+    if attempt < 2 or not check.get("runUrl"):
+        return str(check.get("detailsUrl"))
+    return ", ".join(f"attempt {n} {check['runUrl']}/attempts/{n}" for n in range(1, attempt + 1))
 
 
 def ci_infra_only(detail: dict) -> bool:
@@ -993,17 +1019,36 @@ class Dispatcher:
             actions.append(f"couldn't read main's CI, merging as usual: {str(exc)[:100]}")
             return False
         rollup = {"statusCheckRollup": runs}
-        if checks_state(rollup) != "red" or ci_infra_only(rollup):
+        state = checks_state(rollup)
+        rerunning = sorted({c.get("name") or "check" for c in runs if (c.get("attempt") or 1) > 1
+                            and (c.get("conclusion") or "").upper() in ("IN_PROGRESS", "QUEUED", "WAITING", "PENDING", "REQUESTED")})
+        if state == "pending" and rerunning:
+            actions.append(f"merges held: main's CI is being rerun ({', '.join(rerunning)})")
+            return True
+        if state != "red" or ci_infra_only(rollup):
             return False
         names = ", ".join(sorted({c.get("name") or "check" for c in failed_checks(rollup)}))
+        # A first-attempt failure may be a flaky crash: rerun its failed jobs once before anyone is sent to fix it
+        # (commonroom#88: one `gh run rerun --failed` passed where a whole builder run couldn't reproduce the crash).
+        first = sorted({c["runId"] for c in failed_checks(rollup) if c.get("runId") and c.get("attempt") == 1})
+        if first:
+            try:
+                for run_id in first:
+                    self.board.rerun_failed(run_id)
+                actions.append(f"main's CI is red ({names}): merges held, rerunning once before opening a fix task")
+            except Exception as exc:
+                actions.append(f"main's CI is red ({names}): merges held; the rerun failed: {str(exc)[:100]}")
+            return True
         fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
         if fix:
             actions.append(f"merges held: main's CI is red ({names}); #{fix['number']} fixes it")
             return True
         sha = next((c["sha"] for c in runs if c.get("sha")), "")[:7]
-        links = "\n".join(f"- {c.get('name')}: {c.get('detailsUrl')}" for c in failed_checks(rollup))
+        links = "\n".join(f"- {c.get('name')}: {attempt_links(c)}" for c in failed_checks(rollup))
+        twice = any((c.get("attempt") or 1) > 1 for c in failed_checks(rollup))
         test = (self.cfg.get("checks") or {}).get("test")
-        body = (f"Main's CI fails on {sha or 'its latest commit'}:\n{links}\n\nThe room holds every other merge until main is "
+        body = (f"Main's CI fails on {sha or 'its latest commit'}{', twice: the room reran it once and it failed again' if twice else ''}:"
+                f"\n{links}\n\nThe room holds every other merge until main is "
                 f"green again; this task's PR is the one exception. Find the cause (often two PRs that each passed alone), "
                 f"fix it on this issue's branch{f', run `{test}`' if test else ''}, and open a PR. Change nothing else.")
         try:
