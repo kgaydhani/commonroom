@@ -253,6 +253,46 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(any(call[0] == 132 for call in fake.label_calls))   # #131 is still open
         self.assertIn("unblocked #131 (dependencies [89] closed)", actions)
 
+    def top_pass(self, issues, dry_run=False):
+        fake = FakeBoard(issues)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None, dry_run=dry_run)
+        return fake, d.housekeeping()
+
+    def test_prio_top_with_no_status_is_marked_ready(self):
+        """commonroom#92: gamemirage#444 was raised to prio:top without a status and no dispatcher could see it."""
+        fake, actions = self.top_pass([issue(44, ["prio:top", "role:builder"])])
+        self.assertEqual(fake.label_calls, [(44, ("status:ready",), ())])
+        self.assertEqual(fake.comments, [(44, "[room] #44 is prio:top but had no status label, so nothing could pick "
+                                              "it up. Marked status:ready.")])
+        self.assertEqual([a for a in actions if "prio:top" in a], ["#44 is prio:top with no status: marked ready"])
+
+    def test_prio_top_with_no_status_waits_for_an_open_dependency(self):
+        fake, actions = self.top_pass([issue(44, ["prio:top", "role:builder"], body="Depends on #40"), issue(40, [])])
+        self.assertEqual(fake.label_calls, [(44, ("status:blocked",), ())])
+        self.assertEqual(fake.comments, [(44, "[room] #44 is prio:top but had no status label, so nothing could pick "
+                                              "it up. Marked status:blocked.")])
+        self.assertIn("#44 is prio:top with no status: marked blocked", actions)
+        fake, _ = self.top_pass([issue(44, ["prio:top", "role:builder"], body="Depends on #40"),
+                                 issue(40, [], state="CLOSED")])
+        self.assertEqual(fake.label_calls, [(44, ("status:ready",), ())])
+
+    def test_other_issues_without_status_are_left_alone(self):
+        issues = [issue(1, ["prio:top", "role:builder", "status:ready"]), issue(2, ["prio:top", "role:builder", "status:blocked"]),
+                  issue(3, ["prio:top", "role:builder", "owner:human"]), issue(4, ["prio:top", "role:builder", "needs:director"]),
+                  issue(5, ["prio:top", "role:builder", "parked"]), issue(6, ["prio:top"]),
+                  issue(7, ["prio:top", "role:builder"], milestone="Other"), issue(8, ["prio:top", "role:builder"], milestone=None),
+                  issue(9, ["prio:high", "role:builder"]), issue(10, ["prio:top", "role:builder"], state="CLOSED")]
+        fake, actions = self.top_pass(issues)
+        self.assertEqual(fake.label_calls, [])
+        self.assertFalse(hasattr(fake, "comments"))
+        self.assertFalse(any("prio:top" in a for a in actions))
+
+    def test_prio_top_with_no_status_in_dry_run_is_only_reported(self):
+        fake, actions = self.top_pass([issue(44, ["prio:top", "role:builder"])], dry_run=True)
+        self.assertIn("#44 is prio:top with no status: marked ready", actions)
+        self.assertEqual(fake.label_calls, [])
+        self.assertFalse(hasattr(fake, "comments"))
+
     def test_director_not_woken_for_work_waiting_on_owner(self):
         issues = [issue(11, ["status:blocked", "role:builder"], body="Blocked by #12"), issue(12, ["owner:human"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

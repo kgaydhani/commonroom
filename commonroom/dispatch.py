@@ -230,7 +230,7 @@ class GitHubBoard:
 
     def all_issues(self) -> list[dict]:
         return board_mod.gh(["issue", "list", "--repo", self.repo, "--state", "all", "--limit", "500",
-                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt"]) or []
+                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt,milestone"]) or []
 
     def set_labels(self, number: int, add=(), remove=()):
         args = ["issue", "edit", str(number), "--repo", self.repo]
@@ -947,6 +947,26 @@ class Dispatcher:
                 if not self.dry_run:
                     self.board.set_labels(issue["number"], add=["status:ready"], remove=["status:blocked"])
                 actions.append(f"unblocked #{issue['number']} (dependencies {sorted(deps)} closed)")
+        actions += self.mark_unstatused_top(everything, state)
+        return actions
+
+    def mark_unstatused_top(self, everything: list[dict], state: dict[int, str]) -> list[str]:
+        """A prio:top issue raised without a status label is invisible to the dispatcher, which only picks
+        status:ready: gamemirage#444, the owner's top fix, sat unseen for 2.5 h (commonroom#92). Mark it ready, or
+        blocked while a dependency is open."""
+        actions = []
+        for issue in everything:
+            names, n = labels(issue), issue["number"]
+            if (issue["state"] != "OPEN" or "prio:top" not in names or not any(l.startswith("role:") for l in names)
+                    or any(l.startswith("status:") for l in names) or names & {"owner:human", "needs:director", "parked"}
+                    or (self.milestone and (issue.get("milestone") or {}).get("title") != self.milestone)):
+                continue
+            status = "status:blocked" if any(state.get(d) != "CLOSED" for d in dependencies(issue.get("body"))) else "status:ready"
+            if not self.dry_run:
+                self.board.set_labels(n, add=[status])
+                self.board.comment(n, f"[room] #{n} is prio:top but had no status label, so nothing could pick it up. "
+                                      f"Marked {status}.")
+            actions.append(f"#{n} is prio:top with no status: marked {status.split(':')[1]}")
         return actions
 
     def review_verdict(self, detail: dict) -> str | None:
