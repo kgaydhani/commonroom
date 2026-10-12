@@ -1279,6 +1279,60 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(fake.merges, [224])
         self.assertFalse(hasattr(fake, "reruns") or hasattr(fake, "created"))
 
+    def red_main_board(self, **fast):
+        fake = FakeBoard([issue(200, ["status:review"])], prs=[{"number": 224, "headRefName": "i200-x"}],
+                         details={224: self.approved_pr(224, "i200-x")})
+        fake.merges = []
+        fake.merge = fake.merges.append
+        fake.main_runs = [{"name": "Fast tests", "conclusion": "failure", "sha": "a6b5a2c99", "runId": "77",
+                           "runUrl": "https://github.com/o/t/actions/runs/77",
+                           "detailsUrl": "https://github.com/o/t/actions/runs/77/job/1"} | fast]
+        return fake
+
+    def test_red_main_waits_for_a_running_run_before_rerunning(self):
+        """commonroom#98: a failed hosted job beside queued self-hosted ones; every pass got "already running"."""
+        fake = self.red_main_board(attempt=1, status="queued")
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = []
+        self.assertTrue(d.main_red(fake.issues, actions))
+        self.assertEqual(actions, ["merges held: main's CI is red (Fast tests); waiting for run 77 to finish before rerunning"])
+        self.assertFalse(hasattr(fake, "reruns") or hasattr(fake, "created"))
+
+        fake.main_runs[0]["status"] = "completed"                         # finished: now it is rerun once
+        self.assertTrue(d.main_red(fake.issues, []))
+        self.assertEqual(fake.reruns, ["77"])
+        self.assertFalse(hasattr(fake, "created"))
+
+    def test_a_rerun_that_errors_opens_the_fix_task(self):
+        """commonroom#98: a rerun GitHub refuses kept attempt 1, so merges held every pass with no fix task."""
+        fake = self.red_main_board(attempt=1, status="completed")
+
+        def refuse(run_id):
+            fake.reruns = getattr(fake, "reruns", []) + [run_id]
+            raise RuntimeError("run 77 cannot be rerun; it is too old")
+
+        fake.rerun_failed = refuse
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        self.assertTrue(d.main_red(fake.issues, []))
+        self.assertEqual([t for t, *_ in fake.created], ["Main is red: Fast tests failing on a6b5a2c"])
+        self.assertIn("rerun of it failed: run 77 cannot be rerun; it is too old", fake.created_bodies[0])
+        self.assertNotIn("twice", fake.created_bodies[0])
+
+        fake.issues.append(issue(900, ["status:ready"]) | {"title": "Main is red: Fast tests failing on a6b5a2c"})
+        actions = []
+        self.assertTrue(d.main_red(fake.issues, actions))                 # the open task is reported, not doubled
+        self.assertEqual(len(fake.created), 1)
+        self.assertIn("merges held: main's CI is red (Fast tests); #900 fixes it", actions)
+
+    def test_unknown_attempt_opens_the_fix_task_without_a_rerun(self):
+        """commonroom#98: the run list failed, so the attempt is unknown; hold merges and open the task, as before #88."""
+        fake = self.red_main_board()
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        self.assertEqual(fake.merges, [])
+        self.assertFalse(hasattr(fake, "reruns"))
+        self.assertEqual(len(fake.created), 1)
+
     def red_pr(self, n, branch, ended="2026-10-07T03:00:00Z"):
         return {"number": n, "headRefName": branch, "mergeable": "MERGEABLE", "commits": [], "comments": [],
                 "statusCheckRollup": [{"name": "Fast tests", "conclusion": "FAILURE", "completedAt": ended,
@@ -1920,6 +1974,54 @@ class StackedMerge(unittest.TestCase):
             dispatch.board_mod.gh = orig
         self.assertEqual((fast["runId"], fast["attempt"], fast["runUrl"]), ("77", 2, "https://github.com/o/t/actions/runs/77"))
         self.assertNotIn("runId", other)
+
+    def test_main_checks_survive_a_failed_run_list(self):
+        """commonroom#98: a `gh run list` error made main_red() merge as usual on a red main."""
+        def fake_gh(args, timeout=30):
+            if args[0] == "api":
+                return [{"name": "Fast tests", "conclusion": "failure", "sha": "a",
+                         "detailsUrl": "https://github.com/o/t/actions/runs/77/job/1"}]
+            if args[:2] == ["run", "list"]:
+                raise RuntimeError("HTTP 502")
+            return None
+
+        orig = dispatch.board_mod.gh
+        dispatch.board_mod.gh = fake_gh
+        tmp = tempfile.TemporaryDirectory()
+        ledger = Ledger(Path(tmp.name) / "room.sqlite3")
+        try:
+            board = dispatch.GitHubBoard("o/t")
+            (fast,) = board.main_checks()
+            fake = FakeBoard([])
+            fake.main_checks = board.main_checks
+            d = dispatch.Dispatcher(cfg_with(tmp.name), ledger, board=fake, log=lambda *_: None)
+            held = d.main_red([], [])
+        finally:
+            dispatch.board_mod.gh = orig
+            ledger.close(); tmp.cleanup()
+        self.assertEqual(fast["runId"], "77")
+        self.assertNotIn("attempt", fast)
+        self.assertNotIn("status", fast)
+        self.assertTrue(held)
+        self.assertEqual([t for t, *_ in fake.created], ["Main is red: Fast tests failing on a"])
+
+    def test_main_checks_carry_each_runs_status(self):
+        def fake_gh(args, timeout=30):
+            if args[0] == "api":
+                return [{"name": "Fast tests", "conclusion": "failure", "sha": "a",
+                         "detailsUrl": "https://github.com/o/t/actions/runs/77/job/1"}]
+            if args[:2] == ["run", "list"]:
+                self.assertEqual(args[-1], "databaseId,attempt,status")
+                return [{"databaseId": 77, "attempt": 1, "status": "in_progress"}]
+            return None
+
+        orig = dispatch.board_mod.gh
+        dispatch.board_mod.gh = fake_gh
+        try:
+            (fast,) = dispatch.GitHubBoard("o/t").main_checks()
+        finally:
+            dispatch.board_mod.gh = orig
+        self.assertEqual((fast["attempt"], fast["status"]), (1, "in_progress"))
 
     def test_squash_commit_reads_as_the_pr_not_the_branch_commits(self):
         """commonroom#21: a branch whose only commit was the room's WIP placeholder put that text on main."""
