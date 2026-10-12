@@ -72,6 +72,11 @@ def labels(issue: dict) -> set[str]:
     return {l["name"] for l in issue.get("labels", [])}
 
 
+# An issue in review carries no other status and no needs:changes: gamemirage#427 had ready, review and needs:changes
+# at once, and a ready label invites a second builder (commonroom#93).
+LEAVES_REVIEW = ("status:ready", "status:in-progress", "status:blocked", "needs:changes")
+
+
 def dependencies(body: str | None) -> set[int]:
     """Only the leading list of references counts. Briefs follow it with prose ("Depends on #89. Performance is
     checked separately in #132") or asides ("#279 (PR #369)"), and a reference there is not a dependency: it can
@@ -811,6 +816,7 @@ class Dispatcher:
         # send it back to its builder, who continues from the preserved branch (gamemirage#278).
         has_pr = {int(m.group(1)) for pr in prs if (m := BRANCH.match(pr["headRefName"]))}
         running = self.ledger.running_tasks(self.project)
+        actions += self.clear_stray_ready(everything)
         for issue in everything:
             n = issue["number"]
             if (issue["state"] == "OPEN" and "status:review" in labels(issue) and n not in has_pr
@@ -920,6 +926,10 @@ class Dispatcher:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
                 if not issue or labels(issue) & {"status:ready", "status:blocked", "needs:director"}:
                     continue
+                # A builder already working on the CHANGES: the verdict stays current until it pushes, and bouncing
+                # the issue now would put status:ready on it mid-build (commonroom#93).
+                if f"#{issue_no}" in running:
+                    continue
                 # A PR that keeps failing review won't pass on the next round either (gamemirage PR #369 went 6+):
                 # the director merges it, revises the bar or splits the issue. Rounds count again after an escalation.
                 escalated = max((c.get("createdAt") or "" for c in issue.get("comments") or []
@@ -949,6 +959,25 @@ class Dispatcher:
                 actions.append(f"unblocked #{issue['number']} (dependencies {sorted(deps)} closed)")
         actions += self.mark_unstatused_top(everything, state)
         return actions
+
+    def clear_stray_ready(self, everything: list[dict]) -> list[str]:
+        """status:ready on an issue that is also in review or in progress invites a second builder: remove it, here
+        and in `everything`, so the rest of this pass sees the true state (commonroom#93)."""
+        actions = []
+        for issue in everything:
+            names, n = labels(issue), issue["number"]
+            if issue["state"] != "OPEN" or "status:ready" not in names or not names & {"status:review", "status:in-progress"}:
+                continue
+            if not self.dry_run:
+                self.board.set_labels(n, remove=["status:ready"])
+                issue["labels"] = [l for l in issue.get("labels", []) if l["name"] != "status:ready"]
+            other = "review" if "status:review" in names else "in-progress"
+            actions.append(f"#{n} had status:ready while {other}: removed status:ready")
+        return actions
+
+    def to_review(self, n: int):
+        """Every move to status:review drops the other statuses and needs:changes in the same call (commonroom#93)."""
+        self.board.set_labels(n, add=["status:review"], remove=list(LEAVES_REVIEW))
 
     def mark_unstatused_top(self, everything: list[dict], state: dict[int, str]) -> list[str]:
         """A prio:top issue raised without a status label is invisible to the dispatcher, which only picks
@@ -1848,7 +1877,7 @@ class Dispatcher:
             pr = self.board.pr_for_branch(branch)
             after = self.remote_head(branch)
             if pr and pr["state"] == "OPEN" and after and after != before:
-                self.board.set_labels(n, add=["status:review"], remove=["status:in-progress"])
+                self.to_review(n)
                 if job.role == "scout" and hasattr(self.board, "label_pr"):
                     self.board.label_pr(pr["number"], "review:skip")
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
@@ -1856,7 +1885,7 @@ class Dispatcher:
                     and re.search(r"STATUS:\s*DONE", result.final_text or "", re.I)):
                 # The builder checked and found nothing left to change (e.g. the fix already landed and was approved
                 # while the issue sat in the queue). That's a finished task, not a failed attempt.
-                self.board.set_labels(n, add=["status:review"], remove=["status:in-progress", "needs:changes"])
+                self.to_review(n)
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (no changes needed)"}], tail
             if blocked and self.codex_handoff(job, branch, result.final_text or ""):
                 return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked, handed to Claude"}], tail
