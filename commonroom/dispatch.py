@@ -283,7 +283,7 @@ class GitHubBoard:
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                              "--json", "number,state,headRefName,headRefOid,baseRefName,url,commits,comments,"
-                                       "statusCheckRollup,mergeable,files,labels"])
+                                       "statusCheckRollup,mergeable,files,labels,createdAt"])
 
     def behind_main(self, detail: dict) -> int:
         """Commits on the PR's base branch that its head doesn't contain yet."""
@@ -921,7 +921,11 @@ class Dispatcher:
                         continue
                     merged = True
                     run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{pr['number']}", "merge", "none")
-                    self.ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{pr['number']}"}])
+                    output = {"kind": "merge", "ref": f"PR #{pr['number']}"}
+                    quiet = self.quiet_merge(detail, issue_no)
+                    if quiet:
+                        output["quiet"] = quiet
+                    self.ledger.finish_run(run, "done", outputs=[output])
                 actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
                 if not self.dry_run:
                     actions += self.playtest_after_merge(pr, detail, everything)
@@ -1536,8 +1540,28 @@ class Dispatcher:
     def reports_dir(self) -> Path:
         return Path(self.ledger.path).parent / "reports" / (self.project or "default")
 
+    def quiet_merge(self, detail: dict, issue_no: int | None) -> str | None:
+        """Why a merge gives an audit nothing new to look at, or None (commonroom#103): every changed file matches
+        `[audit] quiet_paths` ("docs"), or it is the PR of an auditor run: not an issue branch, opened while an
+        auditor was running ("auditor"). Audit PR #538 re-captured the build #521 had captured, after #521 merged."""
+        files = [f["path"] for f in detail.get("files") or [] if f.get("path")]
+        globs = list((self.cfg.get("audit") or {}).get("quiet_paths") or [])
+        if files and globs and all(any(fnmatch.fnmatchcase(path, g) for g in globs) for path in files):
+            return "docs"
+        created = detail.get("createdAt")
+        if issue_no is None and created:
+            try:
+                at = calendar.timegm(time.strptime(str(created)[:19], "%Y-%m-%dT%H:%M:%S"))
+            except ValueError:
+                return None
+            if any(r["role"] == "auditor" and r["started_at"] <= at <= (r["ended_at"] or time.time())
+                   for r in self.ledger.recent_runs(self.project, limit=200)):
+                return "auditor"
+        return None
+
     def audit_due(self) -> str | None:
-        """Every `[audit] every_hours` if anything happened since the last audit (or every 6h regardless)."""
+        """Every `[audit] every_hours` if anything happened since the last audit (or every 6h regardless). Merges of the
+        auditor's own PRs and of `quiet_paths`-only PRs aren't something happening (commonroom#103)."""
         audit = self.cfg.get("audit") or {}
         if not audit or not audit.get("enabled", True):  # opt-in per project via [audit] in room.toml
             return None
@@ -1549,7 +1573,8 @@ class Dispatcher:
         if fable and fable["used_pct"] > 75:
             return None
         activity = [r for r in self.ledger.recent_runs(self.project, limit=200)
-                    if r["started_at"] > last and r["role"] not in ("auditor",)]
+                    if r["started_at"] > last and r["role"] not in ("auditor",)
+                    and not (r["role"] == "merge" and any(o.get("quiet") for o in r["outputs"]))]
         if age < every * 3600:
             # Something going wrong brings the audit forward (at most every 30 min): a breaker, or 3+ wasted runs.
             wasted = [r for r in activity if r["status"] in ("failed", "blocked", "room-error")]

@@ -518,6 +518,80 @@ class WithLedger(unittest.TestCase):
         self.ledger.db.execute("UPDATE runs SET started_at=? WHERE id=?", (now - 900, a)); self.ledger.db.commit()
         self.assertIsNone(d.audit_due())                       # but never more often than every 30 min
 
+    def audited(self, every_hours=1, quiet_paths=None, hours_ago=2):
+        """A dispatcher with `[audit]` on, and an audit that started `hours_ago` and ran for 10 minutes."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["audit"] = {"every_hours": every_hours, **({"quiet_paths": quiet_paths} if quiet_paths else {})}
+        now = time.time()
+        a = self.ledger.start_run("t", None, "auditor", "claude", now=now - hours_ago * 3600)
+        self.ledger.finish_run(a, "done", outputs=[{"kind": "report", "ref": "x"}], now=now - hours_ago * 3600 + 600)
+        return cfg, now - hours_ago * 3600 + 300
+
+    def merge_one(self, cfg, number, branch, created, files, labels=()):
+        """Housekeeping merges one green PR; returns its merge run's output."""
+        detail = {"number": number, "headRefName": branch, "commits": [], "comments": [], "createdAt": created,
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}], "files": [{"path": f} for f in files],
+                  "comments": [{"createdAt": "2026-10-12T03:00:00Z", "body": "[agent:reviewer] REVIEW: APPROVE"}]}
+        fake = FakeBoard([issue(1, ["status:review"])], details={number: detail},
+                         prs=[{"number": number, "headRefName": branch, "labels": [{"name": l} for l in labels]}])
+        fake.merges = []
+        fake.merge = fake.merges.append
+        dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertEqual(fake.merges, [number])
+        return next(r for r in self.ledger.recent_runs("t") if r["role"] == "merge")["outputs"][0]
+
+    @staticmethod
+    def iso(ts):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+    def age_runs(self, hours):
+        self.ledger.db.execute("UPDATE runs SET started_at=started_at-?, ended_at=ended_at-?", (hours * 3600, hours * 3600))
+        self.ledger.db.commit()
+
+    def test_merging_the_audits_own_pr_doesnt_make_the_next_audit_due(self):
+        """commonroom#103: merging audit PR #521 made the next audit due, and audit PR #538 re-captured the same build."""
+        cfg, during = self.audited()
+        out = self.merge_one(cfg, 521, "audit-2026-10-11-2145", self.iso(during), ["docs/captures/a/sheet.png"],
+                             labels=["review:skip"])
+        self.assertEqual(out["quiet"], "auditor")
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.assertIsNone(d.audit_due())                       # 2 h on, every_hours=1, but only its own merge since
+        self.age_runs(3.5)
+        self.assertIsNone(d.audit_due())                       # 5.5 h on: still before the floor
+        self.age_runs(0.6)
+        self.assertIn("periodic audit", d.audit_due())         # the 6 h floor stands
+
+    def test_a_builder_run_after_the_audit_makes_it_due_at_every_hours(self):
+        cfg, _ = self.audited(every_hours=2, hours_ago=1)
+        run = self.ledger.start_run("t", "#3", "builder", "claude"); self.ledger.finish_run(run, "done")
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.assertIsNone(d.audit_due())                       # 1 h on: not yet
+        self.age_runs(1)
+        self.assertIn("periodic audit", d.audit_due())         # 2 h on: due
+
+    def test_ordinary_merges_still_count_and_docs_only_merges_dont_when_configured(self):
+        # An issue branch opened during the audit is a builder's PR, not the auditor's: it counts, as before (and as
+        # it does for gamemirage, which sets no quiet_paths).
+        cfg, during = self.audited()
+        out = self.merge_one(cfg, 600, "i1-thing", self.iso(during), ["docs/notes.md"])
+        self.assertNotIn("quiet", out)
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.assertIn("periodic audit", d.audit_due())
+
+        self.ledger.db.execute("DELETE FROM runs"); self.ledger.db.commit()
+        cfg, _ = self.audited(quiet_paths=["docs/**", "design/decisions/**"])
+        out = self.merge_one(cfg, 601, "i1-thing", "2026-10-01T00:00:00Z", ["docs/a/notes.md", "design/decisions/d1.md"])
+        self.assertEqual(out["quiet"], "docs")
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.assertIsNone(d.audit_due())                       # docs only: nothing for an audit to look at
+
+        self.ledger.db.execute("DELETE FROM runs"); self.ledger.db.commit()
+        cfg, _ = self.audited(quiet_paths=["docs/**"])
+        out = self.merge_one(cfg, 602, "i1-thing", "2026-10-01T00:00:00Z", ["docs/notes.md", "src/game.py"])
+        self.assertNotIn("quiet", out)                         # one code file: it counts
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        self.assertIn("periodic audit", d.audit_due())
+
     def test_heavy_work_goes_to_opus(self):
         cfg = cfg_with(self.tmp.name)
         cfg["roles"].update(builder=["claude:sonnet"], builder_heavy=["claude:opus"])
