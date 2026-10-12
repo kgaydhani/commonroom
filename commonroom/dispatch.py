@@ -306,12 +306,17 @@ class GitHubBoard:
             if m := RUN_URL.search(c.get("detailsUrl") or ""):
                 c["runUrl"], c["runId"] = m.group(1), m.group(2)
         if any(c.get("runId") for c in runs):
-            listed = board_mod.gh(["run", "list", "--repo", self.repo, "--branch", "main", "--limit", "50",
-                                   "--json", "databaseId,attempt"]) or []
-            attempts = {str(r.get("databaseId")): r.get("attempt") for r in listed}
+            # A failed run list leaves attempt and status unset: main_red() then opens the fix task, it never merges
+            # on a red main it couldn't read (commonroom#98).
+            try:
+                listed = board_mod.gh(["run", "list", "--repo", self.repo, "--branch", "main", "--limit", "50",
+                                       "--json", "databaseId,attempt,status"]) or []
+            except Exception:
+                listed = []
+            known = {str(r.get("databaseId")): r for r in listed}
             for c in runs:
-                if c.get("runId"):
-                    c["attempt"] = attempts.get(c["runId"])
+                if c.get("runId") in known:
+                    c["attempt"], c["status"] = known[c["runId"]].get("attempt"), known[c["runId"]].get("status")
         return runs
 
     def rerun_failed(self, run_id: str):
@@ -1077,17 +1082,28 @@ class Dispatcher:
         if state != "red" or ci_infra_only(rollup):
             return False
         names = ", ".join(sorted({c.get("name") or "check" for c in failed_checks(rollup)}))
+        # A run with a failed job and others still queued can't be rerun yet, and isn't a finished attempt either:
+        # wait for it to complete (commonroom#98: every pass got "This workflow is already running").
+        running = sorted({c["runId"] for c in failed_checks(rollup) if c.get("runId") and c.get("status")
+                          and str(c["status"]).lower() != "completed"})
+        if running:
+            actions.append(f"merges held: main's CI is red ({names}); waiting for run {', '.join(running)} "
+                           f"to finish before rerunning")
+            return True
         # A first-attempt failure may be a flaky crash: rerun its failed jobs once before anyone is sent to fix it
         # (commonroom#88: one `gh run rerun --failed` passed where a whole builder run couldn't reproduce the crash).
+        # A rerun GitHub refuses falls through to the fix task, so merges never hold silently (commonroom#98).
         first = sorted({c["runId"] for c in failed_checks(rollup) if c.get("runId") and c.get("attempt") == 1})
+        rerun_error = ""
         if first:
             try:
                 for run_id in first:
                     self.board.rerun_failed(run_id)
                 actions.append(f"main's CI is red ({names}): merges held, rerunning once before opening a fix task")
+                return True
             except Exception as exc:
-                actions.append(f"main's CI is red ({names}): merges held; the rerun failed: {str(exc)[:100]}")
-            return True
+                rerun_error = str(exc)[:100]
+                actions.append(f"main's CI is red ({names}): the rerun failed: {rerun_error}")
         fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
         if fix:
             actions.append(f"merges held: main's CI is red ({names}); #{fix['number']} fixes it")
@@ -1096,7 +1112,9 @@ class Dispatcher:
         links = "\n".join(f"- {c.get('name')}: {attempt_links(c)}" for c in failed_checks(rollup))
         twice = any((c.get("attempt") or 1) > 1 for c in failed_checks(rollup))
         test = (self.cfg.get("checks") or {}).get("test")
-        body = (f"Main's CI fails on {sha or 'its latest commit'}{', twice: the room reran it once and it failed again' if twice else ''}:"
+        why = (f", and the room's rerun of it failed: {rerun_error}" if rerun_error else
+               ", twice: the room reran it once and it failed again" if twice else "")
+        body = (f"Main's CI fails on {sha or 'its latest commit'}{why}:"
                 f"\n{links}\n\nThe room holds every other merge until main is "
                 f"green again; this task's PR is the one exception. Find the cause (often two PRs that each passed alone), "
                 f"fix it on this issue's branch{f', run `{test}`' if test else ''}, and open a PR. Change nothing else.")
