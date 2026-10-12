@@ -39,6 +39,12 @@ class FakeBoard:
     def comment(self, n, body):
         self.comments = getattr(self, "comments", []) + [(n, body)]
 
+    def set_milestone(self, n, title):
+        self.milestones = getattr(self, "milestones", []) + [(n, title)]
+        for i in self.issues:
+            if i["number"] == n:
+                i["milestone"] = {"title": title}
+
     def close_issue(self, n, body):
         self.closed = getattr(self, "closed", []) + [(n, body)]
 
@@ -303,6 +309,46 @@ class WithLedger(unittest.TestCase):
         self.assertIn("#44 is prio:top with no status: marked ready", actions)
         self.assertEqual(fake.label_calls, [])
         self.assertFalse(hasattr(fake, "comments"))
+
+    def test_ready_issue_with_no_milestone_is_filed_in_the_goal(self):
+        """commonroom#100: #93 was ready with no milestone and no dispatcher could see it for 8.5 h."""
+        fake = FakeBoard([issue(93, ["status:ready", "role:builder", "prio:high"], milestone=None)])
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.milestones, [(93, "M0")])
+        self.assertEqual(fake.comments, [(93, "[room] #93 was ready with no milestone, so nothing could pick it up. "
+                                              "Filed it in M0.")])
+        self.assertEqual([a for a in actions if "milestone" in a], ["#93 was ready with no milestone: filed in M0"])
+        self.assertEqual([i["number"] for i in fake.open_issues("M0")], [93])
+        actions = d.housekeeping()
+        self.assertEqual(fake.milestones, [(93, "M0")])
+        self.assertEqual(len(fake.comments), 1)
+        self.assertFalse(any("milestone" in a for a in actions))
+
+    def test_other_issues_keep_their_milestone(self):
+        issues = [issue(1, ["status:ready", "role:builder"], milestone="Other"), issue(2, ["role:builder"], milestone=None),
+                  issue(3, ["status:blocked", "role:builder"], milestone=None), issue(4, ["status:ready"], milestone=None),
+                  issue(5, ["status:ready", "role:builder", "parked"], milestone=None),
+                  issue(6, ["status:ready", "role:builder", "owner:human"], milestone=None),
+                  issue(7, ["status:ready", "role:builder", "needs:director"], milestone=None),
+                  issue(8, ["status:ready", "role:builder"], milestone=None, state="CLOSED")]
+        fake, actions = self.top_pass(issues)
+        self.assertFalse(hasattr(fake, "milestones") or hasattr(fake, "comments"))
+        self.assertFalse(any("milestone" in a for a in actions))
+
+    def test_no_goal_milestone_files_nothing(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["goal"]["milestone"] = None
+        fake = FakeBoard([issue(93, ["status:ready", "role:builder"], milestone=None)])
+        actions = dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertFalse(hasattr(fake, "milestones") or hasattr(fake, "comments"))
+        self.assertFalse(any("milestone" in a for a in actions))
+
+    def test_ready_issue_with_no_milestone_in_dry_run_is_only_reported(self):
+        fake, actions = self.top_pass([issue(93, ["status:ready", "role:builder"], milestone=None)], dry_run=True)
+        self.assertIn("#93 was ready with no milestone: filed in M0", actions)
+        self.assertFalse(hasattr(fake, "milestones") or hasattr(fake, "comments"))
+        self.assertIsNone(fake.issues[0]["milestone"])
 
     def test_director_not_woken_for_work_waiting_on_owner(self):
         issues = [issue(11, ["status:blocked", "role:builder"], body="Blocked by #12"), issue(12, ["owner:human"])]

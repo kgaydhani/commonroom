@@ -991,6 +991,7 @@ class Dispatcher:
                     self.board.set_labels(issue["number"], add=["status:ready"], remove=["status:blocked"])
                 actions.append(f"unblocked #{issue['number']} (dependencies {sorted(deps)} closed)")
         actions += self.mark_unstatused_top(everything, state)
+        actions += self.file_unmilestoned_ready(everything)
         return actions
 
     def clear_stray_ready(self, everything: list[dict]) -> list[str]:
@@ -1029,6 +1030,25 @@ class Dispatcher:
                 self.board.comment(n, f"[room] #{n} is prio:top but had no status label, so nothing could pick it up. "
                                       f"Marked {status}.")
             actions.append(f"#{n} is prio:top with no status: marked {status.split(':')[1]}")
+        return actions
+
+    def file_unmilestoned_ready(self, everything: list[dict]) -> list[str]:
+        """A ready issue with no milestone is invisible to the dispatcher, which picks only from the goal milestone:
+        #93 sat unseen for 8.5 h (commonroom#100). File it in the goal milestone. Other milestones are left alone."""
+        actions = []
+        if not self.milestone:
+            return actions
+        for issue in everything:
+            names, n = labels(issue), issue["number"]
+            if (issue["state"] != "OPEN" or "status:ready" not in names or not any(l.startswith("role:") for l in names)
+                    or names & {"owner:human", "needs:director", "parked"} or issue.get("milestone")):
+                continue
+            if not self.dry_run:
+                self.board.set_milestone(n, self.milestone)
+                self.board.comment(n, f"[room] #{n} was ready with no milestone, so nothing could pick it up. "
+                                      f"Filed it in {self.milestone}.")
+                issue["milestone"] = {"title": self.milestone}
+            actions.append(f"#{n} was ready with no milestone: filed in {self.milestone}")
         return actions
 
     def review_verdict(self, detail: dict) -> str | None:
@@ -1240,7 +1260,8 @@ class Dispatcher:
             created = self.board.create_issue(title, body, labels=("role:playtester", "status:ready"),
                                               milestone=self.milestone)
             everything.append({"number": created, "title": title, "body": body, "state": "OPEN", "comments": [],
-                               "labels": [{"name": "role:playtester"}, {"name": "status:ready"}]})
+                               "labels": [{"name": "role:playtester"}, {"name": "status:ready"}],
+                               "milestone": {"title": self.milestone} if self.milestone else None})
             return [f"PR #{number} touches playtest paths: opened playtest #{created}"]
         except Exception as exc:   # the merge already happened; a failed board call is reported, never fatal
             return [f"PR #{number} touches playtest paths; updating the playtest issue failed: {str(exc)[:100]}"]
