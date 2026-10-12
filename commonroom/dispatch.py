@@ -50,10 +50,13 @@ PLAYTEST_TITLE = "Playtest after merges:"   # the room's playtest issues (common
 PLAYTEST_PR = re.compile(r"^- PR #(\d+)\b", re.M)
 STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63)
 # Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
-# kind of claim needs (first matching word wins), and how many subjects one run may read.
+# kind of claim needs (the word nearest before the subjects wins, else the first after them: commonroom#99; "skip" for
+# edits, which leave no timeline event), and how many subjects one run may read.
 CLAIM_MORE = re.compile(r"(?:[\s,/]|\band\b)*#(\d+)\b", re.I)
 CLAIM_EVIDENCE = ((("creat", "opened", "filed"), "created"), (("close",), {"closed"}), (("merge",), {"merged"}),
-                  (("→", "->", "label", "status:", "prio:", "ready", "blocked", "park"), {"labeled", "unlabeled"}))
+                  (("comment",), {"commented"}), (("amend", "edit", "rewr", "reword", "rescop", "re-scop"), "skip"),
+                  (("→", "->", "label", "pinned", "status:", "prio:", "ready", "blocked", "park"),
+                   {"labeled", "unlabeled"}))
 CLAIM_SUBJECTS_MAX = 20
 
 
@@ -115,6 +118,12 @@ def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], 
 def claim_subjects(claim: str, other_projects=()) -> list[int] | None:
     """The issues or PRs a claim is about: its first `#N` and any directly after it. None when it has no subject in this
     repository: no `#N`, or one written with a repo prefix (`name#N`) or after another project's name."""
+    found = claim_span(claim, other_projects)
+    return found and found[0]
+
+
+def claim_span(claim: str, other_projects=()) -> tuple[list[int], int, int] | None:
+    """`claim_subjects`, with where the subjects start and end in the claim."""
     first = re.search(r"#(\d+)", claim)
     if not first or (first.start() and re.match(r"[\w./-]", claim[first.start() - 1])):
         return None
@@ -125,13 +134,26 @@ def claim_subjects(claim: str, other_projects=()) -> list[int] | None:
     while m := CLAIM_MORE.match(claim, at):
         subjects.append(int(m.group(1)))
         at = m.end()
-    return subjects
+    return subjects, first.start(), at
+
+
+def claim_rule(claim: str, start: int, end: int):
+    """The evidence a claim needs, from the verb that governs its subjects (commonroom#99): the keyword nearest before
+    the first subject, else the first one after the subjects. None when it has no recognised verb."""
+    low = claim.lower()
+    found = [(low.rfind(w, 0, start), rule) for words, rule in CLAIM_EVIDENCE for w in words]
+    at, rule = max(found, key=lambda f: f[0])
+    if at >= 0:
+        return rule
+    found = [(low.find(w, end), rule) for words, rule in CLAIM_EVIDENCE for w in words]
+    return min(((at, rule) for at, rule in found if at >= 0), default=(0, None), key=lambda f: f[0])[1]
 
 
 def check_claims(claims: list, since: float, fetch, other_projects=()) -> tuple[list[str], list[str]]:
     """Check ACTIONS claims against GitHub evidence dated after `since`. `fetch(number, kind)` returns the issue or PR
     (`kind="issue"`, for `created_at`) or its timeline events (`kind="timeline"`). Returns (checked, unverified) claims.
-    A skipped claim (another repository, or past the subject limit) or one whose read failed is in neither."""
+    A skipped claim (another repository, past the subject limit, no recognised verb, or an edit) or one whose read
+    failed is in neither."""
     cache: dict[tuple[int, str], object] = {}
 
     def read(n: int, kind: str):
@@ -151,12 +173,14 @@ def check_claims(claims: list, since: float, fetch, other_projects=()) -> tuple[
     seen: set[int] = set()
     checked, unverified = [], []
     for claim in map(str, claims):
-        subjects = claim_subjects(claim, other_projects)
-        if not subjects or len(seen | set(subjects)) > CLAIM_SUBJECTS_MAX:
+        found = claim_span(claim, other_projects)
+        if not found:
+            continue
+        subjects, start, end = found
+        wanted = claim_rule(claim, start, end)
+        if wanted in (None, "skip") or len(seen | set(subjects)) > CLAIM_SUBJECTS_MAX:
             continue
         seen |= set(subjects)
-        low = claim.lower()
-        wanted = next((rule for words, rule in CLAIM_EVIDENCE if any(w in low for w in words)), None)
         results = []
         for n in subjects:
             if wanted == "created":
@@ -165,7 +189,7 @@ def check_claims(claims: list, since: float, fetch, other_projects=()) -> tuple[
                 continue
             events = read(n, "timeline")
             results.append(None if events is None else any(
-                (wanted is None or e.get("event") in wanted) and after(e.get("created_at") or e.get("submitted_at"))
+                e.get("event") in wanted and after(e.get("created_at") or e.get("submitted_at"))
                 for e in events))
         if False in results:
             checked.append(claim)
