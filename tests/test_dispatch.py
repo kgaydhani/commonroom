@@ -73,6 +73,17 @@ class FakeBoard:
         return next((i["comments"] for i in self.issues if i["number"] == n), [])
 
 
+class LabelBoard(FakeBoard):
+    """A FakeBoard whose label edits land on its issues, so a test can check the labels an issue ends with."""
+
+    def set_labels(self, n, add=(), remove=()):
+        super().set_labels(n, add, remove)
+        for i in self.issues:
+            if i["number"] == n:
+                kept = [l for l in i["labels"] if l["name"] not in remove]
+                i["labels"] = kept + [{"name": l} for l in add if l not in {k["name"] for k in kept}]
+
+
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
     return {"number": n, "title": f"Issue {n}", "labels": [{"name": l} for l in labels], "body": body,
             "state": state, "comments": list(comments), "milestone": {"title": milestone} if milestone else None}
@@ -1461,6 +1472,60 @@ class WithLedger(unittest.TestCase):
         work["labels"] = [{"name": "status:review"}]                         # the director sent it back with a new bar:
         d.housekeeping()                                                     # rounds count afresh from the escalation
         self.assertEqual(fake.label_calls, [to_builder])
+
+    def test_continued_build_ends_in_review_with_no_other_status(self):
+        """commonroom#93: gamemirage#427 ended with status:ready, status:review and needs:changes after a builder
+        continued from its preserved branch. The PR's CHANGES verdict stays current until the builder pushes, so
+        housekeeping bounced the issue back to ready mid-build."""
+        work = issue(427, ["status:review", "role:builder"])
+        detail = {"commits": [{"committedDate": "2026-10-11T12:00:00Z"}],
+                  "comments": [{"createdAt": "2026-10-11T13:09:00Z", "body": "[agent:reviewer] REVIEW: CHANGES - fix it"}],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        fake = LabelBoard([work], prs=[{"number": 499, "headRefName": "i427-x"}], details={499: detail})
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        state = lambda: {l for l in dispatch.labels(work) if l.startswith(("status:", "needs:"))}
+
+        d.housekeeping()                                                     # reviewer CHANGES: back to its builder
+        self.assertEqual(state(), {"status:ready", "needs:changes"})
+        fake.set_labels(427, add=["status:in-progress"], remove=["status:ready", "needs:changes"])   # the claim in run()
+        self.ledger.start_run("t", "#427", "builder", "codex")
+        fake.label_calls.clear()
+        d.housekeeping()                                                     # mid-build, the CHANGES is still current
+        self.assertEqual(fake.label_calls, [])
+        self.assertEqual(state(), {"status:in-progress"})
+
+        fake.pr_for_branch = lambda branch: {"number": 499, "state": "OPEN"}
+        d.remote_head = lambda branch: "new"
+        job = dispatch.Job("build", "builder", issue=work, reason="ready")
+        status, _, _ = d.assess(job, "i427-x", "old", "", workers.WorkerResult(ok=True, final_text="Fixed.\nSTATUS: DONE"))
+        self.assertEqual(status, "done")
+        self.assertEqual(state(), {"status:review"})
+
+        # Even if a stray ready and needs:changes landed meanwhile, the move to review drops them in one call.
+        work["labels"] = [{"name": l} for l in ("status:ready", "status:in-progress", "needs:changes", "role:builder")]
+        fake.label_calls.clear()
+        d.assess(job, "i427-x", "old", "", workers.WorkerResult(ok=True, final_text="Fixed.\nSTATUS: DONE"))
+        self.assertEqual(len(fake.label_calls), 1)
+        self.assertEqual(state(), {"status:review"})
+        d.remote_head = lambda branch: "old"                                 # nothing pushed, STATUS: DONE: same move
+        work["labels"] = [{"name": l} for l in ("status:ready", "status:in-progress", "needs:changes")]
+        d.assess(job, "i427-x", "old", "", workers.WorkerResult(ok=True, final_text="Nothing left.\nSTATUS: DONE"))
+        self.assertEqual(state(), {"status:review"})
+
+    def test_housekeeping_clears_ready_from_issues_in_review_or_in_progress(self):
+        """commonroom#93: a ready label next to review or in-progress invites a second builder."""
+        both = [issue(1, ["status:ready", "status:review"]), issue(2, ["status:ready", "status:in-progress"]),
+                issue(3, ["status:ready"]), issue(4, ["status:ready", "status:review"], state="CLOSED")]
+        fake = LabelBoard(both, prs=[{"number": 9, "headRefName": "i1-x"}],
+                          details={9: {"commits": [{"committedDate": "2026-10-11T12:00:00Z"}], "comments": []}})
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.label_calls, [(1, (), ("status:ready",)), (2, (), ("status:ready",))])
+        self.assertEqual(dispatch.labels(both[0]), {"status:review"})
+        self.assertEqual(dispatch.labels(both[1]), {"status:in-progress"})
+        self.assertIn("#1 had status:ready while review: removed status:ready", actions)
+        self.assertIn("#2 had status:ready while in-progress: removed status:ready", actions)
+
     def test_a_quoted_verdict_in_a_builder_reply_is_not_a_review(self):
         """commonroom#58: on PR #54 the builder's reply quoted `REVIEW: CHANGES` and housekeeping escalated #49."""
         work = issue(80, ["status:review"])
