@@ -56,13 +56,60 @@ class ClaimChecks(unittest.TestCase):
         self.assertEqual(unverified, ["created #50 (split from #18)"])
 
     def test_close_merge_and_comment_claims(self):
-        claims = ["closed #13 as duplicate", "merged PR #403", "approved PR #54"]
+        claims = ["closed #13 as duplicate", "merged PR #403", "commented PR #54"]
         late = fake({13: [("closed", AFTER)], 403: [("merged", AFTER)], 54: [("commented", AFTER)]})
         self.assertEqual(dispatch.check_claims(claims, START, late), (claims, []))
         early = fake({13: [("closed", BEFORE)], 403: [("merged", BEFORE)], 54: [("commented", BEFORE)]})
         self.assertEqual(dispatch.check_claims(claims, START, early), (claims, claims))
         wrong = fake({13: [("labeled", AFTER)], 403: [("closed", AFTER)]})      # an event, but not the claimed one
         self.assertEqual(dispatch.check_claims(claims[:2], START, wrong)[1], claims[:2])
+
+    # The 11 October false flags (commonroom#99): the verb that governs the subjects picks the evidence.
+    ELEVENTH = {
+        "closed suggestion #492 as accepted -> opened #494 (split)": {492: "closed"},
+        "commented #418 and #419: block is a studio auth bug, re-ready after commonroom#89":
+            {418: "commented", 419: "commented"},
+        "commented PR #498 asking the director to merge": {498: "commented"},
+        "commented #460 with 08:45 lab batch": {460: "commented"},
+        "commented PR #476 needs director merge": {476: "commented"},
+        "created label provider:claude:sonnet; pinned #494, #474, #516 for Sonnet builder A/B":
+            {494: "labeled", 474: "labeled", 516: "labeled"},
+    }
+    EDIT = "#467 acceptance criteria amended: adds a playtest"
+
+    def test_the_11_october_claims_verify_by_their_governing_verb(self):
+        claims = list(self.ELEVENTH) + [self.EDIT]
+        timelines = {n: [(event, AFTER)] for subjects in self.ELEVENTH.values() for n, event in subjects.items()}
+        fetch = fake(timelines, created={492: BEFORE, 494: BEFORE})
+        checked, unverified = dispatch.check_claims(claims, START, fetch)
+        self.assertEqual((checked, unverified), (list(self.ELEVENTH), []))
+        self.assertNotIn(467, {n for n, _ in fetch.calls})                     # an edit leaves no timeline event
+
+    def test_the_11_october_claims_are_unverified_when_nothing_happened(self):
+        claims = list(self.ELEVENTH) + [self.EDIT]
+        self.assertEqual(dispatch.check_claims(claims, START, fake()), (list(self.ELEVENTH), list(self.ELEVENTH)))
+        wrong = fake({492: [("labeled", AFTER)], 498: [("merged", AFTER)], 476: [("merged", AFTER)]})
+        some = [c for c in self.ELEVENTH if set(self.ELEVENTH[c]) & {492, 498, 476}]
+        self.assertEqual(dispatch.check_claims(some, START, wrong)[1], some)    # an event, but not the governing one
+
+    def test_the_rule_comes_from_the_verb_nearest_the_subjects(self):
+        rule = lambda claim: dispatch.claim_rule(claim, *dispatch.claim_span(claim)[1:])
+        self.assertEqual(rule("closed #3, #4 and #5/#6 as stale"), {"closed"})
+        self.assertEqual(rule("made #49 #45 #10 ready"), {"labeled", "unlabeled"})
+        self.assertEqual(rule("#427 #428 -> prio:high"), {"labeled", "unlabeled"})
+        self.assertEqual(rule("labelled #5 prio:high"), {"labeled", "unlabeled"})
+        self.assertEqual(rule("reworded #5 then closed it"), "skip")
+        self.assertIsNone(rule("approved PR #54"))
+        stale = "closed #3, #4 and #5/#6 as stale"
+        self.assertEqual(dispatch.check_claims([stale], START, fake()), ([stale], [stale]))
+        ready = "made #49 #45 #10 ready"
+        fetch = fake({n: [("labeled", AFTER)] for n in (49, 45, 10)})
+        self.assertEqual(dispatch.check_claims([ready], START, fetch), ([ready], []))
+
+    def test_a_claim_with_no_recognised_verb_is_skipped(self):
+        fetch = fake({54: [("commented", AFTER)]})
+        self.assertEqual(dispatch.check_claims(["approved PR #54", "rewrote #54 body"], START, fetch), ([], []))
+        self.assertEqual(fetch.calls, [])
 
     def test_another_projects_claim_is_skipped(self):
         fetch = fake()
