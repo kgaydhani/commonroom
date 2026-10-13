@@ -1407,6 +1407,85 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(hasattr(fake, "reruns"))
         self.assertEqual(len(fake.created), 1)
 
+    def counting_main_checks(self, fake):
+        fake.main_reads = 0
+
+        def read():
+            fake.main_reads += 1
+            return fake.main_runs
+
+        fake.main_checks = read
+
+    def test_red_main_is_rerun_on_a_pass_with_no_mergeable_pr(self):
+        """commonroom#111: gamemirage's main sat red 1 h 42 min until a PR was approved and the merge loop looked."""
+        fake = self.red_main_board(attempt=1, status="completed")
+        fake.prs, fake.details = [], {}
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.reruns, ["77"])
+        self.assertFalse(hasattr(fake, "created"))
+        self.assertIn("main's CI is red (Fast tests): merges held, rerunning once before opening a fix task", actions)
+
+    def test_red_main_after_its_rerun_opens_the_fix_task_with_no_mergeable_pr(self):
+        """commonroom#111: the second-attempt failure opens the fix task without waiting for an approval."""
+        fake = self.red_main_board(attempt=2, status="completed")
+        fake.details[224]["comments"] = []                                # PR open but not approved: not mergeable
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        self.assertFalse(hasattr(fake, "reruns"))
+        self.assertEqual([t for t, *_ in fake.created], ["Main is red: Fast tests failing on a6b5a2c"])
+        self.assertEqual(fake.merges, [])
+
+    def test_main_checks_are_read_once_per_pass(self):
+        """commonroom#111: the merge loop reuses the pass's red-main result instead of reading main again."""
+        fake = FakeBoard([issue(200, ["status:review"]), issue(201, ["status:review"])],
+                         prs=[{"number": 224, "headRefName": "i200-x"}, {"number": 225, "headRefName": "i201-y"}],
+                         details={224: self.approved_pr(224, "i200-x"), 225: self.approved_pr(225, "i201-y")})
+        fake.merges = []
+        fake.merge = fake.merges.append
+        fake.main_runs = [{"name": "Fast tests", "conclusion": "success", "sha": "1"}]
+        self.counting_main_checks(fake)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        self.assertEqual(fake.main_reads, 1)
+        self.assertEqual(fake.merges, [224])
+
+        fake.main_runs = [{"name": "Fast tests", "conclusion": "failure", "sha": "2", "runId": "77", "attempt": 1,
+                           "status": "completed", "detailsUrl": "https://github.com/o/t/actions/runs/77/job/1"}]
+        fake.main_reads = 0
+        d.housekeeping()                                                  # red: held, still one read
+        self.assertEqual(fake.main_reads, 1)
+        self.assertEqual(fake.merges, [224])
+        self.assertEqual(fake.reruns, ["77"])
+
+    def test_green_main_with_no_prs_changes_nothing(self):
+        fake = FakeBoard([issue(200, ["status:ready"])])
+        fake.main_runs = [{"name": "Fast tests", "conclusion": "success", "sha": "1", "runId": "77", "attempt": 1,
+                           "status": "completed", "detailsUrl": "https://github.com/o/t/actions/runs/77/job/1"}]
+        self.counting_main_checks(fake)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        actions = d.housekeeping()
+        self.assertEqual(fake.main_reads, 1)
+        self.assertFalse(hasattr(fake, "reruns") or hasattr(fake, "created"))
+        self.assertFalse(any("main" in a for a in actions))
+
+    def test_without_ci_main_is_not_read_on_a_pass_with_no_mergeable_pr(self):
+        """commonroom (`ci = false`) has no checks on main: an idle pass doesn't ask GitHub for them."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["checks"] = {"ci": False}
+        fake = FakeBoard([issue(200, ["status:ready"])])
+        self.counting_main_checks(fake)
+        dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertEqual(fake.main_reads, 0)
+
+    def test_dry_run_neither_reads_nor_reruns_a_red_main(self):
+        fake = self.red_main_board(attempt=1, status="completed")
+        fake.prs, fake.details = [], {}
+        self.counting_main_checks(fake)
+        dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None, dry_run=True).housekeeping()
+        self.assertEqual(fake.main_reads, 0)
+        self.assertFalse(hasattr(fake, "reruns") or hasattr(fake, "created"))
+
     def red_pr(self, n, branch, ended="2026-10-07T03:00:00Z"):
         return {"number": n, "headRefName": branch, "mergeable": "MERGEABLE", "commits": [], "comments": [],
                 "statusCheckRollup": [{"name": "Fast tests", "conclusion": "FAILURE", "completedAt": ended,
