@@ -35,7 +35,10 @@ director_paths = ["commonroom/gate.py", "commonroom/config.py", "room.toml"]
 [roles]
 # All Claude: one Claude dispatcher serves this project. Codex's build prompt and sandbox are set up for the game.
 director = ["claude:opus"]
-builder = ["claude:opus"]
+# Director 2026-10-14 (#119): the weekly Claude allowance is the limit, and size:S builds with written criteria are
+# routine. Sonnet builds them, and Opus still builds size:L/risk:high/builder:heavy and reviews everything. Back to
+# Opus if 2 of the first 5 Sonnet builds are bounced for correctness, or one breaks main or the live room.
+builder = ["claude:sonnet"]
 builder_heavy = ["claude:opus"]
 reviewer = ["claude:opus"]
 reviewer_high_risk = ["claude:opus"]
