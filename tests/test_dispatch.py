@@ -844,6 +844,33 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(dispatch.conflicts_main(work))                   # the room's latest word decides
         self.assertEqual(d.build_spec(work), ["codex"])
 
+    def test_builder_by_label_routes_builds_commonroom_118(self):
+        """`[roles] builder_by_label` sends a kind of work to a provider first; without it nothing changes."""
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(builder=["claude:opus", "codex"], builder_heavy=["claude:opus"])
+        sets = [["kind:research"], ["kind:research", "size:L"], ["kind:research", "builder:heavy"],
+                ["kind:research", "risk:high"], ["kind:research", "provider:claude"], ["kind:bug"], []]
+        base = ["status:ready", "role:builder"]
+        plain = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        before = [plain.build_spec(issue(1, base + s)) for s in sets]
+        self.assertEqual(before[0], ["claude:opus", "codex"])
+        cfg["roles"]["builder_by_label"] = {"kind:research": ["codex", "claude:opus"]}
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        after = [d.build_spec(issue(1, base + s)) for s in sets]
+        self.assertEqual(after[0], ["codex", "claude:opus"])
+        self.assertEqual(after[1:4], [["claude:opus"]] * 3)                # size:L, builder:heavy, risk:high
+        self.assertEqual(after[4], ["claude"])                             # a provider pin still wins
+        self.assertEqual(after[5:], before[5:])                            # other labels: as before
+        self.assertEqual(dispatch.runnable_roles(cfg), set())
+
+        research = issue(7, base + ["kind:research"])
+        claude = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([research]), log=lambda *_: None, only_provider="claude")
+        both = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        self.assertIsNone(claude.pick(both))                               # Codex is allowed: it keeps the issue
+        held = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "held")}
+        job, provider, _ = claude.pick(held)
+        self.assertEqual((job.issue["number"], provider), (7, "claude"))   # Codex held: Claude takes it
+
     def fresh_readings(self, now):
         for provider in ("claude", "codex"):
             self.ledger.record_usage([usage.observation(provider, "five_hour", 5, now + 3600, "test"),

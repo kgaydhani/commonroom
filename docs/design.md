@@ -84,6 +84,8 @@ When the owner is away, a scheduled heartbeat runs `room run`. It dispatches rea
 | scout | Claude Haiku | Researches tools and approaches, proposes experiments, never edits code |
 | analyst | Claude Haiku | Summarises test and simulation output |
 
+`[roles] builder_by_label = { "kind:research" = ["codex", "claude:opus"] }` sends builds carrying that label to that provider list first, unless the issue is `size:L`, `risk:high`, `builder:heavy` or pinned with `provider:*`; without the key nothing changes (commonroom#118).
+
 Director, builder, reviewer, scout and auditor have their own triggers. Any other role with a `[roles]` entry and an agent
 file `.claude/agents/<name>.md` (playtester, analyst...) runs on demand: an issue in the goal milestone labelled
 `role:<name>` and `status:ready` queues with the builds by priority, runs that agent in a detached worktree, and is closed
