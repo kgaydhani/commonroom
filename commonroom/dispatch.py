@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2288,7 +2289,7 @@ class Dispatcher:
         self.refresh_readings(time.time())
         for line in self.recover_orphans():
             self.log("   " + line)
-        report = {"housekeeping": self.housekeeping() if self.only_provider in (None, "claude") and self.slot == 1 else []}
+        report = {"housekeeping": self.safe_housekeeping() if self.only_provider in (None, "claude") and self.slot == 1 else []}
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()
@@ -2307,6 +2308,30 @@ class Dispatcher:
         report["job"] = {"kind": job.kind, "provider": provider, "model": model, "reason": job.reason,
                          **self.run_job(job, provider, model)}
         return report
+
+    def safe_housekeeping(self) -> list[str]:
+        """Housekeeping, but an exception in it must not stop the pass: the game's builds run the same code."""
+        try:
+            return self.housekeeping()
+        except Exception as exc:   # KeyboardInterrupt and SystemExit are not Exceptions and still propagate
+            trace = traceback.format_exc()
+            self.log(trace)
+            self.escalate_housekeeping(exc, trace)
+            return [f"housekeeping failed: {type(exc).__name__}: {exc}"]
+
+    def escalate_housekeeping(self, exc: Exception, trace: str):
+        if self.dry_run:
+            return
+        title = f"[room] Housekeeping is failing: {type(exc).__name__}"
+        try:
+            if any(i["title"] == title for i in self.board.open_issues(None)):
+                return
+            tail = "\n".join(trace.strip().splitlines()[-12:])
+            body = ("Housekeeping raised in the dispatcher pass, so it was skipped and the pass carried on.\n\n"
+                    f"**Message:** {exc}\n\n```\n{tail}\n```\n\nDue: {time.strftime('%Y-%m-%d')}")
+            self.board.create_issue(title, body, labels=("needs:director",))
+        except Exception as err:   # the board may be the very thing that is broken
+            self.log(f"   could not open the housekeeping issue: {err}")
 
     def escalate_breaker(self, trip: dict):
         if self.dry_run:
