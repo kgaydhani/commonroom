@@ -1,8 +1,9 @@
 """commonroom#112: every method a test board fake defines must exist on the real GitHubBoard and accept the
-fake's call shape. PR #110 added set_milestone only to a fake, and 219 tests passed. Nothing here calls GitHub."""
+fake's call shape. PR #110 once added a method only to a fake, and 219 tests passed. Nothing here calls GitHub."""
 import inspect
 import unittest
 
+from commonroom import dispatch
 from commonroom.dispatch import GitHubBoard
 
 from test_dispatch import FakeBoard, LabelBoard
@@ -56,14 +57,14 @@ class BoardContract(unittest.TestCase):
         class Drifted:
             behind = {}                                    # attributes are test state, not methods
 
-            def set_milestone(self, n, milestone): pass
+            def set_priority(self, n, priority): pass
 
             def merge(self, n, admin): pass
 
             def create_issue(self, title, body, labels=(), assignee=None): pass
 
         found = "\n".join(mismatches(Drifted))
-        self.assertIn("Drifted.set_milestone: GitHubBoard has no method set_milestone", found)
+        self.assertIn("Drifted.set_priority: GitHubBoard has no method set_priority", found)
         self.assertIn("Drifted.merge: fake takes 2 positional parameters, GitHubBoard.merge takes 1", found)
         self.assertIn("Drifted.create_issue: GitHubBoard.create_issue has no keyword parameter assignee", found)
         self.assertNotIn("behind", found)
@@ -71,3 +72,15 @@ class BoardContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetMilestoneArgv(unittest.TestCase):
+    def test_builds_gh_issue_edit_argv(self):
+        calls = []
+        orig = dispatch.board_mod.gh
+        dispatch.board_mod.gh = lambda args, *a, **k: calls.append(list(args))
+        try:
+            GitHubBoard("o/t").set_milestone(7, "Room v3")
+        finally:
+            dispatch.board_mod.gh = orig
+        self.assertEqual(calls, [["issue", "edit", "7", "--repo", "o/t", "--milestone", "Room v3"]])

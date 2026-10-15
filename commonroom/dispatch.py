@@ -270,6 +270,9 @@ class GitHubBoard:
         if len(args) > 4:
             board_mod.gh(args)
 
+    def set_milestone(self, number: int, title: str):
+        board_mod.gh(["issue", "edit", str(number), "--repo", self.repo, "--milestone", title])
+
     def ensure_label(self, name: str):
         """`issue edit --add-label` fails on a label the repo doesn't have yet: create it, keeping one that exists."""
         try:
