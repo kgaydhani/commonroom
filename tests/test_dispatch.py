@@ -27,6 +27,11 @@ class FakeBoard:
     def open_prs(self):
         return self.prs
 
+    finished = []
+
+    def finished_prs(self):
+        return [{"number": n} for n in self.finished]
+
     def pr_detail(self, n):
         return self.details[n]
 
@@ -194,6 +199,16 @@ class WithLedger(unittest.TestCase):
         unblocked = {call[0] for call in fake.label_calls if "status:ready" in call[1]}
         self.assertEqual(unblocked, {2, 3})  # 3 unblocks because the merge closed #4; 5 waits for the director
         self.assertTrue(any("merged PR #7" in a for a in actions))
+
+    def test_housekeeping_unblocks_on_merged_pr_not_open_pr(self):
+        # gamemirage#522 depended on #517, a merged PR, and sat blocked 10 h (commonroom#108).
+        issues = [issue(2, ["status:blocked"], body="Depends on #517"), issue(3, ["status:blocked"], body="Depends on #518"),
+                  issue(4, ["status:blocked"], body="Depends on #517 and #518")]
+        fake = FakeBoard(issues, prs=[{"number": 518, "headRefName": "other"}])
+        fake.finished = [517]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        self.assertEqual({call[0] for call in fake.label_calls if "status:ready" in call[1]}, {2})
 
     def playtest_pass(self, cfg, issues, n, files):
         """One housekeeping pass that merges PR #n, which changes `files`."""

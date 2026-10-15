@@ -308,6 +308,11 @@ class GitHubBoard:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
                              "--json", "number,headRefName,url,title,labels"]) or []
 
+    def finished_prs(self) -> list[dict]:
+        """Merged or closed PRs: `--state closed` lists both (commonroom#108)."""
+        return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "closed", "--limit", "200",
+                             "--json", "number"]) or []
+
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                              "--json", "number,state,headRefName,headRefOid,baseRefName,url,commits,comments,"
@@ -988,6 +993,7 @@ class Dispatcher:
         if any(a.startswith("merged") for a in actions) and not self.dry_run:
             actions += self.deploy()
             actions += self.update_live_checkout()
+        self.count_finished_prs(everything, prs, state)
         for issue in everything:
             names = labels(issue)
             if issue["state"] != "OPEN" or "status:blocked" not in names or names & {"needs:director", "owner:human"}:
@@ -1000,6 +1006,18 @@ class Dispatcher:
         actions += self.mark_unstatused_top(everything, state)
         actions += self.file_unmilestoned_ready(everything)
         return actions
+
+    def count_finished_prs(self, everything: list[dict], open_prs: list[dict], state: dict[int, str]):
+        """"Depends on #517" where #517 is a PR: issues and PRs share numbers, so a number that is no issue and no open PR
+        is a merged or closed one, and satisfies the dependency like a closed issue (gamemirage#522 sat blocked 10 h:
+        commonroom#108). An open PR keeps its dependants blocked. Marks such numbers CLOSED in `state`."""
+        open_numbers = {pr["number"] for pr in open_prs}
+        wanted = {d for i in everything if i["state"] == "OPEN" and "status:blocked" in labels(i)
+                  for d in dependencies(i.get("body"))} - state.keys() - open_numbers
+        if wanted:
+            for pr in self.board.finished_prs():
+                if pr["number"] in wanted:
+                    state[pr["number"]] = "CLOSED"
 
     def clear_stray_ready(self, everything: list[dict]) -> list[str]:
         """status:ready on an issue that is also in review or in progress invites a second builder: remove it, here
