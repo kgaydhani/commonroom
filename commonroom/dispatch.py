@@ -1464,6 +1464,8 @@ class Dispatcher:
             # Without CI nothing merges unreviewed, so `review:skip` only applies where CI checks the PR.
             if not m or ("review:skip" in labels(pr) and self.ci) or f"PR #{pr['number']}" in running:
                 continue
+            if f"#{m.group(1)}" in running:
+                continue   # its builder is still pushing: review the finished branch, not a draft (commonroom#124)
             detail = self.board.pr_detail(pr["number"])
             if self.needs_review(detail):
                 if issue_labels is None:
