@@ -1319,6 +1319,19 @@ class WithLedger(unittest.TestCase):
         d.only_merges_main = lambda branch, oids: False                   # anything more than a merge: review again
         self.assertEqual(d.pick_review(allowed)[0].pr["number"], 225)
 
+    def test_no_review_while_its_issue_is_building(self):
+        """commonroom#124: #554's builder opened draft PR #627 to preserve work, and the next pick was an Opus review."""
+        fake = FakeBoard([issue(200, ["status:in-progress"])], prs=[{"number": 224, "headRefName": "i200-x"}],
+                         details={224: {"number": 224, "headRefName": "i200-x", "headRefOid": "224a",
+                                        "commits": [{"oid": "224a", "committedDate": "2026-10-07T02:00:00Z"}],
+                                        "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]}})
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        build = self.ledger.start_run("t", "#200", "builder", "claude")
+        self.assertIsNone(d.pick_review(allowed))
+        self.ledger.finish_run(build, "done")
+        self.assertEqual(d.pick_review(allowed)[0].pr["number"], 224)
+
     def test_red_main_holds_merges_and_opens_one_fix_task(self):
         """commonroom#19: main stayed red for 1.5 h and nothing in the room noticed."""
         issues = [issue(200, ["status:review"])]
