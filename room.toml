@@ -54,4 +54,6 @@ claude_slots = 1
 # for review. Steer every 6 h here; the game keeps 3 h. Escalations still wake it at once.
 # Director 2026-10-12 (#104): at 6 h it still took 34% of this project's spend ($3.42 of $10.11 in 24 h) while the project sat
 # at its share cap. An empty ready queue, escalations and suggestions still wake it at once, so steer every 12 h.
-steer_every_hours = 12
+# Director 2026-10-15 (#122): at 12 h it was still 44% of this project's spend ($4.27 of $9.75 in 72 h, 6 runs) while
+# builders and reviewers made all 8 merges. Events still wake it at once. Back to 12 if the ready queue sits empty > 6 h.
+steer_every_hours = 24
