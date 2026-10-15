@@ -1851,6 +1851,59 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(merge["task"], "PR #244")               # counts as progress like any merge
 
 
+class HousekeepingFailure(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+
+    def tearDown(self):
+        self.ledger.close(); self.tmp.cleanup()
+
+    def dispatcher(self, board, dry_run=False):
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None, dry_run=dry_run)
+        d.refresh_readings = lambda now: None
+        d.allowed = lambda now: {"claude": gate.Verdict(True, "ok")}
+        d.run_job = lambda job, provider, model: {}
+        return d
+
+    def broken_board(self):
+        board = FakeBoard([issue(4, ["status:ready", "role:builder"])])
+        def boom():
+            raise KeyError("labels")
+        board.all_issues = boom
+        return board
+
+    def test_a_failing_housekeeping_still_picks_a_job(self):
+        board = self.broken_board()
+        report = self.dispatcher(board).run_once()
+        self.assertEqual(report["housekeeping"], ["housekeeping failed: KeyError: 'labels'"])
+        self.assertEqual(report["job"]["kind"], "build")
+
+    def test_one_issue_per_exception_type_and_none_in_dry_run(self):
+        board = self.broken_board()
+        d = self.dispatcher(board)
+        d.run_once()
+        self.assertEqual([c[:2] for c in board.created], [("[room] Housekeeping is failing: KeyError", ("needs:director",))])
+        board.issues.append(issue(900, [], milestone=None) | {"title": "[room] Housekeeping is failing: KeyError"})
+        d.run_once()
+        self.assertEqual(len(board.created), 1)
+        dry = self.broken_board()
+        self.dispatcher(dry, dry_run=True).run_once()
+        self.assertFalse(hasattr(dry, "created"))
+
+    def test_a_working_housekeeping_report_is_unchanged(self):
+        board = FakeBoard([issue(4, ["status:ready", "role:builder"])])
+        report = self.dispatcher(board).run_once()
+        self.assertEqual(report["housekeeping"], [])
+        self.assertFalse(hasattr(board, "created"))
+
+    def test_system_exit_still_propagates(self):
+        board = self.broken_board()
+        board.all_issues = lambda: (_ for _ in ()).throw(SystemExit(1))
+        with self.assertRaises(SystemExit):
+            self.dispatcher(board).run_once()
+
+
 class StaleClaims(unittest.TestCase):
     """commonroom#63: a moonshot claimed gamemirage#296, the pace gate stopped it a minute later, and the issue sat
     `status:in-progress` with no run on it for 1.5 h. Housekeeping releases a claim no run holds."""
