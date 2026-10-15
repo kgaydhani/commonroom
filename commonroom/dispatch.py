@@ -1443,7 +1443,13 @@ class Dispatcher:
             # `provider:codex` pin (commonroom#51).
             claude = [e for e in [*pinned, *default] if e.partition(":")[0] == "claude"]
             return claude or ["claude:sonnet"]
-        return pinned or default
+        if pinned or heavy:
+            return pinned or default
+        # `[roles] builder_by_label` sends a kind of work to a provider first (commonroom#118): the first of the
+        # issue's labels (sorted) found in the table picks the spec.
+        by_label = self.roles.get("builder_by_label") or {}
+        routed = next((by_label[l] for l in sorted(labels(issue)) if l in by_label), None)
+        return routed or default
 
     def pick_extra(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         """An extra slot for the same provider, only while another is busy, weekly use sits well under the pace line
