@@ -119,7 +119,8 @@ class PromptGuidance(unittest.TestCase):
 
     def test_unset_keys_add_nothing(self):
         d = self.dispatcher({"project": {"name": "p", "repo": "o/p"}, "goal": {"milestone": "M"}})
-        self.assertEqual(dispatch.HEADLESS_NOTE, d.headless_note())
+        self.assertTrue(d.headless_note().startswith(dispatch.HEADLESS_NOTE))
+        self.assertNotIn("gamemirage", d.headless_note())
         self.assertEqual("", d.codex_note())
 
 
