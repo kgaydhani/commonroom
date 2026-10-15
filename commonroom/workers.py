@@ -18,6 +18,8 @@ from pathlib import Path
 from commonroom import usage
 from commonroom.ledger import Ledger
 
+RUN_TIMEOUT = 3600   # seconds the room lets one run go; the headless note tells the worker the same number
+
 
 @dataclass
 class Role:
@@ -131,7 +133,7 @@ def worker_tmp(cwd) -> Path:
 
 
 def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger, log_dir: Path,
-               model: str | None = None, effort: str | None = None, timeout: float = 3600,
+               model: str | None = None, effort: str | None = None, timeout: float = RUN_TIMEOUT,
                stop_check=None, resume_session: str | None = None, scratch_env: list[str] | None = None) -> WorkerResult:
     """Run to completion. `stop_check()` returning a reason string aborts the worker (e.g. the gate closed).
     `scratch_env` names variables a Codex worker gets pointed at `<cwd>/.scratch/<name>` (`[codex] scratch_env`)."""

@@ -23,7 +23,7 @@ from pathlib import Path
 
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
-from commonroom import board as board_mod, config as config_mod, gate, services, usage
+from commonroom import board as board_mod, config as config_mod, gate, services, usage, workers as workers_mod
 from commonroom.ledger import Ledger
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -1783,6 +1783,7 @@ class Dispatcher:
             self.room_error(run_id, job, task, exc)
             raise
         labelled = False
+        result = None
         try:
             before = self.remote_head(branch)
             weekly_start = self.weekly_used()
@@ -1792,7 +1793,7 @@ class Dispatcher:
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
             result = run_worker(provider, role, self.prompt(job, branch) + self.why() + self.headless_note(), worktree, self.ledger, self.log_dir,
-                                model=model, effort=effort, scratch_env=(self.cfg.get("codex") or {}).get("scratch_env"),
+                                model=model, effort=effort, timeout=workers_mod.RUN_TIMEOUT, scratch_env=(self.cfg.get("codex") or {}).get("scratch_env"),
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
                 status, outputs, note = self.requeue(job, provider, result)
@@ -1819,10 +1820,36 @@ class Dispatcher:
             raise
         finally:
             self.preserve_work(job, worktree, branch)
+            if result is not None:
+                self.report_timeout(job, branch, result)
             self.cleanup_worktree(worktree, run_id)
             shutil.rmtree(worker_tmp(worktree), ignore_errors=True)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def report_timeout(self, job: Job, branch: str | None, result):
+        """A build or role run the room ended at its time limit says so on its issue, so the next attempt and the
+        director can tell it ran out of time and whether anything survived (commonroom#117)."""
+        if (job.kind not in ("build", "role") or not job.issue or self.dry_run
+                or not any("timed out after" in e for e in result.errors)):
+            return
+        minutes = round(workers_mod.RUN_TIMEOUT / 60)
+        try:
+            if branch and self.pushed_commits(branch):
+                kept = f"Its work was preserved on branch `{branch}`; the next attempt continues from it."
+            else:
+                kept = ("Nothing was committed, so nothing was preserved and the next attempt starts over. "
+                        "If this keeps happening, the issue may need splitting.")
+            self.board.comment(job.issue["number"],
+                               f"The room ended this run at its {minutes}-minute time limit. {kept}")
+        except Exception as exc:
+            self.log(f"   could not comment on the timeout: {str(exc)[:160]}")
+
+    def pushed_commits(self, branch: str) -> int:
+        """Commits on the pushed branch that main doesn't have."""
+        if not self.remote_head(branch):
+            return 0
+        return int(git(["rev-list", "--count", f"origin/main..origin/{branch}"], self.root) or 0)
 
     def verify_actions(self, run_id: str, result, started_iso: str):
         """Record the ACTIONS claims GitHub doesn't show (commonroom#68). Records only: the run's status, outputs and
@@ -2045,7 +2072,11 @@ class Dispatcher:
 
     def headless_note(self) -> str:
         extra = self.prompt_text("headless")
-        return HEADLESS_NOTE + (f" {extra}" if extra else "")
+        minutes = round(workers_mod.RUN_TIMEOUT / 60)
+        deadline = (f" The room ends this run after {minutes} minutes. Commit as you go. Results that matter (CSV, logs, reports) "
+                    f"go in a tracked path, not an ignored folder. By minute {minutes - 15}, push what you have and say on the "
+                    f"issue what's left.")
+        return HEADLESS_NOTE + deadline + (f" {extra}" if extra else "")
 
     def codex_note(self) -> str:
         """The project's Codex sandbox and tooling note (test command, engine, rendering), ending in a space."""
