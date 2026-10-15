@@ -984,6 +984,50 @@ class WithLedger(unittest.TestCase):
         row = self.ledger.db.execute("SELECT five_hour_start FROM runs WHERE task='#5'").fetchone()
         self.assertEqual(row["five_hour_start"], 61)                          # recorded before any work, even on a room error
 
+    def test_run_rows_record_the_runs_own_provider_weekly_window(self):
+        root = Path(self.tmp.name)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "builder.md").write_text("---\nmodel: sonnet\n---\nBuild.\n")
+        now = time.time()
+        self.ledger.record_usage([usage.observation("claude", "seven_day", 65, now + 86400, "test"),
+                                  usage.observation("codex", "seven_day", 41, now + 86400, "test")], now=now)
+        d = dispatch.Dispatcher(cfg_with(root), self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        d.prepare_worktree = lambda job, provider=None: (root / "wt", "b")
+        d.remote_head = lambda branch: None
+        d.preserve_work = d.cleanup_worktree = lambda *a, **k: None
+        d.board.pr_for_branch = lambda branch: None
+        def fake_run(provider, *a, **k):
+            if provider == "codex":
+                self.ledger.record_usage([usage.observation("codex", "seven_day", 50, now + 86400, "test")], now=now + 1)
+            return workers.WorkerResult(ok=False, interrupted="test")
+        orig = (dispatch.git, dispatch.run_worker)
+        dispatch.git, dispatch.run_worker = (lambda args, cwd: ""), fake_run
+        try:
+            for n, provider in ((5, "codex"), (6, "claude")):
+                try:
+                    d.run_job(dispatch.Job("build", "builder", issue=issue(n, ["status:ready"]), reason="ready"), provider, "sonnet")
+                except Exception:
+                    pass
+        finally:
+            dispatch.git, dispatch.run_worker = orig
+        rows = {r["task"]: (r["weekly_start"], r["weekly_end"]) for r in self.ledger.db.execute("SELECT task, weekly_start, weekly_end FROM runs")}
+        self.assertEqual(rows.get("#5"), (41, 50))
+        self.assertEqual(rows.get("#6"), (65, 65))
+
+    def test_efficiency_reports_weekly_spend_per_provider(self):
+        from commonroom import cli
+        now = time.time()
+        reset = now + 86400
+        self.ledger.record_usage([usage.observation("claude", "seven_day", 60, reset, "t"),
+                                  usage.observation("codex", "seven_day", 40, reset, "t")], now=now - 600)
+        self.ledger.record_usage([usage.observation("claude", "seven_day", 65, reset, "t"),
+                                  usage.observation("codex", "seven_day", 50, reset, "t")], now=now - 60)
+        merge = self.ledger.start_run("t", "#1", "merge", "claude", now=now - 300)
+        self.ledger.finish_run(merge, "done", now=now - 200)
+        e = cli.efficiency(self.ledger, "t", now - 3600, now)
+        self.assertEqual((e["claude_weekly_pct_spent"], e["codex_weekly_pct_spent"]), (5.0, 10.0))
+        self.assertEqual(e["merges_per_weekly_pct"], 0.2)                      # from Claude's figure
+
     def test_runs_left_by_a_dead_dispatcher_are_recovered(self):
         issues = [issue(90, ["status:in-progress", "role:builder"])]
         board = FakeBoard(issues)

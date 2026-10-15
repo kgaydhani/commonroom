@@ -336,15 +336,18 @@ def efficiency(ledger, project, since: float, now: float) -> dict:
         g["minutes"] = round(g["minutes"] + minutes, 1)
     for g in groups.values():
         g["usd_per_done"] = round(g["api_usd"] / g["done"], 2) if g["done"] else None
-    week = ledger.usage_history("claude", "seven_day", since)
-    periods: dict = {}
-    for u in week:
-        periods.setdefault(round((u["resets_at"] or 0) / 3600), [u["used_pct"], u["used_pct"]])[1] = u["used_pct"]
-    weekly_spent = round(sum(max(0.0, b - a) for a, b in periods.values()), 1)
+    def weekly_spent(provider: str) -> float:
+        periods: dict = {}
+        for u in ledger.usage_history(provider, "seven_day", since):
+            periods.setdefault(round((u["resets_at"] or 0) / 3600), [u["used_pct"], u["used_pct"]])[1] = u["used_pct"]
+        return round(sum(max(0.0, b - a) for a, b in periods.values()), 1)
+    claude_spent, codex_spent = weekly_spent("claude"), weekly_spent("codex")
     merges = sum(1 for r in runs if r["role"] == "merge")
-    return {"merges": merges, "claude_weekly_pct_spent": weekly_spent,
-            "merges_per_weekly_pct": round(merges / weekly_spent, 2) if weekly_spent else None,
-            "note": "weekly % is plan-wide: it includes the owner's own sessions and the director chat",
+    return {"merges": merges, "claude_weekly_pct_spent": claude_spent,
+            "codex_weekly_pct_spent": codex_spent,
+            "merges_per_weekly_pct": round(merges / claude_spent, 2) if claude_spent else None,
+            "note": "Claude's weekly % is plan-wide: it includes the owner's own sessions and the director chat. "
+                    "Codex's is its own seven_day window",
             "by_role_model_effort": groups}
 
 

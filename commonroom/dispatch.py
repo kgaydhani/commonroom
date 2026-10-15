@@ -1792,7 +1792,7 @@ class Dispatcher:
         result = None
         try:
             before = self.remote_head(branch)
-            weekly_start = self.weekly_used()
+            weekly_start = self.weekly_used(provider)
             if job.issue:
                 self.board.set_labels(job.issue["number"], add=["status:in-progress"], remove=["status:ready", "needs:changes"])
                 labelled = True
@@ -1810,7 +1810,7 @@ class Dispatcher:
             self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
                                    note, session_id=result.session_id)
             self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
-                                   (weekly_start, self.weekly_used(), run_id))
+                                   (weekly_start, self.weekly_used(provider), run_id))
             self.ledger.db.commit()
             if job.kind not in ("build", "role", "review") and status not in ("limited", "stopped"):
                 self.verify_actions(run_id, result, started_iso)
@@ -2256,8 +2256,8 @@ class Dispatcher:
             self.log(f"   git worktree prune (run {run_id or '-'}): " + "; ".join(pruned)[:400])
 
     # Budget ----------------------------------------------------------------------------------------
-    def weekly_used(self) -> float | None:
-        row = self.ledger.latest_usage("claude").get("seven_day")
+    def weekly_used(self, provider: str = "claude") -> float | None:
+        row = self.ledger.latest_usage(provider).get("seven_day")
         return row["used_pct"] if row else None
 
     def five_hour_used(self, provider: str) -> float | None:
