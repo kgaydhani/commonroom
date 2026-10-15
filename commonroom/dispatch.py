@@ -862,7 +862,10 @@ class Dispatcher:
                                       f"changed for {claim['minutes']} min. Back to ready.")
             actions.append(f"released stale claim #{n}")
         merged = updated = False
-        held = None   # is main red? Read once, when a PR is first ready to merge
+        # Is main red? Read once per pass, mergeable PR or not, so a red main is rerun or gets its fix task within one
+        # heartbeat (commonroom#111: gamemirage's main sat red 1 h 42 min unseen until a PR was approved). Without CI
+        # there are no checks to read; it is then read only when a PR is first ready to merge, as before.
+        held = self.main_red(everything, actions) if self.ci and not self.dry_run else None
         for pr in sorted(prs, key=lambda p: p["number"]):   # oldest first: a stacked base lands before what builds on it
             m = BRANCH.match(pr["headRefName"])
             # PRs on other branches (audit-*, director-*, moonshot/*) have no issue to send back to, but `review:skip`
