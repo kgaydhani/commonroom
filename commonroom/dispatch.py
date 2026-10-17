@@ -63,9 +63,14 @@ CLAIM_SUBJECTS_MAX = 20
 
 def priority(issue: dict) -> tuple:
     """prio:top (foundation work others build on, e.g. a milestone plan) first, then prio:high, prio:low last,
-    otherwise oldest first."""
+    otherwise oldest first. An issue labelled needs:changes (a PR the reviewer sent back) ranks as at least
+    prio:high and before the other issues in its tier (among bounced issues: its own tier, then oldest), so an
+    almost-done PR finishes before new work starts (commonroom#121). prio:top still comes first."""
     names = labels(issue)
-    return (-1 if "prio:top" in names else 0 if "prio:high" in names else 2 if "prio:low" in names else 1, issue["number"])
+    tier = -1 if "prio:top" in names else 0 if "prio:high" in names else 2 if "prio:low" in names else 1
+    if "needs:changes" not in names:
+        return (tier, 1, tier, issue["number"])
+    return (min(tier, 0), 0, tier, issue["number"])
 
 
 def slug(title: str) -> str:

@@ -2406,3 +2406,28 @@ class StackedMerge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BouncedPrOrder(unittest.TestCase):
+    @staticmethod
+    def order(*specs):
+        issues = [{"number": n, "labels": [{"name": l} for l in names]} for n, *names in specs]
+        return [i["number"] for i in sorted(issues, key=dispatch.priority)]
+
+    def test_needs_changes_beats_high_older_and_newer(self):
+        self.assertEqual(self.order((5, "prio:high"), (7, "needs:changes"), (9, "prio:high")), [7, 5, 9])
+        self.assertEqual(self.order((9, "prio:high"), (7, "needs:changes"), (5, "prio:high")), [7, 5, 9])
+
+    def test_low_needs_changes_beats_unlabelled_and_high(self):
+        self.assertEqual(self.order((1, "prio:high"), (2,), (3, "prio:low", "needs:changes")), [3, 1, 2])
+
+    def test_top_beats_needs_changes(self):
+        self.assertEqual(self.order((8, "needs:changes", "prio:high"), (9, "prio:top")), [9, 8])
+
+    def test_between_bounced_tier_then_oldest(self):
+        self.assertEqual(self.order((4, "needs:changes"), (3, "needs:changes", "prio:low"),
+                                    (6, "needs:changes", "prio:high"), (5, "needs:changes", "prio:high")),
+                         [5, 6, 4, 3])
+
+    def test_without_needs_changes_order_unchanged(self):
+        self.assertEqual(self.order((4, "prio:low"), (3,), (9, "prio:high"), (1, "prio:top")), [1, 9, 3, 4])
