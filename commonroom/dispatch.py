@@ -328,9 +328,20 @@ class GitHubBoard:
 
     def behind_main(self, detail: dict) -> int:
         """Commits on the PR's base branch that its head doesn't contain yet."""
-        compare = board_mod.gh(["api", f"repos/{self.repo}/compare/{detail.get('baseRefName') or 'main'}..."
-                                       f"{detail['headRefOid']}", "--jq", "{behind_by: .behind_by}"]) or {}
-        return int(compare.get("behind_by") or 0)
+        base = detail.get("baseRefName") or "main"
+
+        def behind_from(sha: str) -> int:
+            compare = board_mod.gh(["api", f"repos/{self.repo}/compare/{base}...{sha}", "--jq", "{behind_by: .behind_by}"]) or {}
+            return int(compare.get("behind_by") or 0)
+
+        behind = behind_from(detail["headRefOid"])
+        if behind and detail.get("headRefName"):
+            # `pr view` can report an older head than the branch's tip (gamemirage PR #653 read 1 behind for a day after
+            # GitHub's update had already merged main). Trust the branch itself: one extra call, only when behind.
+            tip = board_mod.gh(["api", f"repos/{self.repo}/git/ref/heads/{detail['headRefName']}", "--jq", "{sha: .object.sha}"]) or {}
+            if tip.get("sha") and tip["sha"] != detail["headRefOid"]:
+                behind = behind_from(tip["sha"])
+        return behind
 
     def update_branch(self, number: int):
         """Merge the base branch into the PR's branch on GitHub (no model run). Raises when that conflicts."""
@@ -940,10 +951,17 @@ class Dispatcher:
                             if issue_no:
                                 state[issue_no] = "CLOSED"
                             continue
+                        # Updated at this very head on an earlier pass and still behind: GitHub's update did nothing
+                        # (commonroom#133). Don't repeat it or hold the slot: a merge-main run pushes a real merge commit.
+                        head = head_sha(detail)
+                        if self.already_updated(pr["number"], head):
+                            actions += self.back_to_merge_main(pr, issue_no, everything, review)
+                            continue
                         if not updated:   # one branch at a time: each update reruns CI
                             updated = True
                             try:
                                 self.board.update_branch(pr["number"])
+                                self.record_update(issue_no, pr["number"], head)
                                 actions.append(f"PR #{pr['number']} was {behind} commit(s) behind main: merged main into it "
                                                f"on GitHub; it merges once CI passes on the result")
                             except Exception as exc:
@@ -1128,6 +1146,17 @@ class Dispatcher:
                                              f"(another PR carried it). PR #{pr['number']} was closed as superseded.")
         return [f"PR #{pr['number']} closed as superseded: its content is already on main"
                 + (f"; issue #{issue_no} closed as met" if issue_no else "")]
+
+    def already_updated(self, number: int, head: str) -> bool:
+        """Did an earlier pass already update PR `number` while its head was `head`?"""
+        return bool(head) and any(
+            r["role"] == "update" and any(o.get("ref") == f"PR #{number}" and o.get("head") == head for o in r["outputs"])
+            for r in self.ledger.recent_runs(self.project, limit=500))
+
+    def record_update(self, issue_no: int | None, number: int, head: str):
+        """A branch update is a ledger row like a merge: provider none, so no gate counts it as model time."""
+        run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{number}", "update", "none")
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "update", "ref": f"PR #{number}", "head": head}])
 
     def back_to_merge_main(self, pr: dict, issue_no: int, everything: list[dict], review: str | None) -> list[str]:
         """A PR that conflicts with main goes back to its builder. Unless review asked for changes, that is a merge-main

@@ -1367,6 +1367,76 @@ class WithLedger(unittest.TestCase):
                 "commits": [{"oid": f"{n}a", "committedDate": "2026-10-07T02:00:00Z"}],
                 "comments": [{"createdAt": "2026-10-07T02:30:00Z", "body": "[agent:reviewer] REVIEW: APPROVE"}]}
 
+    def update_board(self, heads_move):
+        """Two approved, behind PRs (A=224 older, B=225). `update_branch` moves the head only if `heads_move`."""
+        issues = [issue(200, ["status:review"]), issue(201, ["status:review"])]
+        details = {224: self.approved_pr(224, "i200-a"), 225: self.approved_pr(225, "i201-b")}
+        for n, det in details.items():
+            det["headRefOid"] = f"{n}a"
+        fake = FakeBoard(issues, prs=[{"number": 225, "headRefName": "i201-b"}, {"number": 224, "headRefName": "i200-a"}],
+                         details=details)
+        fake.behind = {224: 1, 225: 1}
+        fake.update_calls = []
+
+        def update(n):
+            fake.update_calls.append(n)
+            if heads_move:
+                details[n]["headRefOid"] = f"{n}b"
+                details[n]["commits"].append({"oid": f"{n}b", "committedDate": "2026-10-07T03:00:00Z"})
+                fake.behind[n] = 0
+        fake.update_branch = update
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.only_merges_main = lambda branch, oids: True                    # GitHub's update commit merges main and nothing else
+        return fake, d
+
+    def test_an_update_that_leaves_the_head_unchanged_is_not_repeated(self):
+        """commonroom#133: gamemirage PR #653 was 'updated' ~50 times with no effect and held the one update slot."""
+        fake, d = self.update_board(heads_move=False)
+        d.housekeeping()                                                  # pass 1: A takes the slot
+        self.assertEqual(fake.update_calls, [224])
+        rows = [r for r in self.ledger.recent_runs("t") if r["role"] == "update"]
+        self.assertEqual([(r["provider"], r["outputs"]) for r in rows],
+                         [("none", [{"kind": "update", "ref": "PR #224", "head": "224a"}])])
+        d.housekeeping()                                                  # pass 2: still behind at the same head
+        self.assertEqual(fake.update_calls, [224, 225])                   # A not updated again; B gets the slot
+        self.assertIn("merge-main run", dict(fake.comments)[200])         # A goes to a merge-main run
+        self.assertIn((200, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
+
+    def test_a_normal_update_changes_the_head_and_is_not_handed_to_merge_main(self):
+        fake, d = self.update_board(heads_move=True)
+        d.housekeeping()
+        self.assertEqual(fake.update_calls, [224])
+        fake.behind[224] = 1                                              # main moved again, now behind the new head
+        d.housekeeping()
+        self.assertEqual(fake.update_calls, [224, 224])                   # a new head is a new update
+        self.assertEqual(getattr(fake, "comments", []), [])
+        self.assertEqual(getattr(fake, "label_calls", []), [])
+
+    def test_behind_main_compares_from_the_branch_tip_when_pr_view_reports_an_older_head(self):
+        """commonroom#133: `headRefOid` was c21b3ad (1 behind) while the branch tip 4ec9765 already contained main."""
+        calls = []
+
+        def gh(args):
+            calls.append(args[1])
+            return {"sha": "tip"} if "git/ref/heads/i1-x" in args[1] else {"behind_by": 0 if args[1].endswith("...tip") else 1}
+        board = dispatch.GitHubBoard("o/r")
+        detail = {"headRefOid": "old", "headRefName": "i1-x", "baseRefName": "main"}
+        with mock.patch.object(dispatch.board_mod, "gh", gh):
+            self.assertEqual(board.behind_main(detail), 0)
+            self.assertEqual(len(calls), 3)                              # one extra call for the tip's ref
+            calls.clear()
+            self.assertEqual(board.behind_main(detail | {"headRefOid": "tip"}), 0)
+            self.assertEqual(len(calls), 1)                              # not behind: no extra call
+
+    def test_update_rows_are_not_model_time_for_the_share_gate(self):
+        now = 1_000_000.0
+        for _ in range(3):
+            run = self.ledger.start_run("t", "PR #1", "update", "none", now=now - 600)
+            self.ledger.finish_run(run, "done", now=now - 60)
+        self.assertEqual(dispatch.run_minutes(self.ledger, "claude", now - 3600, now), {})
+        self.assertEqual(dispatch.run_minutes(self.ledger, "codex", now - 3600, now), {})
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", now))   # no model work, so no progress breaker
+
     def test_approved_prs_merge_one_at_a_time_and_only_up_to_date(self):
         """commonroom#19: PRs #224 and #225 were each green against the old main, merged 5 s apart, and broke main."""
         issues = [issue(200, ["status:review"]), issue(201, ["status:review"])]
