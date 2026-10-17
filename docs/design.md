@@ -40,6 +40,7 @@ There are two channels, and they mean different things.
 
 In the room channel:
 - **Assigned work** arrives as issues labelled `owner:human`. Each states the exact deliverable, format, where to put it, a `Due:` date, and the tasks it blocks. `room status` lists them by due date.
+- **Work owned outside the room:** an issue the interactive director gives to its local agents or a cloud session gets `claim:external`. The room never builds it, never releases it as a stale claim and never puts `status:ready` on it. A conflict or red CI on its PR is noted on the issue once, and an approved PR still merges as usual. To hand it back to the room, remove the label (commonroom#132).
 - **Submitting work:** commit files to the path the issue names (for example `art/incoming/…`), or attach them to the issue, then comment `submitted`. The director reviews submissions like any other PR: accepted, or sent back with specific notes.
 - **Suggestions:** open an issue labelled `kind:suggestion`. The director triages each one: accepted (it becomes a task with acceptance criteria), rejected (with reasons), or parked (with what would change the answer).
 - **Playtests:** open an issue labelled `kind:playtest` with what you did and what felt wrong. The director turns those into tasks.

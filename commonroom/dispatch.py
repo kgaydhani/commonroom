@@ -50,6 +50,9 @@ BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
 PLAYTEST_TITLE = "Playtest after merges:"   # the room's playtest issues (commonroom#53)
 PLAYTEST_PR = re.compile(r"^- PR #(\d+)\b", re.M)
 STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63)
+# Someone outside the room (the interactive director's local agents, a cloud session) owns the issue: the room never
+# builds it or puts status:ready on it, but still reviews and merges its PR (commonroom#132).
+EXTERNAL = "claim:external"
 # Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
 # kind of claim needs (the word nearest before the subjects wins, else the first after them: commonroom#99; "skip" for
 # edits, which leave no timeline event), and how many subjects one run may read.
@@ -113,7 +116,7 @@ def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], 
     for issue in issues:
         n, updated = issue["number"], issue.get("updatedAt")
         if (issue.get("state", "OPEN") != "OPEN" or "status:in-progress" not in labels(issue) or not updated
-                or n in in_review or f"#{n}" in held):
+                or EXTERNAL in labels(issue) or n in in_review or f"#{n}" in held):
             continue
         minutes = int((now - calendar.timegm(time.strptime(updated[:19], "%Y-%m-%dT%H:%M:%S"))) // 60)
         if minutes >= STALE_CLAIM_MINUTES:
@@ -863,7 +866,7 @@ class Dispatcher:
         for issue in everything:
             n = issue["number"]
             if (issue["state"] == "OPEN" and "status:review" in labels(issue) and n not in has_pr
-                    and f"#{n}" not in running and not self.dry_run):
+                    and EXTERNAL not in labels(issue) and f"#{n}" not in running and not self.dry_run):
                 self.board.set_labels(n, add=["status:ready"], remove=["status:review"])
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
@@ -974,7 +977,7 @@ class Dispatcher:
                     state[issue_no] = "CLOSED"
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
-                if not issue or labels(issue) & {"status:ready", "status:blocked", "needs:director"}:
+                if not issue or labels(issue) & {"status:ready", "status:blocked", "needs:director", EXTERNAL}:
                     continue
                 # A builder already working on the CHANGES: the verdict stays current until it pushes, and bouncing
                 # the issue now would put status:ready on it mid-build (commonroom#93).
@@ -1051,7 +1054,7 @@ class Dispatcher:
         for issue in everything:
             names, n = labels(issue), issue["number"]
             if (issue["state"] != "OPEN" or "prio:top" not in names or not any(l.startswith("role:") for l in names)
-                    or any(l.startswith("status:") for l in names) or names & {"owner:human", "needs:director", "parked"}
+                    or any(l.startswith("status:") for l in names) or names & {"owner:human", "needs:director", "parked", EXTERNAL}
                     or (self.milestone and (issue.get("milestone") or {}).get("title") != self.milestone)):
                 continue
             status = "status:blocked" if any(state.get(d) != "CLOSED" for d in dependencies(issue.get("body"))) else "status:ready"
@@ -1132,6 +1135,9 @@ class Dispatcher:
         issue = next((i for i in everything if i["number"] == issue_no), None)
         if not issue or issue["state"] != "OPEN" or "status:ready" in labels(issue):
             return []
+        if EXTERNAL in labels(issue):
+            return self.tell_external(issue, f"PR #{pr['number']} {CONFLICTS_MAIN}. Its owner merges origin/main into the branch "
+                                             f"and resolves the conflicts; the room doesn't build {EXTERNAL} issues.")
         self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
         if review == "CHANGES":
             self.board.comment(issue_no, f"PR #{pr['number']} {CONFLICTS_MAIN}. The next Claude builder run merges "
@@ -1141,6 +1147,14 @@ class Dispatcher:
                                      f"branch, resolves only the conflicts and reruns the tests. Nothing else changes, so "
                                      f"{'its approval stands' if review == 'APPROVE' else 'the review still sees only the PR'}.")
         return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder for a {MERGE_MAIN}"]
+
+    def tell_external(self, issue: dict, note: str) -> list[str]:
+        """Say what the room would have sent back to its builder, without relabelling an issue someone outside the room
+        owns. Once: not again while it is the issue's latest comment (housekeeping runs every pass)."""
+        last = (issue.get("comments") or [{}])[-1].get("body") or ""
+        if note not in last:
+            self.board.comment(issue["number"], f"{MARK} {note}")
+        return [f"#{issue['number']} is {EXTERNAL}: told its owner, didn't relabel ({note.split('.')[0]})"]
 
     def main_red(self, everything: list[dict], actions: list[str]) -> bool:
         """Has main's own CI failed (not merely been cancelled)? Then merges hold until it is green again, and a
@@ -1402,6 +1416,9 @@ class Dispatcher:
             except Exception as exc:
                 if "conflict" not in str(exc).lower():
                     return [f"PR #{pr['number']}: updating it with main after main's fix failed: {str(exc)[:100]}"]
+        if EXTERNAL in labels(issue):
+            return self.tell_external(issue, f"CI is red on PR #{pr['number']}: {names}. Its owner fixes it on the same branch; "
+                                             f"the room doesn't build {EXTERNAL} issues.")
         bounces = sum(1 for c in issue.get("comments") or [] if "CI is red" in (c.get("body") or ""))
         if bounces >= CI_BOUNCES:
             self.board.set_labels(issue_no, add=["status:blocked", "needs:director"], remove=["status:review"])
@@ -1431,7 +1448,7 @@ class Dispatcher:
 
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
         running = self.busy_tasks()
-        return [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and "owner:human" not in labels(i)
+        return [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
                 and f"#{i['number']}" not in running
                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                      or any(l.startswith("provider:") for l in labels(i)))]
@@ -1445,7 +1462,7 @@ class Dispatcher:
         for i in open_now:
             names = labels(i)
             role = next((l.split(":", 1)[1] for l in sorted(names) if l.startswith("role:") and l.split(":", 1)[1] in roles), None)
-            if (role and "status:ready" in names and "owner:human" not in names and f"#{i['number']}" not in running
+            if (role and "status:ready" in names and not names & {"owner:human", EXTERNAL} and f"#{i['number']}" not in running
                     and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone)):
                 found.append((i, role))
         return found
@@ -1742,7 +1759,7 @@ class Dispatcher:
             names = labels(issue)
             if "owner:human" in names and any(_after(c, since) for c in owner_comments(issue)):
                 reasons.append(f"#{issue['number']} has a new owner comment (delivery or answer)")
-        busy = [i for i in open_issues if labels(i) & {"status:ready", "status:in-progress", "status:review"}]
+        busy = [i for i in open_issues if labels(i) & {"status:ready", "status:in-progress", "status:review", EXTERNAL}]
         owner_open = {i["number"] for i in open_issues if "owner:human" in labels(i)}
         # Work that only waits on the owner is not a reason to wake the director.
         machine_open = [i for i in open_issues if "owner:human" not in labels(i)
