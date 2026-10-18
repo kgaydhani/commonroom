@@ -34,6 +34,7 @@ BRANCH = re.compile(r"^i(\d+)-")
 MARK = "[room]"
 STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
+INTERACTIVE_PHRASE = "interactive session"
 DIRECTOR_COOLDOWN = 3600
 STEER_REASON = ("periodic steering: check pace to the goal, the bottleneck and the allocation; "
                 "write the Director log (gamemirage #376)")
@@ -1778,10 +1779,15 @@ class Dispatcher:
         # Escalations and suggestions count whatever their milestone: a suggestion the director hasn't placed
         # yet has none (commonroom#10). The rest of the checks are about the goal milestone only.
         every_open = self.board.open_issues(None)
+        interactive = []
         for issue in every_open:
             names = labels(issue)
             if "needs:director" in names:
-                reasons.append(f"#{issue['number']} escalated to the director")
+                # Only the owner's interactive session can do this one; a headless run could only re-read it (commonroom#134).
+                if INTERACTIVE_PHRASE in (issue.get("body") or "").lower():
+                    interactive.append(f"#{issue['number']} waits for the interactive session")
+                else:
+                    reasons.append(f"#{issue['number']} escalated to the director")
             if "kind:suggestion" in names and "triaged" not in names:
                 reasons.append(f"#{issue['number']} is an untriaged owner suggestion")
         open_issues = [i for i in every_open
@@ -1805,6 +1811,7 @@ class Dispatcher:
         steer = float((self.cfg.get("director") or {}).get("steer_every_hours", 3) or 0)
         if steer and time.time() - since >= steer * 3600:
             reasons.append(STEER_REASON)
+            reasons += interactive
         return "; ".join(reasons) or None
 
     def bulletin_missed(self, last_director: float, now: float | None = None) -> str | None:
