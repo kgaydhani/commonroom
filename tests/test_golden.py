@@ -71,6 +71,12 @@ class GoldenSerialised(unittest.TestCase):
                   issue(2, READY + ["risk:golden", "needs:changes"], comments=[{"body": note}])]
         self.assertEqual(self.ready(issues), [2])
 
+    def test_a_golden_issue_waiting_on_merge_main_holds_a_fresh_one(self):
+        note = f"{dispatch.MARK} {dispatch.MERGE_MAIN}"
+        issues = [issue(1, READY + ["risk:golden", "needs:changes"], comments=[{"body": note}]),
+                  issue(2, READY + ["risk:golden"]), issue(3, READY)]
+        self.assertEqual(self.ready(issues), [1, 3])
+
     def test_without_golden_labels_nothing_changes(self):
         issues = [issue(1, ["status:in-progress", "role:builder"]), issue(2, READY), issue(3, READY + ["prio:high"])]
         self.assertEqual(self.ready(issues), [2, 3])

@@ -1482,8 +1482,10 @@ class Dispatcher:
 
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
         running = self.busy_tasks()
+        # A golden issue sent back to merge main still has an open PR, so it holds the others too.
         golden_held = {i["number"] for i in open_now if GOLDEN in labels(i)
-                       and (labels(i) & {"status:in-progress", "status:review"} or f"#{i['number']}" in running)}
+                       and (labels(i) & {"status:in-progress", "status:review"} or f"#{i['number']}" in running
+                            or merge_main_only(i))}
         ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
                  and f"#{i['number']}" not in running
                  and not (GOLDEN in labels(i) and golden_held - {i["number"]} and not merge_main_only(i))
