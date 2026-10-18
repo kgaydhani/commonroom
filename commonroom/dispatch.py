@@ -127,6 +127,23 @@ def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], 
     return stale
 
 
+def stale_ci_runs(runs: list[dict], prs: list[dict]) -> list[tuple[int, str]]:
+    """Queued `pull_request` runs nobody will read (commonroom#138): (run id, reason) for one whose branch has no open PR
+    (merged or closed), or whose sha isn't its open PR's current head (a newer push replaced it). Other events and
+    runs already past `queued` are never cancelled."""
+    heads = {pr["headRefName"]: pr.get("headRefOid") for pr in prs}
+    stale = []
+    for run in runs:
+        if run.get("event") != "pull_request" or run.get("status", "queued") != "queued":
+            continue
+        branch = run.get("headBranch") or ""
+        if branch not in heads:
+            stale.append((run["databaseId"], f"run {run['databaseId']} on {branch}: its PR is merged or closed"))
+        elif heads[branch] and run.get("headSha") and run["headSha"] != heads[branch]:
+            stale.append((run["databaseId"], f"run {run['databaseId']} on {branch}: a newer push replaced {run['headSha'][:7]}"))
+    return stale
+
+
 def claim_subjects(claim: str, other_projects=()) -> list[int] | None:
     """The issues or PRs a claim is about: its first `#N` and any directly after it. None when it has no subject in this
     repository: no `#N`, or one written with a repo prefix (`name#N`) or after another project's name."""
@@ -319,7 +336,14 @@ class GitHubBoard:
 
     def open_prs(self) -> list[dict]:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
-                             "--json", "number,headRefName,url,title,labels"]) or []
+                             "--json", "number,headRefName,headRefOid,url,title,labels"]) or []
+
+    def queued_runs(self) -> list[dict]:
+        return board_mod.gh(["run", "list", "--repo", self.repo, "--status", "queued", "--limit", "100",
+                             "--json", "databaseId,headBranch,headSha,event"]) or []
+
+    def cancel_run(self, run_id: int):
+        board_mod.gh(["run", "cancel", str(run_id), "--repo", self.repo])
 
     def finished_prs(self) -> list[dict]:
         """Merged or closed PRs: `--state closed` lists both (commonroom#108)."""
@@ -1036,6 +1060,24 @@ class Dispatcher:
                 actions.append(f"unblocked #{issue['number']} (dependencies {sorted(deps)} closed)")
         actions += self.mark_unstatused_top(everything, state)
         actions += self.file_unmilestoned_ready(everything)
+        if self.ci and not self.dry_run:
+            actions += self.cancel_stale_ci_runs()
+        return actions
+
+    def cancel_stale_ci_runs(self) -> list[str]:
+        """Cancel queued PR runs for merged/closed branches and superseded heads: headless agents can't `gh run cancel`
+        (gamemirage#376) and one runner makes each stale run ~23 min of delay (commonroom#138). Never stops a pass."""
+        actions = []
+        try:
+            stale = stale_ci_runs(self.board.queued_runs(), self.board.open_prs())
+        except Exception as exc:
+            return [f"couldn't list queued CI runs: {str(exc)[:100]}"]
+        for run_id, reason in stale:
+            try:
+                self.board.cancel_run(run_id)
+                actions.append(f"cancelled queued CI {reason}")
+            except Exception as exc:
+                actions.append(f"couldn't cancel queued CI {reason}: {str(exc)[:100]}")
         return actions
 
     def count_finished_prs(self, everything: list[dict], open_prs: list[dict], state: dict[int, str]):
