@@ -27,6 +27,17 @@ class FakeBoard:
     def open_prs(self):
         return self.prs
 
+    queued, cancelled, queued_error = [], [], None
+
+    def queued_runs(self):
+        if self.queued_error:
+            raise RuntimeError(self.queued_error)
+        self.listed = True
+        return self.queued
+
+    def cancel_run(self, run_id):
+        self.cancelled = self.cancelled + [run_id]
+
     finished = []
 
     def finished_prs(self):
@@ -1710,6 +1721,54 @@ class WithLedger(unittest.TestCase):
         self.counting_main_checks(fake)
         dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None).housekeeping()
         self.assertEqual(fake.main_reads, 0)
+
+    def stale_runs_board(self):
+        run = lambda i, branch, sha, event="pull_request": {"databaseId": i, "headBranch": branch, "headSha": sha, "event": event}
+        fake = FakeBoard([issue(200, ["status:ready"])],
+                         prs=[{"number": 7, "headRefName": "i7-x", "headRefOid": "new1111"}])
+        fake.queued = [run(1, "i5-merged", "aaa1111"), run(2, "i7-x", "new1111"), run(3, "i7-x", "old2222"),
+                       run(4, "main", "bbb3333", "push"), run(5, "i9-gone", "ccc4444", "schedule")]
+        fake.details = {7: {"number": 7, "headRefName": "i7-x", "mergeable": "MERGEABLE", "commits": [],
+                            "comments": [], "statusCheckRollup": []}}
+        return fake
+
+    def test_housekeeping_cancels_queued_runs_of_merged_branches_and_superseded_heads(self):
+        """commonroom#138: exactly the merged-branch run and the older-sha run; current head and non-PR runs stay."""
+        fake = self.stale_runs_board()
+        actions = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertEqual(fake.cancelled, [1, 3])
+        self.assertTrue(any("run 1 on i5-merged" in a and "merged or closed" in a for a in actions))
+        self.assertTrue(any("run 3 on i7-x" in a for a in actions))
+
+    def test_in_progress_runs_are_never_cancelled(self):
+        runs = [{"databaseId": 8, "headBranch": "i5-merged", "headSha": "a", "event": "pull_request", "status": "in_progress"}]
+        self.assertEqual(dispatch.stale_ci_runs(runs, []), [])
+
+    def test_without_ci_no_run_is_listed_or_cancelled(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["checks"] = {"ci": False}
+        fake = self.stale_runs_board()
+        dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertFalse(hasattr(fake, "listed"))
+        self.assertEqual(fake.cancelled, [])
+
+    def test_a_failing_run_list_cancels_nothing_and_the_pass_goes_on(self):
+        fake = self.stale_runs_board()
+        fake.queued_error = "gh down"
+        actions = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertEqual(fake.cancelled, [])
+        self.assertTrue(any("couldn't list queued CI runs" in a for a in actions))
+
+    def test_a_cancel_that_errors_does_not_stop_the_rest(self):
+        fake = self.stale_runs_board()
+        def cancel(run_id):
+            fake.cancelled = fake.cancelled + [run_id]
+            if run_id == 1:
+                raise RuntimeError("nope")
+        fake.cancel_run = cancel
+        actions = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None).housekeeping()
+        self.assertEqual(fake.cancelled, [1, 3])
+        self.assertTrue(any("couldn't cancel" in a for a in actions))
 
     def test_dry_run_neither_reads_nor_reruns_a_red_main(self):
         fake = self.red_main_board(attempt=1, status="completed")

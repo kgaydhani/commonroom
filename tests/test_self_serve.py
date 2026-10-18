@@ -20,11 +20,13 @@ TEST = "python -m unittest discover -s tests"
 class MergeBoard:
     def __init__(self, prs, details, issues=()):
         self.prs, self.details, self.issues, self.merged, self.labels = prs, details, list(issues), [], []
-        self.behind, self.updated = {}, []
+        self.behind, self.updated, self.cancelled = {}, [], []
 
     def behind_main(self, detail): return self.behind.get(detail["headRefOid"], 0)
     def update_branch(self, n): self.updated.append(n)
     def main_checks(self): return []
+    def queued_runs(self): return []
+    def cancel_run(self, run_id): self.cancelled.append(run_id)
     def all_issues(self): return self.issues
     def open_issues(self, milestone): return [i for i in self.issues if i["state"] == "OPEN"]
     def open_prs(self): return self.prs
@@ -226,7 +228,8 @@ class NoCiMergeRule(Base):
                             7: detail("REVIEW: APPROVE"), 8: detail("", checks=green)})
         d = self.dispatcher(project_cfg(self.tmp.name, name="game", ci=True), board)
         for _ in range(4):                                   # one merge per pass (commonroom#19), as on main
-            d.housekeeping()
+            actions = d.housekeeping()
+            self.assertFalse([a for a in actions or [] if "couldn't list queued CI runs" in str(a)])
             board.prs = [p for p in board.prs if p["number"] not in board.merged]
         self.assertEqual(board.merged, [5, 6, 8])          # no TESTS line needed; CI still required (#7 has none)
         job = dispatch.Job("review", "reviewer", pr={"number": 5, "headRefName": "i40-thing"})
