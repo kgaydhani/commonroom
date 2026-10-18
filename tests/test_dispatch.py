@@ -385,6 +385,24 @@ class WithLedger(unittest.TestCase):
         issues[-1] = issue(119, ["needs:director"], milestone=None)
         self.assertEqual(d.director_trigger(), "#119 escalated to the director")
 
+    def test_escalation_for_the_interactive_session_does_not_wake_the_director(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["director"] = config.DEFAULTS["director"]
+        issues = [issue(30, ["status:ready", "role:builder"]),
+                  issue(140, ["needs:director"], body="[agent:director]\nInteractive session: edit the live script", milestone=None)]
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        now = time.time()
+        last = self.ledger.start_run("t", None, "director", "claude", now=now - 2 * 3600)
+        self.ledger.finish_run(last, "done", outputs=[{"kind": "director", "ref": "x"}], now=now - 2 * 3600 + 60)
+        self.assertIsNone(d.director_trigger())                        # no steer due: no wake
+        self.ledger.db.execute("UPDATE runs SET started_at=? WHERE id=?", (now - 3 * 3600 - 60, last)); self.ledger.db.commit()
+        trigger = d.director_trigger()                                 # steer due: the issue is named
+        self.assertIn(dispatch.STEER_REASON, trigger)
+        self.assertIn("#140 waits for the interactive session", trigger)
+        self.assertNotIn("escalated", trigger)
+        issues.append(issue(141, ["needs:director"], body="Please decide", milestone=None))
+        self.assertIn("#141 escalated to the director", d.director_trigger())
+
     def test_nothing_ready_counts_only_the_goal_milestone(self):
         issues = [issue(31, [], milestone="Later"), issue(32, [], milestone=None)]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
