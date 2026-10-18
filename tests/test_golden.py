@@ -40,6 +40,18 @@ class GoldenSerialised(unittest.TestCase):
         job, _, _ = self.dispatcher([i for i in issues if i["state"] == "OPEN"]).pick(ALLOWED)
         self.assertEqual(job.issue["number"], 2)
 
+    def test_ready_builds_offers_only_the_top_golden_issue(self):
+        issues = [issue(1, READY + ["risk:golden"]), issue(2, READY + ["risk:golden"]), issue(3, READY)]
+        self.assertEqual(self.ready(issues), [1, 3])
+
+    def test_codex_never_takes_a_second_golden_issue(self):
+        issues = [issue(1, READY + ["risk:golden"]), issue(2, READY + ["risk:golden"]), issue(3, READY + ["prio:low"])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None,
+                                only_provider="codex")
+        picked = d.pick({"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")})
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked[0].issue["number"], 3)
+
     def test_golden_in_review_holds_a_second_but_not_an_unlabelled_issue(self):
         issues = [issue(1, ["status:review", "role:builder", "risk:golden"]), issue(2, READY + ["risk:golden"]),
                   issue(3, READY + ["prio:low"])]
