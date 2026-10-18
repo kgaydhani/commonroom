@@ -54,6 +54,8 @@ STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this l
 # Someone outside the room (the interactive director's local agents, a cloud session) owns the issue: the room never
 # builds it or puts status:ready on it, but still reviews and merges its PR (commonroom#132).
 EXTERNAL = "claim:external"
+# Issues that re-derive shared golden data conflict when built in parallel: only one is in progress or review at a time (commonroom#52).
+GOLDEN = "risk:golden"
 # Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
 # kind of claim needs (the word nearest before the subjects wins, else the first after them: commonroom#99; "skip" for
 # edits, which leave no timeline event), and how many subjects one run may read.
@@ -1480,10 +1482,21 @@ class Dispatcher:
 
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
         running = self.busy_tasks()
-        return [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
-                and f"#{i['number']}" not in running
-                and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
-                     or any(l.startswith("provider:") for l in labels(i)))]
+        # A golden issue sent back to merge main still has an open PR, so it holds the others too.
+        golden_held = {i["number"] for i in open_now if GOLDEN in labels(i)
+                       and (labels(i) & {"status:in-progress", "status:review"} or f"#{i['number']}" in running
+                            or merge_main_only(i))}
+        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
+                 and f"#{i['number']}" not in running
+                 and not (GOLDEN in labels(i) and golden_held - {i["number"]} and not merge_main_only(i))
+                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
+                      or any(l.startswith("provider:") for l in labels(i)))]
+        # With none held, only the top golden issue is offered, so the Codex path's second pick can't be another one.
+        fresh = [i for i in ready if GOLDEN in labels(i) and not merge_main_only(i)]
+        if len(fresh) > 1:
+            top = min(fresh, key=priority)
+            ready = [i for i in ready if i not in fresh or i is top]
+        return ready
 
     def ready_on_demand(self, open_now: list[dict]) -> list[tuple[dict, str]]:
         """Ready `role:<name>` issues in the goal milestone whose role is configured and has an agent file, each with
