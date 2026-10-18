@@ -180,6 +180,12 @@ class Ledger:
             result.append(row)
         return result
 
+    def task_runs(self, project: str | None, task: str, limit: int = 3, exclude: str | None = None) -> list[dict]:
+        """The task's latest runs in this project, newest first (`exclude` leaves out the run being started)."""
+        rows = self.db.execute("SELECT * FROM runs WHERE project IS ? AND task=? AND id IS NOT ? ORDER BY started_at DESC LIMIT ?",
+                               (project, task, exclude, limit)).fetchall()
+        return [dict(r) for r in rows]
+
     def record_claims(self, run_id: str, checked: int, unverified: list[str]):
         """How many of a run's ACTIONS claims were checked against GitHub, and the ones that didn't check out."""
         with self.db:
