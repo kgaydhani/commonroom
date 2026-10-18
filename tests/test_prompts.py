@@ -27,9 +27,11 @@ GAME_ONLY = ("Godot", "tools/test.sh", "tools/test_slow.sh", "tools/test.py")
 
 class Board:
     def __init__(self):
-        self.comments, self.labels = [], []
+        self.comments, self.labels, self.cancelled = [], [], []
 
     def pr_for_branch(self, branch): return None
+    def queued_runs(self): return []
+    def cancel_run(self, run_id): self.cancelled.append(run_id)
     def set_labels(self, n, add=(), remove=()): self.labels.append((n, tuple(add), tuple(remove)))
     def comment(self, n, body): self.comments.append((n, body))
 
