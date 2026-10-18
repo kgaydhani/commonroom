@@ -54,6 +54,8 @@ STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this l
 # Someone outside the room (the interactive director's local agents, a cloud session) owns the issue: the room never
 # builds it or puts status:ready on it, but still reviews and merges its PR (commonroom#132).
 EXTERNAL = "claim:external"
+# Issues that re-derive shared golden data conflict when built in parallel: only one is in progress or review at a time (commonroom#52).
+GOLDEN = "risk:golden"
 # Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
 # kind of claim needs (the word nearest before the subjects wins, else the first after them: commonroom#99; "skip" for
 # edits, which leave no timeline event), and how many subjects one run may read.
@@ -1480,8 +1482,11 @@ class Dispatcher:
 
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
         running = self.busy_tasks()
+        golden_held = {i["number"] for i in open_now if GOLDEN in labels(i)
+                       and (labels(i) & {"status:in-progress", "status:review"} or f"#{i['number']}" in running)}
         return [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
                 and f"#{i['number']}" not in running
+                and not (GOLDEN in labels(i) and golden_held - {i["number"]} and not merge_main_only(i))
                 and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                      or any(l.startswith("provider:") for l in labels(i)))]
 
