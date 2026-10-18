@@ -268,7 +268,9 @@ class GitHubBoard:
 
     def all_issues(self) -> list[dict]:
         return board_mod.gh(["issue", "list", "--repo", self.repo, "--state", "all", "--limit", "500",
-                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt,milestone"]) or []
+                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt,milestone"],
+                            # 2 MB of JSON: 16 s on a quiet PC, over the 30 s default when the runner is loaded.
+                            timeout=120) or []
 
     def set_labels(self, number: int, add=(), remove=()):
         args = ["issue", "edit", str(number), "--repo", self.repo]
