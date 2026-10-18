@@ -88,7 +88,7 @@ def state(cfg: dict) -> dict:
                                      "windows": ledger.latest_usage(provider)}
         runs = ledger.recent_runs(project, limit=25)
         day = [r for r in ledger.recent_runs(project, limit=400) if r["started_at"] >= now - 86400]
-        model_runs = [r for r in day if r["role"] != "merge" and r["status"] != "room-error"]
+        model_runs = [r for r in day if r["role"] not in ("merge", "update") and r["status"] != "room-error"]
         merges = [r for r in day if r["role"] == "merge"]
         proof = {"merged_24h": len(merges), "runs_24h": len(model_runs),
                  "productive_24h": sum(1 for r in model_runs if r["outputs"]),
