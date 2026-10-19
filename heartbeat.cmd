@@ -7,6 +7,8 @@ if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
 cd /d "%~1" || exit /b 2
 set "LOGS=%USERPROFILE%\.commonroom"
 rem In the block below, in order:
+rem - a meter probe (no inference): after a usage window resets, the gate holds every provider until a fresh reading
+rem   arrives, and with no interactive session nothing else takes one (18 Oct: the room sat idle overnight).
 rem - project services, then the moonshot queue: relaunch dead or capped moonshots, start queued ones. Interim until
 rem   commonroom#24. Quick; returns at once.
 rem - one Codex dispatcher, and extra Claude slots 2 and 3: they build in parallel only when the queue is deep and
@@ -18,6 +20,7 @@ rem The room fast-forwards this checkout after it merges its own PRs, which can 
 rem reads a batch file one line at a time, so everything below is one block: cmd reads the whole block before running
 rem any of it, and the block exits before cmd would read on. Keep comments out of the block.
 (
+  "%PY%" "%~dp0room.py" probe >> "%LOGS%\heartbeat-probe.log" 2>&1
   "%PY%" "%~dp0room.py" services >> "%LOGS%\heartbeat-services.log" 2>&1
   if exist "D:\Dev\moonshots\msqueue.py" "%PY%" "D:\Dev\moonshots\msqueue.py" tick >> "%LOGS%\moonshot-queue.log" 2>&1
   start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider codex >> "%LOGS%\heartbeat-codex.log" 2>&1"
