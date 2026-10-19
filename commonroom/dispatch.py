@@ -1588,7 +1588,10 @@ class Dispatcher:
         if self.slot > int(par.get(f"{provider}_slots", 1)) or not v or not v.allowed:
             return None
         pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
-        if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15) or v.detail.get("owner_active"):
+        paced = ((self.cfg.get("budget") or {}).get(provider) or {}).get("pace", True)
+        if paced and (pace is None or used is None or pace - used < par.get("min_pace_headroom", 15)):
+            return None   # an unpaced provider ([budget.<p>] pace = false) skips the pace-headroom check
+        if v.detail.get("owner_active"):
             return None   # extra slots also yield while the owner is using Claude elsewhere
         if (v.detail.get("five_hour_used") or 0) >= par.get("max_5h", 60):
             return None   # near the 5-hour reserve, finish what runs rather than start more (running work isn't stopped)
@@ -2463,7 +2466,9 @@ class Dispatcher:
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()
-        trip = check_progress(self.ledger, self.project, now, attribute=(self.cfg.get("share") or {}).get("max") is not None)
+        limit = float((self.cfg.get("breakers") or {}).get("progress_spend_limit", 10.0))
+        trip = check_progress(self.ledger, self.project, now, spend_limit=limit,
+                              attribute=(self.cfg.get("share") or {}).get("max") is not None)
         if trip:
             self.ledger.trip(self.project, trip["kind"], trip["detail"], now=now)
             self.escalate_breaker(trip)

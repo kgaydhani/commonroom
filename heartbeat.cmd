@@ -24,6 +24,7 @@ rem any of it, and the block exits before cmd would read on. Keep comments out o
   "%PY%" "%~dp0room.py" services >> "%LOGS%\heartbeat-services.log" 2>&1
   if exist "D:\Dev\moonshots\msqueue.py" "%PY%" "D:\Dev\moonshots\msqueue.py" tick >> "%LOGS%\moonshot-queue.log" 2>&1
   start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider codex >> "%LOGS%\heartbeat-codex.log" 2>&1"
+  start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider codex --slot 2 >> "%LOGS%\heartbeat-codex2.log" 2>&1"
   start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude --slot 2 >> "%LOGS%\heartbeat-claude2.log" 2>&1"
   start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude --slot 3 >> "%LOGS%\heartbeat-claude3.log" 2>&1"
   if exist "%~dp0room.toml" start "" /b /d "%~dp0." cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude >> "%LOGS%\heartbeat-commonroom-claude.log" 2>&1"
