@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import os
 import tomllib
 from pathlib import Path
 
@@ -46,7 +47,20 @@ DEFAULTS = {
     # `issue` and `deadlines` (local "HH:MM"): the owner's digest is due on that issue by each deadline. A missed one
     # wakes the director to post it (commonroom#82). Empty: no check.
     "bulletin": {},
+    # `ntfy_topic` (and optional `ntfy_server`): owner notifications that reach a phone through ntfy (commonroom#151).
+    # Empty: nothing is sent.
+    "notify": {},
+    # `[schedule.<role>]`: open a `role:<role>` + `status:ready` issue in the goal milestone at each `at` local time
+    # ("HH:MM" or a list) or every `every_hours` (commonroom#151). Empty: nothing is scheduled.
+    "schedule": {},
+    # `commands`: argv lists `room tick` runs in the project folder on every heartbeat; "{python}" is the room's
+    # interpreter (commonroom#151). Empty: nothing runs.
+    "heartbeat": {},
 }
+
+# The heartbeat names the project it was started for here, so a guest rides on whichever project is the host now
+# (commonroom#151). It only overrides `[share] host` in a project that has a `[share]` table.
+HOST_ENV = "COMMONROOM_HOST"
 
 # What a guest takes from its host, so both pass through one budget gate.
 GATE_KEYS = ("budget", "owner", "freshness_seconds")
@@ -81,14 +95,27 @@ def load(path: Path | None = None, follow_host: bool = True) -> dict:
         data = tomllib.load(handle)
     cfg = merge(DEFAULTS, data) | {"_path": str(path), "_root": str(Path(path).parent)}
     host = (cfg.get("share") or {}).get("host")
+    if cfg.get("share") and os.environ.get(HOST_ENV):
+        host = cfg["share"]["host"] = os.environ[HOST_ENV]
     if host and follow_host:
         host_path = Path(host) if str(host).endswith(".toml") else Path(host) / "room.toml"
-        if host_path.is_file():
+        # A heartbeat started for the guest's own folder makes it its own host: then it has no host.
+        if host_path.is_file() and not _same_file(host_path, Path(path)):
             host_cfg = load(host_path, follow_host=False)
             for key in GATE_KEYS:
                 cfg[key] = copy.deepcopy(host_cfg[key])
             cfg["_host"] = host_cfg["project"].get("name")
     return cfg
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def owner(cfg: dict) -> str:
+    """The owner's GitHub login: `[project] owner`, else the repo's owner."""
+    project = cfg.get("project") or {}
+    return project.get("owner") or str(project.get("repo") or "").split("/", 1)[0]
 
 
 def has_ci(cfg: dict) -> bool:

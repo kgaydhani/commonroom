@@ -3,8 +3,8 @@
 Every agent working on this repo reads this first: Claude Code (through `CLAUDE.md`), Codex, and Common Room workers.
 
 ## The project
-- Common Room is the Python orchestrator that runs the gamemirage studio's agents: the ledger, usage gate, breakers, dispatcher, workers and dashboard. How it works: [docs/design.md](docs/design.md). Why v1 failed: [docs/postmortem-v1.md](docs/postmortem-v1.md).
-- The room improves itself through this repo (commonroom#31). Its own dispatcher builds, reviews and merges issues in the milestone named in `room.toml` `[goal]`, as a guest on the game's allowance (`[share]`).
+- Common Room is the Python orchestrator that runs the owner's AI studio: the ledger, usage gate, breakers, dispatcher, workers and dashboard. It is a product of its own: each project plugs in with a `room.toml` and `.claude/agents/` in its own repo, and the heartbeat runs one project as the host at a time. How it works: [docs/design.md](docs/design.md). Why v1 failed: [docs/postmortem-v1.md](docs/postmortem-v1.md).
+- The room improves itself through this repo (commonroom#31). Its own dispatcher builds, reviews and merges issues in the milestone named in `room.toml` `[goal]`, as a guest on the host project's allowance (`[share]`): the project the heartbeat runs for.
 - The owner is Kieran (GitHub `kgaydhani`). The director (Claude Opus) owns the roadmap, reviews and merges.
 
 ## The live room is running. Don't touch it.
@@ -17,7 +17,7 @@ Every agent working on this repo reads this first: Claude Code (through `CLAUDE.
 ## How work flows
 - Every change belongs to a GitHub issue in the goal milestone. No issue, no work.
 - Branch `i<issue>-<slug>`. Make small commits and small PRs (aim for under about 300 changed lines of code), each with tests for the behaviour it adds or fixes. The PR body says `Closes #<issue>`, lists each acceptance criterion with how you verified it, and lists what you couldn't verify.
-- **A change that needs lines in another project's `room.toml` or prompts** (for example gamemirage's `[prompts]`) would break that project the moment it merges. Add the `needs:director` label to the PR and put the exact lines in its body. The PR then waits for the director's `[agent:director] REVIEW: APPROVE`, and the director opens the companion PR in that project before approving.
+- **A change that needs lines in another project's `room.toml` or prompts** (for example a project's `[prompts]`) would break that project the moment it merges. Add the `needs:director` label to the PR and put the exact lines in its body. The PR then waits for the director's `[agent:director] REVIEW: APPROVE`, and the director opens the companion PR in that project before approving.
 - **Tests:** `python -m unittest discover -s tests`, run from the worktree root. It must pass before you push. The core uses only the standard library.
 - **No CI.** Nothing on GitHub runs the tests. The reviewer runs them on the PR head and states the result in the review, and housekeeping merges on that approval, one PR per pass.
 - **Blocked:** comment on the issue with exactly what's missing, then stop. Don't retry the same approach.
@@ -28,9 +28,9 @@ Every agent working on this repo reads this first: Claude Code (through `CLAUDE.
 - Dispatch, pacing and gates are plain deterministic code. Models do the work; code decides what runs.
 - Import room modules at the top of a module, never inside a function. Running dispatchers keep the code they loaded at start, and the room pulls new code into the live checkout underneath them.
 - Don't change budget or gate thresholds, reserves, caps or breakers without an issue that asks for it. Those are the director's call.
-- Anything gamemirage-specific lives in `D:/Dev/gamemirage/room.toml` or its prompts, not in room code. A change to the room must not change the game's behaviour unless its issue says so. Test that.
+- Anything project-specific lives in that project's `room.toml` or prompts, not in room code. No project's name, path or login is hard-coded here. A change to the room must not change any project's behaviour unless its issue says so. Test that.
 - **Line endings are LF.** The repo stores LF, and your working tree may show CRLF because of `core.autocrlf`. When you rewrite a file with a script, write LF.
 - Never force-push. Never push to `main`.
 
 ## Machine and tools
-See `D:/Dev/gamemirage/docs/environment.md`. Use the `gh` CLI for GitHub. Use `--repo kgaydhani/commonroom` on every `gh` call, because the room works on two repos.
+See `D:/Dev/gamemirage/docs/environment.md` (this PC's tools and storage rules; they apply to every project). Use the `gh` CLI for GitHub. Use `--repo kgaydhani/commonroom` on every `gh` call, because the room works on several repos.

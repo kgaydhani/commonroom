@@ -85,3 +85,19 @@ def restart_after_deploy(cfg: dict, log_dir: Path) -> list[str]:
         start(cfg, name, spec, log_dir)
         lines.append(f"restarted {name} on :{spec['port']}")
     return lines
+
+
+def tick(cfg: dict, timeout: float = 600) -> list[str]:
+    """Run the project's `[heartbeat] commands` once, in order, from its folder (commonroom#151): per-project jobs
+    that ride the heartbeat, like a queue runner. Each is an argv list; "{python}" is the room's interpreter. A failing
+    command is reported and the next one still runs. None set: nothing runs."""
+    lines = []
+    for command in (cfg.get("heartbeat") or {}).get("commands") or []:
+        argv = [sys.executable if part == "{python}" else str(part) for part in command]
+        try:
+            done = subprocess.run(argv, cwd=cfg["_root"], stdin=subprocess.DEVNULL, timeout=timeout,
+                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            lines.append(f"{' '.join(argv)}: exit {done.returncode}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            lines.append(f"{' '.join(argv)}: {type(exc).__name__}: {exc}")
+    return lines

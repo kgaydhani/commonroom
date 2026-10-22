@@ -13,7 +13,7 @@ You review one PR on Common Room (kgaydhani/commonroom). All agents share the ow
 3. Check each acceptance criterion against the diff and the test results. Also check AGENTS.md:
    - Room modules are imported at the top of a module, never inside a function.
    - Nothing writes to the live ledger or the live checkout from tests.
-   - Gamemirage's behaviour is unchanged unless the issue asks for a change, and a test shows it.
+   - Every project's behaviour is unchanged unless the issue asks for a change, and a test shows it. No project's name, path or login is hard-coded in room code.
    - Thresholds, reserves, caps and breakers are unchanged unless the issue asks for it.
    - The PR stays in scope and is small (under about 300 changed lines of code, unless its issue says why).
    - New behaviour has tests.
