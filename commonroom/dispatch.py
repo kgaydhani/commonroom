@@ -23,7 +23,7 @@ from pathlib import Path
 
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
-from commonroom import board as board_mod, config as config_mod, gate, services, usage, workers as workers_mod
+from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom.ledger import Ledger
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -36,8 +36,7 @@ STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 INTERACTIVE_PHRASE = "interactive session"
 DIRECTOR_COOLDOWN = 3600
-STEER_REASON = ("periodic steering: check pace to the goal, the bottleneck and the allocation; "
-                "write the Director log (gamemirage #376)")
+STEER_REASON = "periodic steering: check pace to the goal, the bottleneck and the allocation; write the Director log"
 BULLETIN_REASON = ("bulletin missed (due {due}): post a short text digest to #{issue} starting with @{owner} (merges since "
                    "the last bulletin, open problems, a pointer to the Director log), and add a Director log entry saying "
                    "the interactive session's schedules need recreating")
@@ -45,6 +44,9 @@ OWNER_COOLDOWN = 300
 ROOM_ERROR_BACKOFF = 600   # a task whose last run was a room-error rests this long, doubling with each one in a row...
 ROOM_ERROR_ESCALATE = 3    # ...and the third in a row goes to the director (commonroom#9)
 SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
+# A scheduled issue's body carries this, so the schedule sees its last one is still open (commonroom#151).
+SCHEDULE_MARK = "<!-- room-schedule:{role} -->"
+NOTIFY_MAX = 5   # at most this many mention notifications per pass; the rest are summed up in one
 # Roles the room dispatches through their own triggers. Any other role with a `[roles]` entry and an agent file runs on
 # demand from a `role:<name>` + `status:ready` issue (commonroom#4).
 BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
@@ -404,10 +406,12 @@ class GitHubBoard:
         """Rerun a workflow run's failed jobs. No backoff and no cap here: the caller decides from the run's attempt."""
         board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
 
-    def create_issue(self, title: str, body: str, labels=(), milestone: str | None = None) -> int:
+    def create_issue(self, title: str, body: str, labels=(), milestone: str | None = None, assignees=()) -> int:
         args = ["issue", "create", "--repo", self.repo, "--title", title, "--body", body]
         for name in labels:
             args += ["--label", name]
+        for login in assignees:
+            args += ["--assignee", login]
         if milestone:
             args += ["--milestone", milestone]
         url = board_mod.gh(args)
@@ -863,7 +867,7 @@ class Job:
 
 class Dispatcher:
     def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False, only_provider: str | None = None,
-                 slot: int = 1):
+                 slot: int = 1, notifier=None):
         self.cfg, self.ledger, self.log, self.dry_run = cfg, ledger, log, dry_run
         self.claude_projects = Path.home() / ".claude" / "projects"
         self.slot = slot  # slot 2+ is an extra parallel worker for the same provider (builds only)
@@ -880,6 +884,9 @@ class Dispatcher:
         # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
+        # Pushes owner notifications to a phone (`[notify]`, commonroom#151). None: nothing is sent.
+        self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
+        self.owner = config_mod.owner(cfg)
 
     def worktree_base(self) -> Path:
         """Where worker worktrees go: `[project] worktrees`, or `<project>-wt/room` next to the project. Not the
@@ -1072,6 +1079,101 @@ class Dispatcher:
         actions += self.file_unmilestoned_ready(everything)
         if self.ci and not self.dry_run:
             actions += self.cancel_stale_ci_runs()
+        actions += self.open_scheduled(everything)
+        actions += self.notify_owner(everything)
+        return actions
+
+    def open_scheduled(self, everything: list[dict], now: float | None = None) -> list[str]:
+        """Each due `[schedule.<role>]` opens a `role:<role>` + `status:ready` issue (plus its `labels`) in the goal
+        milestone (commonroom#151). While the last one it opened is still open, none opens: the role hasn't done it yet."""
+        now = time.time() if now is None else now
+        actions = []
+        runnable = runnable_roles(self.cfg) | {"builder", "scout"}
+        for role, spec in sorted((self.cfg.get("schedule") or {}).items()):
+            key = f"schedule:{role}"
+            if not isinstance(spec, dict) or not schedule_due(spec, self.ledger.marked(self.project, key), now):
+                continue
+            mark = SCHEDULE_MARK.format(role=role)
+            if any(i["state"] == "OPEN" and mark in (i.get("body") or "") for i in everything):
+                continue
+            if role not in runnable:
+                actions.append(f"[schedule.{role}] is due, but {role} has no [roles] entry or agent file: nothing opened")
+                continue
+            title = fill(str(spec.get("title") or f"{role.capitalize()} {{date}}"), now)
+            body = fill(str(spec.get("body") or f"Scheduled {role} run for {{date}}. Follow your {role} instructions."), now)
+            body = f"{MARK} {body}\n\n{mark}"
+            names = [f"role:{role}", "status:ready", *[str(l) for l in spec.get("labels") or []]]
+            if self.dry_run:
+                actions.append(f"[schedule.{role}] would open: {title}")
+                continue
+            try:
+                for name in names:   # `issue create` fails on a label the repo doesn't have
+                    self.board.ensure_label(name)
+                number = self.board.create_issue(title, body, labels=names, milestone=self.milestone)
+            except Exception as exc:   # a failed board call is reported and tried again next pass
+                actions.append(f"[schedule.{role}] could not open its issue: {str(exc)[:100]}")
+                continue
+            self.ledger.mark(self.project, key, now)
+            everything.append({"number": number, "title": title, "body": body, "state": "OPEN", "comments": [],
+                               "labels": [{"name": l} for l in names],
+                               "milestone": {"title": self.milestone} if self.milestone else None})
+            actions.append(f"[schedule.{role}] opened #{number}: {title}")
+        return actions
+
+    def issue_url(self, number: int) -> str:
+        return f"https://github.com/{self.cfg['project']['repo']}/issues/{number}"
+
+    def tell_owner(self, title: str, message: str, url: str | None = None, priority: int | None = None) -> bool:
+        """Push one notification to the owner's phone. False when there's no notifier or it failed; never raises."""
+        if not self.notifier or self.dry_run:
+            return False
+        try:
+            self.notifier.send(title, message, url=url, priority=priority)
+            return True
+        except Exception as exc:
+            self.log(f"   owner notification failed: {type(exc).__name__}: {str(exc)[:120]}")
+            return False
+
+    def notify_owner(self, everything: list[dict]) -> list[str]:
+        """The room posts as the owner's own account, so GitHub never tells the owner about its @mentions or
+        assignments (commonroom#151). With a notifier, each pass pushes new open `owner:human` issues, then new comments
+        that mention @<owner> (the bulletin among them). The first pass only sets the comment watermark."""
+        if not self.notifier or self.dry_run:
+            return []
+        actions = []
+        project = self.cfg["project"].get("name") or ""
+        tasks = [i for i in everything if i["state"] == "OPEN" and "owner:human" in labels(i)
+                 and self.ledger.marked(self.project, f"owner-task:{i['number']}") is None]
+        if tasks:
+            lines = "\n".join(f"#{i['number']} {i.get('title') or ''}" for i in tasks)
+            title = f"{project}: {tasks[0].get('title')}" if len(tasks) == 1 else f"{project}: {len(tasks)} new tasks for you"
+            url = (self.issue_url(tasks[0]["number"]) if len(tasks) == 1 else
+                   f"https://github.com/{self.cfg['project']['repo']}/issues?q=is%3Aopen+label%3Aowner%3Ahuman")
+            if self.tell_owner(title, lines, url=url):
+                for i in tasks:
+                    self.ledger.mark(self.project, f"owner-task:{i['number']}")
+                actions.append("told the owner about " + ", ".join(f"#{i['number']}" for i in tasks))
+        since = self.ledger.marked(self.project, "mentions")
+        mention = re.compile(rf"(?<![\w/-])@{re.escape(self.owner)}\b", re.I) if self.owner else None
+        newest, found = since or 0.0, []
+        for issue in everything:
+            for c in issue.get("comments") or []:
+                at = _stamp(c.get("createdAt"))
+                newest = max(newest, at)
+                if since is not None and at > since and mention and mention.search(c.get("body") or ""):
+                    found.append((at, issue, c))
+        found.sort(key=lambda f: f[0])
+        for at, issue, c in found[:NOTIFY_MAX]:
+            if not self.tell_owner(f"{project} #{issue['number']}: {issue.get('title') or ''}", (c.get("body") or "").strip(),
+                                   url=c.get("url") or self.issue_url(issue["number"])):
+                return actions   # the watermark stays, so the rest are sent next pass
+            actions.append(f"told the owner about a mention on #{issue['number']}")
+        rest = found[NOTIFY_MAX:]
+        if rest:
+            self.tell_owner(f"{project}: {len(rest)} more mentions",
+                            "\n".join(sorted({f"#{f[1]['number']} {f[1].get('title') or ''}" for f in rest})))
+        if newest and newest != since:
+            self.ledger.mark(self.project, "mentions", newest)
         return actions
 
     def cancel_stale_ci_runs(self) -> list[str]:
@@ -1598,7 +1700,10 @@ class Dispatcher:
         if self.slot > int(par.get(f"{provider}_slots", 1)) or not v or not v.allowed:
             return None
         pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
-        if pace is None or used is None or pace - used < par.get("min_pace_headroom", 15) or v.detail.get("owner_active"):
+        paced = ((self.cfg.get("budget") or {}).get(provider) or {}).get("pace", True)
+        if paced and (pace is None or used is None or pace - used < par.get("min_pace_headroom", 15)):
+            return None   # an unpaced provider ([budget.<p>] pace = false) skips the pace-headroom check
+        if v.detail.get("owner_active"):
             return None   # extra slots also yield while the owner is using Claude elsewhere
         if (v.detail.get("five_hour_used") or 0) >= par.get("max_5h", 60):
             return None   # near the 5-hour reserve, finish what runs rather than start more (running work isn't stopped)
@@ -1798,9 +1903,12 @@ class Dispatcher:
         if self.dry_run:
             return {"number": 0, "title": f"Capability sweep: {focus}", "labels": []}
         today = time.strftime("%Y-%m-%d")
+        # `[scout] environment`: where this machine's tools and limits are written down (commonroom#151).
+        environment = (self.cfg.get("scout") or {}).get("environment")
         body = (f"Scheduled capability sweep ({today}). Focus: **{focus}**.\n\n"
                 "Find tools, repos, MCP servers, techniques or references that are free (or already paid for), available on "
-                "this machine (docs/environment.md), and would make the game better or the studio faster, cheaper or more capable. "
+                f"this machine{f' ({environment})' if environment else ''}, and would serve the project's mission or make "
+                "the studio faster, cheaper or more capable. "
                 "Be ambitious, but separate the proven from the hyped.\n\n## Deliverable\n"
                 f"- `docs/scouting/{today}-{slug(focus)}.md`: each finding with evidence links, what it would change, cost and risk, "
                 "and a proposed experiment with a pass/fail test.\n"
@@ -1819,7 +1927,7 @@ class Dispatcher:
         reasons = []
         # Agents post as the owner's account, so authorship can't tell them apart. Agent comments start with
         # `[agent:...]`; the owner-channel bulletin starts with `@<owner>` instead so it reaches his phone.
-        mention = "@" + self.cfg["project"]["repo"].split("/", 1)[0]
+        mention = "@" + self.owner
         for issue in self.board.open_issues(None):
             names = labels(issue)
             comments = issue.get("comments") or []
@@ -1875,7 +1983,7 @@ class Dispatcher:
         # The director is always on it (owner, 9 Oct; commonroom#41): even with no event, it steers every few hours.
         steer = float((self.cfg.get("director") or {}).get("steer_every_hours", 3) or 0)
         if steer and time.time() - since >= steer * 3600:
-            reasons.append(STEER_REASON)
+            reasons.append(steer_reason(self.cfg))
             reasons += interactive
         return "; ".join(reasons) or None
 
@@ -1889,7 +1997,7 @@ class Dispatcher:
         previous, due, label = bulletin_window(cfg["deadlines"], time.time() if now is None else now)
         if last_director > due:
             return None
-        owner = self.cfg["project"]["repo"].split("/", 1)[0]
+        owner = self.owner
         try:
             comments = self.board.issue_comments(int(cfg["issue"]), previous)
         except Exception as exc:
@@ -2514,7 +2622,9 @@ class Dispatcher:
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()
-        trip = check_progress(self.ledger, self.project, now, attribute=(self.cfg.get("share") or {}).get("max") is not None)
+        limit = float((self.cfg.get("breakers") or {}).get("progress_spend_limit", 10.0))
+        trip = check_progress(self.ledger, self.project, now, spend_limit=limit,
+                              attribute=(self.cfg.get("share") or {}).get("max") is not None)
         if trip:
             self.ledger.trip(self.project, trip["kind"], trip["detail"], now=now)
             self.escalate_breaker(trip)
@@ -2531,7 +2641,7 @@ class Dispatcher:
         return report
 
     def safe_housekeeping(self) -> list[str]:
-        """Housekeeping, but an exception in it must not stop the pass: the game's builds run the same code."""
+        """Housekeeping, but an exception in it must not stop the pass: the project's builds run the same code."""
         try:
             return self.housekeeping()
         except Exception as exc:   # KeyboardInterrupt and SystemExit are not Exceptions and still propagate
@@ -2561,11 +2671,41 @@ class Dispatcher:
         existing = [i for i in self.board.open_issues(None) if i["title"] == title]
         if existing:
             return
+        room_py = (Path(self.room_root) / "room.py").as_posix()
         body = (f"Common Room stopped autonomous work.\n\n**Why:** {trip['detail']}\n\nDue: {time.strftime('%Y-%m-%d')}\n\n"
-                "**What to do:** read the recent runs (`python D:/Dev/commonroom/room.py status`) and the run logs, then "
-                "decide in an executive session what changes. Clear the stop with `python D:/Dev/commonroom/room.py breaker reset`.")
-        board_mod.gh(["issue", "create", "--repo", self.cfg["project"]["repo"], "--title", title, "--body", body,
-                      "--label", "owner:human", "--assignee", "kgaydhani"])
+                f"**What to do:** read the recent runs (`python {room_py} status`) and the run logs, then "
+                f"decide in an executive session what changes. Clear the stop with `python {room_py} breaker reset`.")
+        number = self.board.create_issue(title, body, labels=("owner:human",), assignees=(self.owner,) if self.owner else ())
+        project = self.cfg["project"].get("name") or ""
+        # Pushed at once, at high priority; the owner-task pass then knows it was.
+        if self.tell_owner(f"{project}: room stopped ({trip['kind'].replace('_', ' ')})", trip["detail"],
+                           url=self.issue_url(number), priority=4):
+            self.ledger.mark(self.project, f"owner-task:{number}")
+
+
+def steer_reason(cfg: dict) -> str:
+    """STEER_REASON, naming the Director log issue when `[director] log_issue` sets one (a number, or `owner/repo#N`)."""
+    log = (cfg.get("director") or {}).get("log_issue")
+    if not log:
+        return STEER_REASON
+    return f"{STEER_REASON} ({f'#{log}' if isinstance(log, int) else log})"
+
+
+def schedule_due(spec: dict, last: float | None, now: float) -> bool:
+    """A `[schedule.<role>]` is due when the latest passed `at` time (local "HH:MM", one or a list) came after the
+    last issue it opened, or `every_hours` have passed since then. Never opened: due at once."""
+    at = spec.get("at")
+    if at:
+        _, slot, _ = bulletin_window([at] if isinstance(at, str) else list(at), now)
+        return last is None or last < slot
+    every = float(spec.get("every_hours") or 0)
+    return bool(every) and (last is None or now - last >= every * 3600)
+
+
+def fill(template: str, now: float) -> str:
+    """`{date}` (YYYY-MM-DD) and `{weekday}` in a schedule's title or body, local time; other braces are left alone."""
+    local = time.localtime(now)
+    return template.replace("{date}", time.strftime("%Y-%m-%d", local)).replace("{weekday}", time.strftime("%A", local))
 
 
 def bulletin_window(deadlines: list[str], now: float) -> tuple[float, float, str]:

@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS cooldowns (
     until REAL NOT NULL,
     reason TEXT
 );
+CREATE TABLE IF NOT EXISTS marks (
+    project TEXT NOT NULL,
+    key TEXT NOT NULL,
+    at REAL NOT NULL,
+    PRIMARY KEY (project, key)
+);
 """
 
 
@@ -273,3 +279,15 @@ class Ledger:
         row = self.db.execute("SELECT * FROM cooldowns WHERE provider=?", (provider,)).fetchone()
         now = time.time() if now is None else now
         return dict(row) if row and row["until"] > now else None
+
+    # Marks: when the room last did a once-only thing for a project (notified the owner of #N, opened a scheduled
+    # issue), so it isn't done twice (commonroom#151).
+    def mark(self, project: str | None, key: str, at: float | None = None):
+        with self.db:
+            self.db.execute("INSERT INTO marks (project, key, at) VALUES (?,?,?) "
+                            "ON CONFLICT(project, key) DO UPDATE SET at=excluded.at",
+                            (project or "", key, time.time() if at is None else at))
+
+    def marked(self, project: str | None, key: str) -> float | None:
+        row = self.db.execute("SELECT at FROM marks WHERE project=? AND key=?", (project or "", key)).fetchone()
+        return row["at"] if row else None

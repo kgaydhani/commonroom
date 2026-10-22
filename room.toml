@@ -1,5 +1,5 @@
 # Common Room as a project of its own: the room builds, reviews and merges its own improvements (commonroom#31).
-# The heartbeat ticks this project's dispatcher next to the game's. See docs/design.md, "The room serves itself".
+# The heartbeat ticks this project's dispatcher next to the host project's. See docs/design.md, "The room serves itself".
 [project]
 name = "commonroom"
 repo = "kgaydhani/commonroom"
@@ -11,10 +11,12 @@ worktrees = "D:/Dev/commonroom-wt/room"
 milestone = "Room v3: the room improves itself"
 
 [share]
-# A guest on the game's plan. It uses the host's budget gate (reserves, pace, burn cap, owner yield are read from the
-# host's room.toml at load, so they can't drift apart) and stops when the host's room-wide breakers are open.
-host = "D:/Dev/gamemirage"
-# The game keeps moving: this project's model runs take at most 15% of all autonomous run time per provider over the
+# A guest on the host project's plan. It uses the host's budget gate (reserves, pace, burn cap, owner yield are read
+# from the host's room.toml at load, so they can't drift apart) and stops when the host's room-wide breakers are open.
+# The host is the project the heartbeat runs for (it sets COMMONROOM_HOST, commonroom#151); this path is the fallback
+# for commands run by hand. Owner 2026-10-22: the magazine is the host, gamemirage is paused.
+host = "D:/Dev/magazine"
+# The host keeps moving: this project's model runs take at most 15% of all autonomous run time per provider over the
 # trailing 24 h, unless no other project has used that provider for an hour (then nobody is waiting on it).
 max = 0.15
 hours = 24
@@ -33,7 +35,7 @@ ci = false
 director_paths = ["commonroom/gate.py", "commonroom/config.py", "room.toml"]
 
 [roles]
-# All Claude: one Claude dispatcher serves this project. Codex's build prompt and sandbox are set up for the game.
+# All Claude: one Claude dispatcher serves this project. Codex's sandbox notes come from [prompts] codex, unset here.
 director = ["claude:opus"]
 # Director 2026-10-14 (#119): the weekly Claude allowance is the limit, and size:S builds with written criteria are
 # routine. Sonnet builds them, and Opus still builds size:L/risk:high/builder:heavy and reviews everything. Back to

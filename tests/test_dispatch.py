@@ -82,10 +82,14 @@ class FakeBoard:
     def rerun_failed(self, run_id):
         self.reruns = getattr(self, "reruns", []) + [run_id]
 
-    def create_issue(self, title, body, labels=(), milestone=None):
+    def create_issue(self, title, body, labels=(), milestone=None, assignees=()):
         self.created = getattr(self, "created", []) + [(title, tuple(labels), milestone)]
         self.created_bodies = getattr(self, "created_bodies", []) + [body]
+        self.created_assignees = getattr(self, "created_assignees", []) + [tuple(assignees)]
         return 900
+
+    def ensure_label(self, name):
+        self.ensured = getattr(self, "ensured", []) + [name]
 
     def edit_issue(self, n, title, body):
         self.edited = getattr(self, "edited", []) + [(n, title, body)]
