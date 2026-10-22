@@ -444,6 +444,18 @@ def cmd_services(args) -> int:
     return 0
 
 
+def cmd_tick(args) -> int:
+    """Run the project's `[heartbeat] commands`: per-project jobs that ride the heartbeat (commonroom#151)."""
+    from commonroom import services
+    cfg = config_mod.load()
+    if not cfg.get("_root"):
+        print("No room.toml found; run inside a project")
+        return 2
+    for line in services.tick(cfg):
+        print(time.strftime("%m-%d %H:%M:%S"), line, flush=True)
+    return 0
+
+
 def cmd_stop(args) -> int:
     """Ask a running dispatcher to exit after its current job (used to deploy new room code)."""
     cfg = config_mod.load()
@@ -542,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
     p = sub.add_parser("pause", help="pause autonomous work with a reason: nothing new starts, running workers finish"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor", help="kinds starting with 'pause' let running workers finish"); p.add_argument("--hard", action="store_true", help="also stop running workers now (a runaway, a bad merge)"); p.set_defaults(func=cmd_pause)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
+    sub.add_parser("tick", help="run the project's [heartbeat] commands once").set_defaults(func=cmd_tick)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)
     p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
