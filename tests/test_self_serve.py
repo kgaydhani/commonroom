@@ -7,6 +7,7 @@ import time
 import tomllib
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from commonroom import config, dispatch, gate, usage
 from commonroom.ledger import Ledger
@@ -98,7 +99,9 @@ class Config(unittest.TestCase):
         self.assertTrue((REPO / "AGENTS.md").is_file())
 
     def test_guest_takes_the_hosts_budget_gate(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        # Room workers inherit the heartbeat's COMMONROOM_HOST, which would replace [share] host here (commonroom#155).
+        with mock.patch.dict(os.environ), tempfile.TemporaryDirectory() as tmp:
+            os.environ.pop(config.HOST_ENV, None)
             host, guest = Path(tmp) / "game", Path(tmp) / "room"
             host.mkdir(); guest.mkdir()
             (host / "room.toml").write_text('[project]\nname = "game"\n[budget.claude]\nreserve_weekly = 10\nweekly_slack = 14\n'
