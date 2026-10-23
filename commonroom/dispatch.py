@@ -2119,7 +2119,7 @@ class Dispatcher:
                      f"you started, and review what is there now.")
         else:
             where = (f"Your work so far is on branch `{branch}` (anything uncommitted was preserved as a WIP commit). "
-                     f"Re-check the branch and the issue's comments and labels before you continue.")
+                     f"Check the issue's comments and labels too before you continue.")
         return (f"Your earlier run on this task was stopped before it finished: {why}. You are resuming that session in the "
                 f"same working folder. {where} Re-check the branch and the board for changes since you stopped, then continue "
                 f"where you left off and finish the task.\n"
