@@ -17,6 +17,8 @@ rem - one Codex dispatcher, and extra Claude slots 2 and 3: they build in parall
 rem   weekly use is well under pace. See [parallel] in room.toml.
 rem - Common Room's own dispatcher, run from this checkout: the room improves itself as a guest on the allowance of
 rem   the project this heartbeat runs for, with its share capped by [share] in this folder's room.toml. commonroom#31.
+rem - housekeeping (merges, unblocking) for the host project and for Common Room, with no model and no gate, so a long
+rem   build in slot 1 no longer holds merges back. commonroom#160.
 rem - the project's Claude dispatcher, in the foreground.
 rem The room fast-forwards this checkout after it merges its own PRs, which can rewrite this file while it runs. cmd.exe
 rem reads a batch file one line at a time, so everything below is one block: cmd reads the whole block before running
@@ -30,6 +32,8 @@ rem any of it, and the block exits before cmd would read on. Keep comments out o
   start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude --slot 2 >> "%LOGS%\heartbeat-claude2.log" 2>&1"
   start "" /b cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude --slot 3 >> "%LOGS%\heartbeat-claude3.log" 2>&1"
   if exist "%~dp0room.toml" start "" /b /d "%~dp0." cmd /c ""%PY%" "%~dp0room.py" run --until-idle --provider claude >> "%LOGS%\heartbeat-commonroom-claude.log" 2>&1"
+  start "" /b cmd /c ""%PY%" "%~dp0room.py" housekeep >> "%LOGS%\heartbeat-housekeep.log" 2>&1"
+  if exist "%~dp0room.toml" start "" /b /d "%~dp0." cmd /c ""%PY%" "%~dp0room.py" housekeep >> "%LOGS%\heartbeat-commonroom-housekeep.log" 2>&1"
   "%PY%" "%~dp0room.py" run --until-idle --provider claude >> "%LOGS%\heartbeat-claude.log" 2>&1
   exit /b
 )

@@ -12,6 +12,7 @@ from pathlib import Path
 from commonroom import board, config as config_mod, gate, guard, usage
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom.ledger import Ledger
+from commonroom.lock import acquire_lock
 
 PROVIDERS = ("claude", "codex")
 
@@ -212,26 +213,6 @@ def cmd_run(args) -> int:
             lock.unlink(missing_ok=True)
 
 
-def acquire_lock(path) -> bool:
-    """One dispatcher per project. A lock left by a dead process is taken over."""
-    import os
-    if path.exists():
-        try:
-            pid = int(path.read_text().strip())
-            if pid != os.getpid() and _alive(pid):
-                return False
-        except ValueError:
-            pass
-    path.write_text(str(os.getpid()))
-    return True
-
-
-def _alive(pid: int) -> bool:
-    import subprocess
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-    return str(pid) in out
-
-
 def desktop_window(label: str) -> str | None:
     label = label.lower()
     if "5-hour" in label or "session" in label:
@@ -239,6 +220,39 @@ def desktop_window(label: str) -> str | None:
     if label.startswith("weekly"):
         return "seven_day" if "all models" in label else "seven_day_" + label.split()[-1]
     return None
+
+
+def cmd_housekeep(args) -> int:
+    """Housekeeping on its own, between and during jobs: merges, unblocking, stale claims. Never picks or runs a job."""
+    cfg = config_mod.load()
+    if not cfg.get("_root"):
+        print("No room.toml found; run inside a project")
+        return 2
+    ledger = Ledger()
+    dispatcher = Dispatcher(cfg, ledger, log=lambda line: print(f"{datetime.now():%H:%M:%S} [housekeep] {line}", flush=True))
+    try:
+        if dispatcher.housekeeping_locked():
+            print(f"another housekeeping pass holds {dispatcher.housekeeping_lock}; exiting")
+            return 0
+        housekeep_loop(dispatcher, args.minutes, args.every)
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        ledger.close()
+
+
+def housekeep_loop(dispatcher, minutes: float, every: float, clock=time.time, sleep=time.sleep) -> int:
+    """Run a housekeeping pass now, then every `every` seconds until `minutes` have passed. Returns the passes run."""
+    end = clock() + minutes * 60
+    passes = 0
+    while True:
+        for line in dispatcher.locked_housekeeping() or []:
+            dispatcher.log("   " + line)
+        passes += 1
+        if clock() + every >= end:
+            return passes
+        sleep(every)
 
 
 def cmd_ingest(args) -> int:
@@ -553,6 +567,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
     p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
     p = sub.add_parser("pause", help="pause autonomous work with a reason: nothing new starts, running workers finish"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor", help="kinds starting with 'pause' let running workers finish"); p.add_argument("--hard", action="store_true", help="also stop running workers now (a runaway, a bad merge)"); p.set_defaults(func=cmd_pause)
+    p = sub.add_parser("housekeep", help="merge approved PRs and unblock issues, with no job and no gate"); p.add_argument("--minutes", type=float, default=14); p.add_argument("--every", type=float, default=180); p.set_defaults(func=cmd_housekeep)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
     sub.add_parser("tick", help="run the project's [heartbeat] commands once").set_defaults(func=cmd_tick)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)

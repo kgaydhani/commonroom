@@ -25,6 +25,7 @@ from pathlib import Path
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom.ledger import Ledger
+from commonroom.lock import acquire_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
 DEPENDS = re.compile(r"^(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
@@ -2659,7 +2660,7 @@ class Dispatcher:
         self.refresh_readings(time.time())
         for line in self.recover_orphans():
             self.log("   " + line)
-        report = {"housekeeping": self.safe_housekeeping() if self.only_provider in (None, "claude") and self.slot == 1 else []}
+        report = {"housekeeping": (self.locked_housekeeping() or []) if self.only_provider in (None, "claude") and self.slot == 1 else []}
         for line in report["housekeeping"]:
             self.log("   " + line)
         now = time.time()
@@ -2680,6 +2681,33 @@ class Dispatcher:
         report["job"] = {"kind": job.kind, "provider": provider, "model": model, "reason": job.reason,
                          **self.run_job(job, provider, model)}
         return report
+
+    @property
+    def housekeeping_lock(self) -> Path:
+        return Path(self.ledger.path).parent / f"{self.project or 'default'}-housekeep.lock"
+
+    def housekeeping_locked(self) -> bool:
+        """Does another live process hold the housekeeping lock? (A lock of our own pid or a dead one is free.)"""
+        path = self.housekeeping_lock
+        if not path.exists():
+            return False
+        free = acquire_lock(path)
+        if free:
+            path.unlink(missing_ok=True)
+        return not free
+
+    def locked_housekeeping(self) -> list[str] | None:
+        """One housekeeping pass per project at a time (one merge per pass: commonroom#19). None if another holds it."""
+        if self.dry_run:
+            return self.safe_housekeeping()
+        path = self.housekeeping_lock
+        if not acquire_lock(path):
+            self.log(f"   housekeeping skipped: another pass holds {path.name}")
+            return None
+        try:
+            return self.safe_housekeeping()
+        finally:
+            path.unlink(missing_ok=True)
 
     def safe_housekeeping(self) -> list[str]:
         """Housekeeping, but an exception in it must not stop the pass: the project's builds run the same code."""
