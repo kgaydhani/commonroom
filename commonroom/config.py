@@ -29,6 +29,8 @@ DEFAULTS = {
     # last run (0 turns it off). commonroom#41.
     "director": {"steer_every_hours": 3},
     "board": {"ready_cap": 15},
+    # Worker logs in `~/.commonroom/logs` older than `keep_days` (at least 1) are deleted by housekeeping (commonroom#162).
+    "logs": {"keep_days": 14},
     # `test` is the project's test command. `ci = false` declares the repo has no GitHub CI: housekeeping then merges on
     # a reviewer's approval that states a passing run of `test` on the PR head (dispatch.tested_on_head).
     "checks": {},

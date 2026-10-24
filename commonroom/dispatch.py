@@ -1094,7 +1094,41 @@ class Dispatcher:
             actions += self.cancel_stale_ci_runs()
         actions += self.open_scheduled(everything)
         actions += self.notify_owner(everything)
+        actions += self.prune_logs()
         return actions
+
+    def prune_logs(self, now: float | None = None) -> list[str]:
+        """Delete worker logs older than `[logs] keep_days` (default 14) from the room's log folder, at most once a day
+        (commonroom#162). Only files directly in that folder; at least a day is kept, so a running worker's log is safe."""
+        now = time.time() if now is None else now
+        key = "prune-logs"
+        last = self.ledger.marked(self.project, key)
+        if last is not None and now - last < 24 * 3600:
+            return []
+        try:
+            keep_days = max(1.0, float((self.cfg.get("logs") or {}).get("keep_days", 14)))
+        except (TypeError, ValueError):
+            keep_days = 14.0
+        folder = Path(self.ledger.path).parent / "logs"
+        count = size = 0
+        if folder.is_dir():
+            for path in folder.iterdir():
+                try:
+                    if not path.is_file() or path.is_symlink() or path.stat().st_mtime >= now - keep_days * 86400:
+                        continue
+                    nbytes = path.stat().st_size
+                    if not self.dry_run:
+                        path.unlink()
+                    count += 1
+                    size += nbytes
+                except OSError:
+                    continue
+        if not self.dry_run:
+            self.ledger.mark(self.project, key, now)
+        if not count:
+            return []
+        verb = "would delete" if self.dry_run else "deleted"
+        return [f"{verb} {count} worker log(s) older than {keep_days:g} days, {size / 1e6:.1f} MB"]
 
     def open_scheduled(self, everything: list[dict], now: float | None = None) -> list[str]:
         """Each due `[schedule.<role>]` opens a `role:<role>` + `status:ready` issue (plus its `labels`) in the goal
