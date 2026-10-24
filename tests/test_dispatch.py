@@ -2402,11 +2402,13 @@ class WorktreeLifecycle(unittest.TestCase):
 
     def test_workers_cannot_reach_the_main_checkout_either(self):
         seen = {}
+        orig = workers.subprocess.Popen
         def fake_popen(cmd, **kwargs):
+            if "env" not in kwargs:
+                return orig(cmd, **kwargs)                     # the room's own git calls run for real
             seen.update(kwargs["env"]); raise RuntimeError("not starting a real worker")
         wt = self.base / "auditor-1"
         wt.mkdir(parents=True)
-        orig = workers.subprocess.Popen
         workers.subprocess.Popen = fake_popen
         try:
             with self.assertRaises(RuntimeError):

@@ -74,7 +74,28 @@ class ScratchEnv(unittest.TestCase):
             env = self.start(provider, scratch_env=scratch)
             self.assertEqual(env.get("APPDATA"), os.environ.get("APPDATA"), (provider, scratch))
             self.assertEqual(env.get("GH_CONFIG_DIR"), os.environ.get("GH_CONFIG_DIR"), (provider, scratch))
+        self.assertFalse((self.wt / ".scratch" / "appdata").exists())
+
+    def test_a_codex_worker_temp_is_inside_its_worktree(self):
+        env = workers.worker_env("codex", self.wt)
+        tmp = self.wt / ".scratch" / "tmp"
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            self.assertEqual(Path(env[name]), tmp)
+        self.assertTrue(tmp.is_dir())
+        self.assertTrue(tmp.resolve().is_relative_to(self.wt.resolve()))
+        self.assertEqual(git("status", "--porcelain", cwd=self.wt), "")
+
+    def test_a_claude_worker_temp_stays_worker_tmp(self):
+        env = workers.worker_env("claude", self.wt, ["APPDATA"])
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            self.assertEqual(Path(env[name]), workers.worker_tmp(self.wt))
         self.assertFalse((self.wt / ".scratch").exists())
+
+    def test_a_codex_worker_with_scratch_env_gets_temp_and_appdata(self):
+        env = workers.worker_env("codex", self.wt, ["APPDATA"])
+        self.assertEqual(Path(env["TEMP"]), self.wt / ".scratch" / "tmp")
+        self.assertEqual(Path(env["APPDATA"]), self.wt / ".scratch" / "appdata")
+        self.assertTrue((self.wt / ".scratch" / "appdata").is_dir())
 
     def test_the_dispatcher_passes_the_projects_list_and_nothing_by_default(self):
         root = self.base / "proj"
