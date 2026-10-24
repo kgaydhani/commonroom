@@ -847,6 +847,15 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
 
 
 # The dispatcher ----------------------------------------------------------------------------------
+RESUME_WINDOW = 12 * 3600   # a stopped Claude session older than this starts fresh (commonroom#142)
+
+
+def session_file(worktree, session_id: str, projects_dir: Path | None = None) -> Path:
+    """Where Claude Code keeps a session started in `worktree`: <projects>/<path, non-alphanumerics as '-'>/<id>.jsonl."""
+    root = projects_dir or Path.home() / ".claude" / "projects"
+    return root / usage.session_folder(worktree) / f"{session_id}.jsonl"
+
+
 @dataclass
 class Job:
     kind: str           # build | review | direct
@@ -860,6 +869,7 @@ class Dispatcher:
     def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False, only_provider: str | None = None,
                  slot: int = 1, notifier=None):
         self.cfg, self.ledger, self.log, self.dry_run = cfg, ledger, log, dry_run
+        self.claude_projects = Path.home() / ".claude" / "projects"
         self.slot = slot  # slot 2+ is an extra parallel worker for the same provider (builds only)
         # With one dispatcher per provider, each takes only jobs whose policy choice is its own provider.
         self.only_provider = only_provider
@@ -2039,7 +2049,14 @@ class Dispatcher:
                 labelled = True
             started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             self._worktree, self._provider = worktree, provider
-            result = run_worker(provider, role, self.prompt(job, branch) + self.why() + self.headless_note(), worktree, self.ledger, self.log_dir,
+            resume = self.resumable_run(job, provider, task, worktree, run_id)
+            if resume:
+                self.log(f"   resuming session {resume['session_id']} from run {resume['id']}")
+                prompt = self.continuation_prompt(job, branch, resume) + self.headless_note()
+            else:
+                prompt = self.prompt(job, branch) + self.why() + self.headless_note()
+            result = run_worker(provider, role, prompt, worktree, self.ledger, self.log_dir,
+                                resume_session=resume["session_id"] if resume else None,
                                 model=model, effort=effort, timeout=workers_mod.RUN_TIMEOUT, scratch_env=(self.cfg.get("codex") or {}).get("scratch_env"),
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
@@ -2048,6 +2065,8 @@ class Dispatcher:
                 if provider == "codex" and job.kind == "build":
                     self.publish_sandboxed_work(job, worktree, branch, result)
                 status, outputs, note = self.assess(job, branch, before, started_iso, result)
+            if resume:
+                note = f"resumed session {resume['session_id']} from run {resume['id']}; {note}"
             self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
                                    note, session_id=result.session_id)
             self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
@@ -2073,6 +2092,38 @@ class Dispatcher:
             shutil.rmtree(worker_tmp(worktree), ignore_errors=True)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
+
+    def resumable_run(self, job: Job, provider: str, task: str | None, worktree: Path, run_id: str) -> dict | None:
+        """The earlier Claude run of this build or review to continue instead of starting a fresh session (commonroom#142),
+        or None. It must have been stopped or limited, less than 12 h ago, in this same working folder, with its
+        session file still on disk, and nothing may have run since; after two resumes in a row the third try starts fresh."""
+        if provider != "claude" or job.kind not in ("build", "review") or not task:
+            return None
+        runs = self.ledger.task_runs(self.project, task, 3, exclude=run_id)
+        last = runs[0] if runs else None
+        if (not last or last["role"] != job.role or last["provider"] != "claude" or last["status"] not in ("stopped", "limited")
+                or not last["session_id"] or not last["ended_at"] or time.time() - last["ended_at"] > RESUME_WINDOW
+                or str(last.get("worktree") or "").lower() != str(Path(os.path.abspath(worktree))).lower()
+                or not session_file(worktree, last["session_id"], self.claude_projects).exists()):
+            return None
+        if len(runs) == 3 and all(r["status"] in ("stopped", "limited") for r in runs):
+            return None
+        return last
+
+    def continuation_prompt(self, job: Job, branch: str | None, earlier: dict) -> str:
+        """What a resumed session is told: why it stopped, where its work is, and to look again before carrying on."""
+        why = earlier.get("note") or earlier["status"]
+        if job.kind == "review":
+            sha = (job.pr or {}).get("headRefOid") or self.remote_head(branch) or "unknown"
+            where = (f"PR #{job.pr['number']} is now at head {sha}. Check whether it moved since "
+                     f"you started, and review what is there now.")
+        else:
+            where = (f"Your work so far is on branch `{branch}` (anything uncommitted was preserved as a WIP commit). "
+                     f"Check the issue's comments and labels too before you continue.")
+        return (f"Your earlier run on this task was stopped before it finished: {why}. You are resuming that session in the "
+                f"same working folder. {where} Re-check the branch and the board for changes since you stopped, then continue "
+                f"where you left off and finish the task.\n"
+                f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
 
     def report_timeout(self, job: Job, branch: str | None, result):
         """A build or role run the room ended at its time limit says so on its issue, so the next attempt and the
