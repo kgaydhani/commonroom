@@ -132,6 +132,34 @@ def worker_tmp(cwd) -> Path:
     return Path(cwd.anchor) / "commonroom-tmp" / cwd.name
 
 
+def worker_env(provider: str, cwd, scratch_env: list[str] | None = None) -> dict[str, str]:
+    """The environment a worker starts with. Makes the temp folder (and any scratch folders) it points at."""
+    cwd = Path(cwd)
+    env = usage.clean_env()
+    env["PYTHONUTF8"] = "1"
+    env["COMMONROOM_WORKER"] = "1"   # `room gate` inside a worker answers GO: its start was already gated
+    # Git never searches above the working copy: if it is deleted mid-run, the worker's git fails loudly instead of
+    # finding the owner's main checkout one level up and committing there (commonroom#17).
+    env["GIT_CEILING_DIRECTORIES"] = str(cwd.resolve().parent)
+    if provider == "codex":
+        # The Codex sandbox writes only inside the worktree, so its temp folder lives there too: tempfile in
+        # `commonroom-tmp` failed with WinError 5 and failed tested reviews (commonroom#158).
+        env["TEMP"] = env["TMP"] = env["TMPDIR"] = scratch_dirs(cwd, ["tmp"])["tmp"]
+    else:
+        # Scratch files (render captures run to gigabytes) go on the worktree's drive, never the system drive's
+        # TEMP, which filled up on 2026-10-07.
+        tmp = worker_tmp(cwd)
+        tmp.mkdir(parents=True, exist_ok=True)
+        env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
+    if provider == "codex" and scratch_env:
+        # gh keeps its login under %APPDATA%\GitHub CLI: pin it before APPDATA moves, or every Codex run that needs
+        # GitHub ends BLOCKED with "authentication missing" (gamemirage#428, 11 Oct).
+        if "APPDATA" in scratch_env and "GH_CONFIG_DIR" not in env and env.get("APPDATA"):
+            env["GH_CONFIG_DIR"] = str(Path(env["APPDATA"]) / "GitHub CLI")
+        env.update(scratch_dirs(cwd, scratch_env))
+    return env
+
+
 def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger, log_dir: Path,
                model: str | None = None, effort: str | None = None, timeout: float = RUN_TIMEOUT,
                stop_check=None, resume_session: str | None = None, scratch_env: list[str] | None = None) -> WorkerResult:
@@ -150,23 +178,7 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
         # Every worker runs in its own disposable worktree, so Codex may write there (tests, caches, git).
         cmd = codex_command(model, effort, cwd, writable=True)
         stdin_text = role.prompt + "\n\n" + prompt
-    env = usage.clean_env()
-    env["PYTHONUTF8"] = "1"
-    env["COMMONROOM_WORKER"] = "1"   # `room gate` inside a worker answers GO: its start was already gated
-    # Git never searches above the working copy: if it is deleted mid-run, the worker's git fails loudly instead of
-    # finding the owner's main checkout one level up and committing there (commonroom#17).
-    env["GIT_CEILING_DIRECTORIES"] = str(Path(cwd).resolve().parent)
-    # Scratch files (render captures run to gigabytes) go on the worktree's drive, never the system drive's TEMP,
-    # which filled up on 2026-10-07. The folder is removed when the run ends.
-    tmp = worker_tmp(cwd)
-    tmp.mkdir(parents=True, exist_ok=True)
-    env["TEMP"] = env["TMP"] = env["TMPDIR"] = str(tmp)
-    if provider == "codex" and scratch_env:
-        # gh keeps its login under %APPDATA%\GitHub CLI: pin it before APPDATA moves, or every Codex run that needs
-        # GitHub ends BLOCKED with "authentication missing" (gamemirage#428, 11 Oct).
-        if "APPDATA" in scratch_env and "GH_CONFIG_DIR" not in env and env.get("APPDATA"):
-            env["GH_CONFIG_DIR"] = str(Path(env["APPDATA"]) / "GitHub CLI")
-        env.update(scratch_dirs(cwd, scratch_env))
+    env = worker_env(provider, cwd, scratch_env)
     tree = ProcessTree()
     process = tree.start(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
