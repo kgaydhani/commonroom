@@ -1286,6 +1286,60 @@ class WithLedger(unittest.TestCase):
         for part in ("issue #80", "[agent:playtester]", "kind:bug", "no code PR", "`STATUS: DONE` or `STATUS: BLOCKED`"):
             self.assertIn(part, prompt)
 
+    def background(self, issues, window=None, owner=None, headroom=30, allowed_ok=True, at=None, slot=1, running=None):
+        self.agents("builder", "extractor")
+        cfg = cfg_with(self.tmp.name); cfg["roles"]["extractor"] = ["claude:haiku"]; cfg["roles"]["background"] = ["extractor"]
+        cfg["roles"]["codex_parallel_builds"] = False
+        if window:
+            cfg["roles"]["background_window"] = window
+        detail = {"weekly_pace": 50, "weekly_used": 50 - headroom, "five_hour_used": 0, "owner_active": owner}
+        allowed = {"claude": gate.Verdict(allowed_ok, "ok", detail), "codex": gate.Verdict(False, "dry")}
+        if running:
+            self.ledger.start_run(running, "#1", "builder", "claude")
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None, slot=slot)
+        stamp = datetime.datetime(2026, 10, 24, *(at or (12, 0))).timestamp()
+        with mock.patch.object(dispatch.time, "time", return_value=stamp):
+            return d.pick(allowed)
+
+    def test_background_role_never_goes_ahead_of_a_build(self):
+        both = [issue(90, ["status:ready", "role:extractor"]), issue(91, ["status:ready", "role:builder"])]
+        job, _, _ = self.background(both)
+        self.assertEqual((job.role, job.issue["number"]), ("builder", 91))
+        job, provider, _ = self.background(both[:1])
+        self.assertEqual((job.kind, job.role, job.issue["number"], provider), ("role", "extractor", 90, "claude"))
+
+    def test_background_role_needs_pace_headroom_the_gate_and_an_absent_owner(self):
+        only = [issue(90, ["status:ready", "role:extractor"])]
+        self.assertIsNone(self.background(only, headroom=14))
+        self.assertIsNotNone(self.background(only, headroom=15))
+        self.assertIsNone(self.background(only, allowed_ok=False))
+        self.assertIsNone(self.background(only, owner="D--Docs-career-CV"))
+
+    def test_background_role_waits_for_other_autonomous_runs_in_any_project(self):
+        only = [issue(90, ["status:ready", "role:extractor"])]
+        self.assertIsNone(self.background(only, running="other-project"))
+
+    def test_background_window(self):
+        only = [issue(90, ["status:ready", "role:extractor"])]
+        self.assertIsNone(self.background(only, window="00:00-07:00", at=(12, 0)))
+        self.assertIsNotNone(self.background(only, window="00:00-07:00", at=(3, 0)))
+        self.assertIsNotNone(self.background(only, window="22:00-06:00", at=(23, 30)))
+        self.assertIsNone(self.background(only, window="22:00-06:00", at=(12, 0)))
+
+    def test_pick_extra_never_takes_background_work(self):
+        self.ledger.start_run("t", "#1", "builder", "claude")   # slot 1 busy, so slot 2 may start work
+        only = [issue(90, ["status:ready", "role:extractor"])]
+        self.assertIsNone(self.background(only, slot=2))
+
+    def test_a_role_outside_background_still_queues_with_the_builds(self):
+        self.agents("builder", "extractor", "analyst")
+        cfg = cfg_with(self.tmp.name)
+        cfg["roles"].update(extractor=["claude:haiku"], analyst=["claude:haiku"], background=["extractor"], codex_parallel_builds=False)
+        issues = [issue(90, ["status:ready", "role:analyst"]), issue(91, ["status:ready", "role:builder"], body="")]
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertEqual(d.pick(allowed)[0].issue["number"], 90)   # lower number first by priority, as before
+
     def test_an_unconfigured_role_is_skipped_and_holds_nothing_up(self):
         self.agents("builder", "playtester", "director")
         issues = [issue(80, ["status:ready", "role:playtester"]), issue(81, ["status:ready", "role:art-tech"]),

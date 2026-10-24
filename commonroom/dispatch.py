@@ -245,6 +245,18 @@ def runnable_roles(cfg: dict) -> set[str]:
             if isinstance(spec, list) and root and (Path(root) / ".claude" / "agents" / f"{name}.md").is_file()}
 
 
+def in_window(window: str | None, now: float) -> bool:
+    """Is local time `now` inside "HH:MM-HH:MM" (start inclusive, end exclusive; may wrap midnight)? Unset or
+    malformed means any time."""
+    try:
+        start, end = ((int(h) * 60 + int(m)) for h, m in (part.split(":") for part in str(window).split("-")))
+    except ValueError:
+        return True
+    local = time.localtime(now)
+    minute = local.tm_hour * 60 + local.tm_min
+    return start <= minute < end if start <= end else (minute >= start or minute < end)
+
+
 def find_bash() -> str | None:
     """Git for Windows' bash. Checked before PATH, which can hold WSL's bash.exe and which is minimal under Task Scheduler."""
     import shutil
@@ -1690,6 +1702,36 @@ class Dispatcher:
         routed = next((by_label[l] for l in sorted(labels(issue)) if l in by_label), None)
         return routed or default
 
+    def pace_headroom_ok(self, provider: str, v: gate.Verdict) -> bool:
+        """Weekly use sits at least `[parallel] min_pace_headroom` under the pace line. An unpaced provider
+        ([budget.<p>] pace = false) always passes."""
+        pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
+        paced = ((self.cfg.get("budget") or {}).get(provider) or {}).get("pace", True)
+        if not paced:
+            return True
+        return not (pace is None or used is None or pace - used < (self.cfg.get("parallel") or {}).get("min_pace_headroom", 15))
+
+    def pick_background(self, open_now: list[dict], allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
+        """A ready issue of a `[roles] background` role, only in spare allowance (commonroom#157): the provider's verdict
+        allows it, pace headroom is there, the owner is away, the time is inside `background_window`, and no other
+        autonomous run on that provider is running in any project, so the run's weekly delta is its own."""
+        background = set(self.roles.get("background") or [])
+        if not background or not in_window(self.roles.get("background_window"), time.time()):
+            return None
+        queue = [(i, r) for i, r in self.ready_on_demand(open_now) if r in background]
+        for issue, role in sorted(queue, key=lambda pair: priority(pair[0])):
+            choice = self.choose(self.roles[role], allowed)
+            if not choice:
+                continue
+            provider = choice[0]
+            v = allowed[provider]
+            if v.detail.get("owner_active") or not self.pace_headroom_ok(provider, v):
+                continue
+            if any(r["status"] == "running" for r in self.ledger.recent_runs(None, limit=200, autonomous=True, provider=provider)):
+                continue
+            return Job("role", role, issue=issue, reason=f"#{issue['number']} is ready for the {role} (background, spare allowance)"), *choice
+        return None
+
     def pick_extra(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         """An extra slot for the same provider, only while another is busy, weekly use sits well under the pace line
         and the 5-hour window is under `[parallel] max_5h` (commonroom#15). It takes reviews (short, and they unblock merges), then builds once the queue is deep, then research.
@@ -1699,10 +1741,8 @@ class Dispatcher:
         v = allowed.get(provider)
         if self.slot > int(par.get(f"{provider}_slots", 1)) or not v or not v.allowed:
             return None
-        pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
-        paced = ((self.cfg.get("budget") or {}).get(provider) or {}).get("pace", True)
-        if paced and (pace is None or used is None or pace - used < par.get("min_pace_headroom", 15)):
-            return None   # an unpaced provider ([budget.<p>] pace = false) skips the pace-headroom check
+        if not self.pace_headroom_ok(provider, v):
+            return None
         if v.detail.get("owner_active"):
             return None   # extra slots also yield while the owner is using Claude elsewhere
         if (v.detail.get("five_hour_used") or 0) >= par.get("max_5h", 60):
@@ -1763,6 +1803,7 @@ class Dispatcher:
         ready = self.ready_builds(open_now)
         running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
+        background = set(self.roles.get("background") or [])
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
         if owner:
@@ -1806,7 +1847,7 @@ class Dispatcher:
             if take and allowed.get("codex") and allowed["codex"].allowed:
                 return Job("build", "builder", issue=take, reason=f"#{take['number']} is ready (parallel Codex build)"), "codex", None
         # On-demand roles (playtester, analyst...) queue with the builds by priority, so they never starve behind them.
-        queue = [(i, "builder") for i in ready] + self.ready_on_demand(open_now)
+        queue = [(i, "builder") for i in ready] + [(i, r) for i, r in self.ready_on_demand(open_now) if r not in background]
         for issue, role in sorted(queue, key=lambda pair: priority(pair[0])):
             if role != "builder":
                 choice = self.choose(self.roles[role], allowed)
@@ -1829,7 +1870,7 @@ class Dispatcher:
             issue = self.create_sweep_issue(sweep)
             if issue:
                 return Job("build", "scout", issue=issue, reason=f"scheduled capability sweep: {sweep}"), *self.choose(scout_spec, allowed)
-        return None
+        return self.pick_background(open_now, allowed)
 
     def last_run_at(self, role: str) -> float:
         return next((r["started_at"] for r in self.ledger.recent_runs(self.project, limit=200) if r["role"] == role), 0.0)
