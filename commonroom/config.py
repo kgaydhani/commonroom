@@ -32,6 +32,10 @@ DEFAULTS = {
     # `test` is the project's test command. `ci = false` declares the repo has no GitHub CI: housekeeping then merges on
     # a reviewer's approval that states a passing run of `test` on the PR head (dispatch.tested_on_head).
     "checks": {},
+    # `background = [<role>, ...]` lists on-demand roles whose `role:<name>` issues run only in spare allowance, after
+    # builds, reviews and research: the gate passes, pace headroom is at least `[parallel] min_pace_headroom`, the owner
+    # is away, and no other autonomous run on the provider is running. `background_window = "HH:MM-HH:MM"` (local time,
+    # may wrap midnight) limits them to those hours. Unset: no background roles (commonroom#157).
     "roles": {},
     # A guest project rides on a host project's plan (commonroom#31). `host` is the host's folder: the guest uses the
     # host's budget gate and is held by the host's room-wide stops. `max` caps the guest's share of autonomous run time
