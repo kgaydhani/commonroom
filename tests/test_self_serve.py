@@ -648,6 +648,18 @@ class CarriedStamp(Base):
     cfg = DirectorPaths.cfg
     PATHS = DirectorPaths.PATHS
 
+    def chain(self, merges, plain_at=None):
+        """Fake compare commits like a real merge-from-main: a first-parent chain from HEAD back to the stamp, with
+        single-parent main commits behind each merge's second parent. `plain_at` makes that chain link a plain commit."""
+        shas = [HEAD] + [f"{i:040x}" for i in range(1, merges)]
+        commits = []
+        for i, sha in enumerate(shas):
+            first = shas[i + 1] if i + 1 < len(shas) else self.STAMP
+            main = f"{i + 100:040x}"
+            commits += [{"sha": sha, "parents": [first] if i == plain_at else [first, main]},
+                        {"sha": main, "parents": [f"{i + 200:040x}"]}]
+        return commits
+
     def board(self, compare):
         board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
         board.details[5]["comments"].append(director(head=self.STAMP[:7], at="2026-10-09T11:30:00Z"))
@@ -662,21 +674,41 @@ class CarriedStamp(Base):
         return board
 
     def test_merges_only_touching_docs_keep_the_stamp_and_the_line_names_it(self):
-        board = self.board({"parents": [2, 2], "files": ["docs/a.md"]})
+        board = self.board({"commits": self.chain(2), "files": ["docs/a.md"]})
         actions = self.dispatcher(self.cfg(), board).housekeeping()
         self.assertEqual(board.merged, [5])
         self.assertIn(f"director stamp {self.STAMP[:7]} carried to {HEAD[:7]}: director paths unchanged", actions)
 
     def test_a_director_path_in_the_range_drops_the_stamp(self):
-        board = self.board({"parents": [2], "files": ["docs/a.md", "commonroom/config.py"]})
+        board = self.board({"commits": self.chain(1), "files": ["docs/a.md", "commonroom/config.py"]})
         d = self.dispatcher(self.cfg(), board)
         self.assertIn("waits for the director", " ".join(d.housekeeping()))
         self.assertEqual(board.merged, [])
 
     def test_a_single_parent_commit_drops_the_stamp(self):
-        board = self.board({"parents": [2, 1], "files": ["docs/a.md"]})
+        board = self.board({"commits": self.chain(2, plain_at=0), "files": ["docs/a.md"]})
         self.dispatcher(self.cfg(), board).housekeeping()
         self.assertEqual(board.merged, [])
+
+    def test_a_broken_chain_drops_the_stamp(self):
+        commits = [c for c in self.chain(2) if c["sha"] != f"{1:040x}"]
+        board = self.board({"commits": commits, "files": []})
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [])
+
+    def test_compare_since_resolves_a_short_stamp_and_asks_for_parent_shas(self):
+        calls = []
+
+        def fake_gh(args):
+            calls.append(args)
+            if "commits/aaaaaaa" in args[1]:
+                return {"sha": "a" * 40}
+            return {"total": 1, "commits": [{"sha": "b" * 40, "parents": ["a" * 40, "c" * 40]}], "files": ["x"]}
+        with mock.patch.object(dispatch.board_mod, "gh", fake_gh):
+            found = dispatch.GitHubBoard("o/r").compare_since("aaaaaaa", "b" * 40)
+        self.assertEqual(found["files"], ["x"])
+        self.assertIn(f"compare/{'a' * 40}...{'b' * 40}", calls[1][1])
+        self.assertIn("parents: [.parents[].sha]", calls[1][3])
 
     def test_a_failing_compare_waits_without_crashing(self):
         board = self.board(RuntimeError("boom"))
@@ -685,20 +717,20 @@ class CarriedStamp(Base):
         self.assertTrue(any("waits for the director" in a for a in actions))
 
     def test_a_newer_director_changes_is_not_carried(self):
-        board = self.board({"parents": [2], "files": []})
+        board = self.board({"commits": self.chain(1), "files": []})
         board.details[5]["comments"].append(director(verdict="CHANGES", head=self.STAMP[:7], at="2026-10-09T12:30:00Z"))
         self.dispatcher(self.cfg(), board).housekeeping()
         self.assertEqual(board.merged, [])
 
     def test_one_compare_per_pair_in_a_pass(self):
-        board = self.board({"parents": [2], "files": []})
+        board = self.board({"commits": self.chain(1), "files": []})
         d = self.dispatcher(self.cfg(), board)
         d.housekeeping()
         d.ready_for_director()
         self.assertEqual(len(board.compared), 1)
 
     def test_no_director_paths_never_compares(self):
-        board = self.board({"parents": [2], "files": []})
+        board = self.board({"commits": self.chain(1), "files": []})
         board.details[5]["files"] = []
         self.dispatcher(self.cfg(paths=None), board).housekeeping()
         self.assertEqual((board.merged, board.compared), ([5], []))

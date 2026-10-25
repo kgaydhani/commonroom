@@ -292,6 +292,21 @@ def git(args: list[str], cwd: Path) -> str:
     return done.stdout.strip()
 
 
+def merges_back_to(commits: list[dict], head: str, stamp: str) -> bool:
+    """True when walking first parents from `head` reaches `stamp` and every commit on the way is a merge. Commits that
+    main brought in sit behind the merges' second parents and are not on this chain."""
+    by_sha = {c["sha"].lower(): [p.lower() for p in c["parents"]] for c in commits}
+    cur = head
+    for _ in range(len(by_sha) + 1):
+        if cur.startswith(stamp) or stamp.startswith(cur):
+            return True
+        parents = by_sha.get(cur)
+        if not parents or len(parents) < 2:
+            return False
+        cur = parents[0]
+    return False
+
+
 class GitHubBoard:
     """Board operations through `gh`. Swappable for a fake in tests."""
 
@@ -388,12 +403,14 @@ class GitHubBoard:
         return behind
 
     def compare_since(self, base: str, head: str) -> dict:
-        """What lies between two commits: `parents` is the parent count of each commit after `base`, `files` the paths
+        """What lies between two commits: `commits` is each commit after `base` with its parent shas, `files` the paths
         changed. Raises when GitHub's answer is cut short (it caps commits and files), so no one trusts a partial one."""
+        if len(base) < 40:   # a `HEAD:` stamp may be a short sha
+            base = (board_mod.gh(["api", f"repos/{self.repo}/commits/{base}", "--jq", "{sha: .sha}"]) or {}).get("sha") or base
         compare = board_mod.gh(["api", f"repos/{self.repo}/compare/{base}...{head}", "--jq",
-                                "{total: .total_commits, parents: [.commits[].parents | length], "
+                                "{total: .total_commits, commits: [.commits[] | {sha: .sha, parents: [.parents[].sha]}], "
                                 "files: [(.files // [])[].filename]}"]) or {}
-        if compare.get("total") is None or compare["total"] != len(compare.get("parents") or []) or len(compare.get("files") or []) >= 300:
+        if compare.get("total") is None or compare["total"] != len(compare.get("commits") or []) or len(compare.get("files") or []) >= 300:
             raise RuntimeError(f"compare {base[:7]}...{head[:7]} is incomplete")
         return compare
 
