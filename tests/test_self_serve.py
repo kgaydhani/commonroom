@@ -641,5 +641,68 @@ class PullSafety(unittest.TestCase):
         self.assertTrue(block[-2].strip().endswith('--provider claude >> "%LOGS%\\heartbeat-claude.log" 2>&1'))
 
 
+
+class CarriedStamp(Base):
+    """commonroom#168: a director stamp survives merge commits that leave the director paths unchanged."""
+    STAMP = "aaaaaaa1111111"
+    cfg = DirectorPaths.cfg
+    PATHS = DirectorPaths.PATHS
+
+    def board(self, compare):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        board.details[5]["comments"].append(director(head=self.STAMP[:7], at="2026-10-09T11:30:00Z"))
+        board.compared = []
+
+        def compare_since(base, head):
+            board.compared.append((base, head))
+            if isinstance(compare, Exception):
+                raise compare
+            return compare
+        board.compare_since = compare_since
+        return board
+
+    def test_merges_only_touching_docs_keep_the_stamp_and_the_line_names_it(self):
+        board = self.board({"parents": [2, 2], "files": ["docs/a.md"]})
+        actions = self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [5])
+        self.assertIn(f"director stamp {self.STAMP[:7]} carried to {HEAD[:7]}: director paths unchanged", actions)
+
+    def test_a_director_path_in_the_range_drops_the_stamp(self):
+        board = self.board({"parents": [2], "files": ["docs/a.md", "commonroom/config.py"]})
+        d = self.dispatcher(self.cfg(), board)
+        self.assertIn("waits for the director", " ".join(d.housekeeping()))
+        self.assertEqual(board.merged, [])
+
+    def test_a_single_parent_commit_drops_the_stamp(self):
+        board = self.board({"parents": [2, 1], "files": ["docs/a.md"]})
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [])
+
+    def test_a_failing_compare_waits_without_crashing(self):
+        board = self.board(RuntimeError("boom"))
+        actions = self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [])
+        self.assertTrue(any("waits for the director" in a for a in actions))
+
+    def test_a_newer_director_changes_is_not_carried(self):
+        board = self.board({"parents": [2], "files": []})
+        board.details[5]["comments"].append(director(verdict="CHANGES", head=self.STAMP[:7], at="2026-10-09T12:30:00Z"))
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(board.merged, [])
+
+    def test_one_compare_per_pair_in_a_pass(self):
+        board = self.board({"parents": [2], "files": []})
+        d = self.dispatcher(self.cfg(), board)
+        d.housekeeping()
+        d.ready_for_director()
+        self.assertEqual(len(board.compared), 1)
+
+    def test_no_director_paths_never_compares(self):
+        board = self.board({"parents": [2], "files": []})
+        board.details[5]["files"] = []
+        self.dispatcher(self.cfg(paths=None), board).housekeeping()
+        self.assertEqual((board.merged, board.compared), ([5], []))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -387,6 +387,16 @@ class GitHubBoard:
                 behind = behind_from(tip["sha"])
         return behind
 
+    def compare_since(self, base: str, head: str) -> dict:
+        """What lies between two commits: `parents` is the parent count of each commit after `base`, `files` the paths
+        changed. Raises when GitHub's answer is cut short (it caps commits and files), so no one trusts a partial one."""
+        compare = board_mod.gh(["api", f"repos/{self.repo}/compare/{base}...{head}", "--jq",
+                                "{total: .total_commits, parents: [.commits[].parents | length], "
+                                "files: [(.files // [])[].filename]}"]) or {}
+        if compare.get("total") is None or compare["total"] != len(compare.get("parents") or []) or len(compare.get("files") or []) >= 300:
+            raise RuntimeError(f"compare {base[:7]}...{head[:7]} is incomplete")
+        return compare
+
     def update_branch(self, number: int):
         """Merge the base branch into the PR's branch on GitHub (no model run). Raises when that conflicts."""
         board_mod.gh(["pr", "update-branch", str(number), "--repo", self.repo])
@@ -555,6 +565,19 @@ def director_approved(detail: dict) -> bool:
     head = head_sha(detail).lower()
     return (verdict_of(body) == "APPROVE" and bool(head)
             and any(head.startswith(m.group(1).lower()) for m in HEAD_LINE.finditer(body)))
+
+
+def director_stamps(detail: dict) -> list[str]:
+    """The `HEAD:` shas of the director's newest verdict on the PR when it is an APPROVE, whenever it was posted
+    (commonroom#168: such a stamp can be carried across merge commits). Else []."""
+    newest = None
+    for c in detail.get("comments") or []:
+        body = (c.get("body") or "").strip()
+        if verdict_of(body) and body.startswith(DIRECTOR_MARK):
+            newest = body
+    if newest is None or verdict_of(newest) != "APPROVE":
+        return []
+    return [m.group(1).lower() for m in HEAD_LINE.finditer(newest)]
 
 
 def head_sha(detail: dict) -> str:
@@ -902,6 +925,7 @@ class Dispatcher:
         self.ci = config_mod.has_ci(cfg)
         # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
+        self.carry_cache = {}   # (stamp sha, head sha) -> may the stamp be carried; one compare per pair per pass
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
         # Pushes owner notifications to a phone (`[notify]`, commonroom#151). None: nothing is sent.
         self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
@@ -931,6 +955,7 @@ class Dispatcher:
     # Housekeeping (no model) -----------------------------------------------------------------------
     def housekeeping(self) -> list[str]:
         actions = []
+        self.carry_cache = {}
         everything = self.board.all_issues()
         state = {i["number"]: i["state"] for i in everything}
         prs = self.board.open_prs()
@@ -1054,6 +1079,9 @@ class Dispatcher:
                         output["quiet"] = quiet
                     self.ledger.finish_run(run, "done", outputs=[output])
                 actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
+                carried = self.carried_stamp(detail) if self.needs_director(detail) else ""
+                if carried:
+                    actions.append(f"director stamp {carried[:7]} carried to {head_sha(detail)[:7]}: director paths unchanged")
                 if not self.dry_run:
                     actions += self.playtest_after_merge(pr, detail, everything)
                 if issue_no:
@@ -1572,7 +1600,29 @@ class Dispatcher:
                                       if not (c.get("body") or "").strip().startswith(DIRECTOR_MARK)]}
 
     def waits_for_director(self, detail: dict) -> bool:
-        return self.needs_director(detail) and not director_approved(detail)
+        return self.needs_director(detail) and not director_approved(detail) and not self.carried_stamp(detail)
+
+    def carried_stamp(self, detail: dict) -> str:
+        """The director's stamp sha A that still counts for the PR head B, or ''. It does when every commit in A..B is
+        a merge and no file changed in A..B matches `[merge] director_paths`, even one main changed: the director
+        looks again whenever a director path moves (commonroom#168). Any doubt, or an error, means no."""
+        head = head_sha(detail).lower()
+        if not head:
+            return ""
+        for stamp in director_stamps(detail):
+            if head.startswith(stamp):
+                return ""
+            key = (stamp, head)
+            if key not in self.carry_cache:
+                try:
+                    found = self.board.compare_since(stamp, head)
+                    self.carry_cache[key] = (bool(found["parents"]) and all(n >= 2 for n in found["parents"])
+                                             and not any(fnmatch.fnmatchcase(f, g) for f in found["files"] for g in self.director_paths))
+                except Exception:
+                    continue   # not cached: the next pass asks again
+            if self.carry_cache[key]:
+                return stamp
+        return ""
 
     def director_rejected(self, detail: dict) -> bool:
         return self.needs_director(detail) and director_verdict(detail) == "CHANGES"
