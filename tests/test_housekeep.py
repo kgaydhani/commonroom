@@ -105,10 +105,6 @@ class Heartbeat(unittest.TestCase):
         self.assertFalse(any(l.lstrip().startswith("rem") for l in lines[start:end]))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PruneLogs(Base):
     DAY = 86400
 
@@ -146,6 +142,26 @@ class PruneLogs(Base):
         self.assertIn("1 worker log", actions[0])
         self.assertIn("2.0 MB", actions[0])
 
+    def test_prunes_the_project_log_folder_without_recursing(self):
+        d = self.dispatcher()
+        proj = Path(self.tmp.name) / "logs" / (d.project or "default")
+        proj.mkdir(parents=True, exist_ok=True)
+        old, new = proj / "old.jsonl", proj / "new.jsonl"
+        for f, age in ((old, 20 * self.DAY), (new, self.DAY)):
+            f.write_text("x")
+            os.utime(f, (self.now - age,) * 2)
+        deep = proj / "nested"
+        deep.mkdir()
+        inner = deep / "inner.jsonl"
+        inner.write_text("x")
+        os.utime(inner, (self.now - 99 * self.DAY,) * 2)
+        top = self.make("deploy.log", 20 * self.DAY)
+        actions = d.prune_logs(self.now)
+        self.assertFalse(old.exists() or top.exists())
+        self.assertTrue(new.exists() and inner.exists())
+        self.assertEqual(len(actions), 1)
+        self.assertIn("2 worker log", actions[0])
+
     def test_keep_days_zero_still_keeps_a_file_from_an_hour_ago(self):
         recent = self.make("running.jsonl", 3600)
         old = self.make("old.jsonl", 2 * self.DAY)
@@ -177,3 +193,9 @@ class PruneLogs(Base):
         d.prune_logs(self.now)
         self.assertTrue(old.exists())
         self.assertIsNone(self.ledger.marked(d.project, "prune-logs"))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+

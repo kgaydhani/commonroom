@@ -1098,8 +1098,9 @@ class Dispatcher:
         return actions
 
     def prune_logs(self, now: float | None = None) -> list[str]:
-        """Delete worker logs older than `[logs] keep_days` (default 14) from the room's log folder, at most once a day
-        (commonroom#162). Only files directly in that folder; at least a day is kept, so a running worker's log is safe."""
+        """Delete worker logs older than `[logs] keep_days` (default 14) from the room's log folder and this project's
+        `logs/<project>` folder (where its worker runs write), at most once a day (commonroom#162). Only files directly
+        in those folders, no recursion; at least a day is kept, so a running worker's log is safe."""
         now = time.time() if now is None else now
         key = "prune-logs"
         last = self.ledger.marked(self.project, key)
@@ -1109,9 +1110,10 @@ class Dispatcher:
             keep_days = max(1.0, float((self.cfg.get("logs") or {}).get("keep_days", 14)))
         except (TypeError, ValueError):
             keep_days = 14.0
-        folder = Path(self.ledger.path).parent / "logs"
         count = size = 0
-        if folder.is_dir():
+        for folder in (Path(self.ledger.path).parent / "logs", self.log_dir):
+            if not folder.is_dir():
+                continue
             for path in folder.iterdir():
                 try:
                     if not path.is_file() or path.is_symlink() or path.stat().st_mtime >= now - keep_days * 86400:
