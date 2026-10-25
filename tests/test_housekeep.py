@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import io
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -104,5 +105,97 @@ class Heartbeat(unittest.TestCase):
         self.assertFalse(any(l.lstrip().startswith("rem") for l in lines[start:end]))
 
 
+class PruneLogs(Base):
+    DAY = 86400
+
+    def setUp(self):
+        super().setUp()
+        self.logs = Path(self.tmp.name) / "logs"
+        self.logs.mkdir()
+        self.now = 1_000_000_000.0
+
+    def make(self, name, age_s, size=1000):
+        path = self.logs / name
+        path.write_bytes(b"x" * size)
+        os.utime(path, (self.now - age_s, self.now - age_s))
+        return path
+
+    def prune(self, **logs):
+        d = self.dispatcher()
+        if logs:
+            d.cfg["logs"] = logs
+        return d, d.prune_logs(self.now)
+
+    def test_deletes_old_files_keeps_new_files_and_subfolders_and_reports(self):
+        old = self.make("old.jsonl", 20 * self.DAY, 2_000_000)
+        new = self.make("new.jsonl", 3 * self.DAY)
+        sub = self.logs / "deploy"
+        sub.mkdir()
+        inner = sub / "inner.log"
+        inner.write_text("x")
+        os.utime(inner, (self.now - 99 * self.DAY,) * 2)
+        os.utime(sub, (self.now - 99 * self.DAY,) * 2)
+        _, actions = self.prune()
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists() and inner.exists())
+        self.assertEqual(len(actions), 1)
+        self.assertIn("1 worker log", actions[0])
+        self.assertIn("2.0 MB", actions[0])
+
+    def test_prunes_the_project_log_folder_without_recursing(self):
+        d = self.dispatcher()
+        proj = Path(self.tmp.name) / "logs" / (d.project or "default")
+        proj.mkdir(parents=True, exist_ok=True)
+        old, new = proj / "old.jsonl", proj / "new.jsonl"
+        for f, age in ((old, 20 * self.DAY), (new, self.DAY)):
+            f.write_text("x")
+            os.utime(f, (self.now - age,) * 2)
+        deep = proj / "nested"
+        deep.mkdir()
+        inner = deep / "inner.jsonl"
+        inner.write_text("x")
+        os.utime(inner, (self.now - 99 * self.DAY,) * 2)
+        top = self.make("deploy.log", 20 * self.DAY)
+        actions = d.prune_logs(self.now)
+        self.assertFalse(old.exists() or top.exists())
+        self.assertTrue(new.exists() and inner.exists())
+        self.assertEqual(len(actions), 1)
+        self.assertIn("2 worker log", actions[0])
+
+    def test_keep_days_zero_still_keeps_a_file_from_an_hour_ago(self):
+        recent = self.make("running.jsonl", 3600)
+        old = self.make("old.jsonl", 2 * self.DAY)
+        self.prune(keep_days=0)
+        self.assertTrue(recent.exists())
+        self.assertFalse(old.exists())
+
+    def test_second_prune_within_a_day_does_not_scan(self):
+        d, _ = self.prune()
+        old = self.make("late.jsonl", 20 * self.DAY)
+        with mock.patch.object(Path, "iterdir", side_effect=AssertionError("scanned")):
+            self.assertEqual(d.prune_logs(self.now + self.DAY - 60), [])
+        self.assertTrue(old.exists())
+        self.assertEqual(len(d.prune_logs(self.now + self.DAY + 60)), 1)
+        self.assertFalse(old.exists())
+
+    def test_configured_keep_days_is_honoured(self):
+        mid = self.make("mid.jsonl", 20 * self.DAY)
+        old = self.make("old.jsonl", 40 * self.DAY)
+        self.prune(keep_days=30)
+        self.assertTrue(mid.exists())
+        self.assertFalse(old.exists())
+
+    def test_default_is_fourteen_days_and_dry_run_deletes_nothing(self):
+        self.assertEqual(config.DEFAULTS["logs"]["keep_days"], 14)
+        old = self.make("old.jsonl", 20 * self.DAY)
+        d = self.dispatcher()
+        d.dry_run = True
+        d.prune_logs(self.now)
+        self.assertTrue(old.exists())
+        self.assertIsNone(self.ledger.marked(d.project, "prune-logs"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
