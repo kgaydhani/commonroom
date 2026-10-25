@@ -1319,6 +1319,22 @@ class WithLedger(unittest.TestCase):
         only = [issue(90, ["status:ready", "role:extractor"])]
         self.assertIsNone(self.background(only, running="other-project"))
 
+    def test_background_role_ignores_orphaned_running_rows_of_other_projects(self):
+        only = [issue(90, ["status:ready", "role:extractor"])]
+        old = self.ledger.start_run("gone", "#1", "builder", "claude", now=datetime.datetime(2026, 10, 24, 12, 0).timestamp() - dispatch.ORPHAN_AGE - 60)
+        self.assertIsNotNone(self.background(only))
+        self.assertEqual(self.ledger.db.execute("SELECT status FROM runs WHERE id=?", (old,)).fetchone()[0], "running")
+
+    def test_background_role_ignores_a_running_row_with_a_dead_pid(self):
+        only = [issue(90, ["status:ready", "role:extractor"])]
+        run = self.ledger.start_run("gone", "#1", "builder", "claude")
+        with self.ledger.db:
+            self.ledger.db.execute("UPDATE runs SET pid=? WHERE id=?", (os.getpid() + 1, run))
+        with mock.patch.object(dispatch, "pid_alive", return_value=False):
+            self.assertIsNotNone(self.background(only))
+        with mock.patch.object(dispatch, "pid_alive", return_value=True):
+            self.assertIsNone(self.background(only))
+
     def test_background_window(self):
         only = [issue(90, ["status:ready", "role:extractor"])]
         self.assertIsNone(self.background(only, window="00:00-07:00", at=(12, 0)))

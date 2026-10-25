@@ -869,6 +869,12 @@ def session_file(worktree, session_id: str, projects_dir: Path | None = None) ->
     return root / usage.session_folder(worktree) / f"{session_id}.jsonl"
 
 
+def orphaned(run: dict, now: float) -> bool:
+    """A 'running' row whose dispatcher is gone: older than ORPHAN_AGE, or its pid (not ours) is dead."""
+    dead = run.get("pid") and run["pid"] != os.getpid() and not pid_alive(run["pid"])
+    return bool(dead) or now - run["started_at"] >= ORPHAN_AGE
+
+
 @dataclass
 class Job:
     kind: str           # build | review | direct
@@ -1764,8 +1770,10 @@ class Dispatcher:
             v = allowed[provider]
             if v.detail.get("owner_active") or not self.pace_headroom_ok(provider, v):
                 continue
-            if any(r["status"] == "running" for r in self.ledger.recent_runs(None, limit=200, autonomous=True, provider=provider)):
-                continue
+            now = time.time()
+            if any(r["status"] == "running" and not orphaned(r, now)
+                   for r in self.ledger.recent_runs(None, limit=200, autonomous=True, provider=provider)):
+                continue   # an orphan of a project nobody dispatches is not counted, and not closed here
             return Job("role", role, issue=issue, reason=f"#{issue['number']} is ready for the {role} (background, spare allowance)"), *choice
         return None
 
@@ -2666,8 +2674,7 @@ class Dispatcher:
         now = time.time() if now is None else now
         actions = []
         for run in self.ledger.running_runs(self.project):
-            dead = run.get("pid") and run["pid"] != os.getpid() and not pid_alive(run["pid"])
-            if not dead and now - run["started_at"] < ORPHAN_AGE:
+            if not orphaned(run, now):
                 continue
             if self.dry_run or not self.ledger.close_orphan(run["id"], "dispatcher died mid-run (shutdown or crash); work saved, task requeued", now):
                 continue
