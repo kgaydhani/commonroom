@@ -12,20 +12,35 @@ from commonroom import config, dispatch, gate, usage, workers
 from commonroom.ledger import Ledger
 
 
+OWNER = {"login": "o"}   # cfg_with's repo is o/t: the owner, whose account the agents post as
+
+
+def owned(item, pr=False):
+    """gh names the author of every issue, PR and comment it returns; a fixture that names none is the owner's, and a PR
+    fixture is on this repository's own branch (commonroom#176). Tests of strangers set `author` themselves."""
+    item.setdefault("author", OWNER)
+    if pr:
+        item.setdefault("isCrossRepository", False)
+        item.setdefault("headRepositoryOwner", OWNER)
+    for c in item.get("comments") or []:
+        c.setdefault("author", OWNER)
+    return item
+
+
 class FakeBoard:
     def __init__(self, issues, prs=None, details=None):
         self.issues, self.prs, self.details = issues, prs or [], details or {}
         self.label_calls = []
 
     def open_issues(self, milestone):
-        return [i for i in self.issues if i["state"] == "OPEN"
+        return [owned(i) for i in self.issues if i["state"] == "OPEN"
                 and (not milestone or (i.get("milestone") or {}).get("title") == milestone)]
 
     def all_issues(self):
-        return self.issues
+        return [owned(i) for i in self.issues]
 
     def open_prs(self):
-        return self.prs
+        return [owned(pr, pr=True) for pr in self.prs]
 
     queued, cancelled, queued_error = [], [], None
 
@@ -44,7 +59,7 @@ class FakeBoard:
         return [{"number": n} for n in self.finished]
 
     def pr_detail(self, n):
-        return self.details[n]
+        return owned(self.details[n], pr=True)
 
     def set_labels(self, n, add=(), remove=()):
         self.label_calls.append((n, tuple(add), tuple(remove)))
@@ -96,7 +111,7 @@ class FakeBoard:
 
     def issue_comments(self, n, since):
         self.comment_reads = getattr(self, "comment_reads", []) + [n]
-        return next((i["comments"] for i in self.issues if i["number"] == n), [])
+        return [owned(c) for c in next((i["comments"] for i in self.issues if i["number"] == n), [])]
 
 
 class LabelBoard(FakeBoard):
@@ -245,6 +260,8 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(fake.created, [("Playtest after merges: #7", ("role:playtester", "status:ready"), "M0")])
         self.assertIn("- PR #7: Change 7", fake.created_bodies[0])
         self.assertIn("PR #7 touches playtest paths: opened playtest #900", actions)
+        # The next pass reads the new issue from GitHub.
+        issues.append(issue(900, ["role:playtester", "status:ready"], body=fake.created_bodies[0]) | {"title": fake.created[0][0]})
 
         # While it's open, the next matching merge joins it instead of opening another.
         fake, actions = self.playtest_pass(cfg, issues, 8, ["art/units/tank.png"])
@@ -2067,7 +2084,7 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(fake.label_calls, [])
         self.assertEqual(state(), {"status:in-progress"})
 
-        fake.pr_for_branch = lambda branch: {"number": 499, "state": "OPEN"}
+        fake.pr_for_branch = lambda branch: owned({"number": 499, "state": "OPEN"}, pr=True)
         d.remote_head = lambda branch: "new"
         job = dispatch.Job("build", "builder", issue=work, reason="ready")
         status, _, _ = d.assess(job, "i427-x", "old", "", workers.WorkerResult(ok=True, final_text="Fixed.\nSTATUS: DONE"))
