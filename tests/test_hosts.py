@@ -196,7 +196,8 @@ class Schedule(Base):
         d = self.dispatcher()
         d.housekeeping()
         self.assertEqual(len(self.board.created), 1)
-        self.board.issues[-1]["number"] = 901
+        (title, names, _), = self.board.created                       # the next read lists it from GitHub
+        self.board.issues.append(issue(901, names, body=self.board.created_bodies[0], milestone="M0") | {"title": title})
         self.assertEqual([(i["number"], role) for i, role in d.ready_on_demand(self.board.issues)], [(901, "curator")])
 
     def test_a_role_that_cannot_run_is_reported_and_nothing_opens(self):

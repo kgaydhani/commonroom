@@ -11,6 +11,7 @@ from unittest import mock
 
 from commonroom import config, dispatch, gate, usage
 from commonroom.ledger import Ledger
+from test_dispatch import owned
 
 REPO = Path(__file__).resolve().parent.parent
 GAMEMIRAGE = Path("D:/Dev/gamemirage/room.toml")
@@ -28,10 +29,10 @@ class MergeBoard:
     def main_checks(self): return []
     def queued_runs(self): return []
     def cancel_run(self, run_id): self.cancelled.append(run_id)
-    def all_issues(self): return self.issues
-    def open_issues(self, milestone): return [i for i in self.issues if i["state"] == "OPEN"]
-    def open_prs(self): return self.prs
-    def pr_detail(self, n): return self.details[n]
+    def all_issues(self): return [owned(i) for i in self.issues]
+    def open_issues(self, milestone): return [owned(i) for i in self.issues if i["state"] == "OPEN"]
+    def open_prs(self): return [owned(pr, pr=True) for pr in self.prs]
+    def pr_detail(self, n): return owned(self.details[n], pr=True)
     def merge(self, n): self.merged.append(n)
     def set_labels(self, n, add=(), remove=()): self.labels.append((n, tuple(add), tuple(remove)))
     def comment(self, n, body): pass
@@ -552,7 +553,7 @@ class NeedsDirectorLabel(Base):
             d = self.dispatcher(project_cfg(self.tmp.name, name=name), board)
             board.pr_detail = lambda n: self.fail("no director paths and no label: nothing to fetch")
             self.assertEqual(d.ready_for_director(), [])
-            board.pr_detail = lambda n: board.details[n]
+            board.pr_detail = lambda n: owned(board.details[n], pr=True)
             d.housekeeping()
             self.assertEqual(board.merged, [5], name)
 

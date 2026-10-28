@@ -124,6 +124,13 @@ def owner(cfg: dict) -> str:
     return project.get("owner") or str(project.get("repo") or "").split("/", 1)[0]
 
 
+def trusted(cfg: dict) -> set[str]:
+    """The GitHub logins whose issues, comments and PRs the room acts on, lower-cased (commonroom#176): the owner, whose
+    account the agents post as, plus `[project] trusted` (a list, e.g. a co-editor's login). Nobody else."""
+    extra = (cfg.get("project") or {}).get("trusted") or []
+    return {str(login).lower() for login in [owner(cfg), *([extra] if isinstance(extra, str) else extra)] if login}
+
+
 def has_ci(cfg: dict) -> bool:
     """False only when the project declares `[checks] ci = false`."""
     return bool((cfg.get("checks") or {}).get("ci", True))

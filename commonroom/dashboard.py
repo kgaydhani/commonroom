@@ -46,14 +46,16 @@ def worker_tail(ledger: Ledger, project: str, lines: int = 18) -> dict | None:
     return {"file": path.name, "updated": path.stat().st_mtime, "events": events[-lines:], "count": len(events)}
 
 
-def owner_queue(repo: str) -> list[dict]:
-    """Owner tasks with their brief and the conversation so far, soonest due first."""
+def owner_queue(repo: str, trusted: set[str]) -> list[dict]:
+    """Owner tasks with their brief and the conversation so far, soonest due first. Only the trusted logins' comments
+    (commonroom#176): on a public repo anyone can comment, and a stranger's words must never show as the owner's."""
     rows = board.gh(["issue", "list", "--repo", repo, "--label", board.OWNER_LABEL, "--state", "open", "--limit", "50",
                      "--json", "number,title,body,comments,url"]) or []
     queue = []
     for i in rows:
         comments = [{"who": "agent" if (c.get("body") or "").lstrip().startswith("[") else "you",
-                     "body": (c.get("body") or "")[:600], "at": c.get("createdAt")} for c in i.get("comments") or []]
+                     "body": (c.get("body") or "")[:600], "at": c.get("createdAt")} for c in i.get("comments") or []
+                    if str((c.get("author") or {}).get("login") or "").lower() in trusted]
         queue.append({"number": i["number"], "title": i["title"], "due": board.due_date(i["body"]), "url": i["url"],
                       "brief": (i.get("body") or "")[:1500], "comments": comments[-4:]})
     return sorted(queue, key=lambda q: q["due"] or "9999")
@@ -106,7 +108,7 @@ def state(cfg: dict) -> dict:
         }
         if repo:
             result["milestone"] = cached("milestone", 60, lambda: board.milestone(repo, goal) if goal else None)
-            result["owner_queue"] = cached("owner", 30, lambda: owner_queue(repo))
+            result["owner_queue"] = cached("owner", 30, lambda: owner_queue(repo, config_mod.trusted(cfg)))
             result["board"] = cached("board", 45, lambda: [
                 {"number": i["number"], "title": i["title"], "labels": [l["name"] for l in i["labels"]],
                  "milestone": (i.get("milestone") or {}).get("title")}
