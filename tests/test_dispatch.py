@@ -2466,6 +2466,50 @@ class WorktreeLifecycle(unittest.TestCase):
         if os.name == "nt":
             self.assertNotEqual(fresh, path)                                      # Windows can't delete a held file
 
+    def _holder(self, branch="b"):
+        origin = Path(self.tmp.name) / "origin.git"
+        self.git("init", "-q", "--bare", str(origin))
+        self.git("remote", "add", "origin", str(origin))
+        self.git("push", "-q", "origin", f"main:{branch}")
+        self.git("fetch", "-q", "origin")
+        holder = Path(self.tmp.name) / "agent-holder"
+        self.git("worktree", "add", "-q", "-B", branch, str(holder), f"origin/{branch}")
+        return holder
+
+    def test_a_clean_worktree_holding_the_branch_is_detached_for_the_build(self):
+        holder = self._holder()
+        path = self.d.checkout(self.base / "i5-b", "origin/b", "b", False)
+        self.assertEqual(self.git("branch", "--show-current", cwd=path), "b")
+        self.assertEqual(self.git("branch", "--show-current", cwd=holder), "")
+        self.assertTrue((holder / "a.txt").exists())
+
+    def test_a_dirty_holder_raises_with_its_path_and_is_left_alone(self):
+        holder = self._holder()
+        (holder / "a.txt").write_text("changed")
+        with self.assertRaises(RuntimeError) as cm:
+            self.d.checkout(self.base / "i5-b", "origin/b", "b", False)
+        self.assertIn(str(holder), str(cm.exception))
+        self.assertIn("uncommitted", str(cm.exception))
+        self.assertEqual(self.git("branch", "--show-current", cwd=holder), "b")
+        self.assertEqual((holder / "a.txt").read_text(), "changed")
+
+    def test_a_holder_with_commits_not_on_origin_raises_and_keeps_them(self):
+        holder = self._holder()
+        (holder / "new.txt").write_text("n")
+        self.git("add", "-A", cwd=holder); self.git("commit", "-qm", "local", cwd=holder)
+        head = self.git("rev-parse", "HEAD", cwd=holder)
+        with self.assertRaises(RuntimeError) as cm:
+            self.d.checkout(self.base / "i5-b", "origin/b", "b", False)
+        self.assertIn(str(holder), str(cm.exception))
+        self.assertIn("not on origin/b", str(cm.exception))
+        self.assertEqual(self.git("branch", "--show-current", cwd=holder), "b")
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=holder), head)
+
+    def test_the_branch_check_is_skipped_when_nothing_holds_it(self):
+        self._holder("other")
+        path = self.d.checkout(self.base / "i5-b", "origin/other", "b", False)
+        self.assertEqual(self.git("branch", "--show-current", cwd=path), "b")
+
     def test_git_from_a_gutted_worktree_fails_instead_of_using_the_main_checkout(self):
         # commonroom#17: the auditor's worktree lost its .git link mid-run; git there then answered as the main checkout.
         wt = self.base / "i5-x"
