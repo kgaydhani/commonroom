@@ -696,6 +696,11 @@ class CarriedStamp(Base):
         self.dispatcher(self.cfg(), board).housekeeping()
         self.assertEqual(board.merged, [])
 
+    def test_an_empty_parent_never_matches_the_stamp(self):
+        commits = [{"sha": HEAD, "parents": ["", "c" * 40]}]
+        self.assertFalse(dispatch.merges_back_to(commits, HEAD, self.STAMP[:7]))
+        self.assertTrue(dispatch.merges_back_to(self.chain(2), HEAD, self.STAMP[:7]))
+
     def test_compare_since_resolves_a_short_stamp_and_asks_for_parent_shas(self):
         calls = []
 

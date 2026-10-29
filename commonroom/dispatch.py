@@ -298,7 +298,7 @@ def merges_back_to(commits: list[dict], head: str, stamp: str) -> bool:
     by_sha = {c["sha"].lower(): [p.lower() for p in c["parents"]] for c in commits}
     cur = head
     for _ in range(len(by_sha) + 1):
-        if cur.startswith(stamp) or stamp.startswith(cur):
+        if cur and cur.startswith(stamp):
             return True
         parents = by_sha.get(cur)
         if not parents or len(parents) < 2:
@@ -1633,7 +1633,7 @@ class Dispatcher:
             if key not in self.carry_cache:
                 try:
                     found = self.board.compare_since(stamp, head)
-                    self.carry_cache[key] = (bool(found["parents"]) and all(n >= 2 for n in found["parents"])
+                    self.carry_cache[key] = (merges_back_to(found["commits"], head, stamp)
                                              and not any(fnmatch.fnmatchcase(f, g) for f in found["files"] for g in self.director_paths))
                 except Exception:
                     continue   # not cached: the next pass asks again
