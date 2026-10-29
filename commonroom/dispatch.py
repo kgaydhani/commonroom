@@ -590,11 +590,12 @@ def squash_message(number: int, title: str, body: str | None) -> list[str]:
 
 
 # PR state ----------------------------------------------------------------------------------------
-VERDICT = re.compile(r"\s*(?:\[agent:(?:reviewer|director)\]\s*)?REVIEW:\s*(APPROVE|CHANGES)")
+VERDICT = re.compile(r"\s*(?:\[agent:(?:reviewer|director)\]\s*)?REVIEW:\s*(APPROVE|CHANGES|INCOMPLETE)")
 
 
 def verdict_of(body: str | None) -> str | None:
-    """APPROVE or CHANGES if the comment is a review verdict, else None. Only a body that starts with `REVIEW:`, or with
+    """APPROVE, CHANGES or INCOMPLETE (the reviewer's test run couldn't finish: no defect found, no approval either)
+    if the comment is a review verdict, else None. Only a body that starts with `REVIEW:`, or with
     `[agent:reviewer]` or `[agent:director]` and then `REVIEW:`, is one: a verdict quoted in a builder's or the room's
     comment is not (commonroom#58)."""
     m = VERDICT.match(body or "")
@@ -616,6 +617,17 @@ def latest_review(detail: dict) -> str | None:
     """The newest REVIEW verdict posted after the PR's latest commit, or None if it needs (re)review."""
     c = review_comment(detail)
     return verdict_of(c["body"]) if c else None
+
+
+INCOMPLETE_ROUNDS = 2   # this many INCOMPLETE verdicts at one head stop re-reviews and go to the director (commonroom#174)
+
+
+def incomplete_reviews(detail: dict) -> int:
+    """INCOMPLETE verdicts posted since the PR's latest commit, i.e. at its current head."""
+    commits = detail.get("commits") or []
+    last_commit = max((c.get("committedDate") or "" for c in commits), default="")
+    return sum(1 for c in detail.get("comments") or []
+               if (c.get("createdAt") or "") >= last_commit and verdict_of(c.get("body")) == "INCOMPLETE")
 
 
 DIRECTOR_MARK = "[agent:director]"
@@ -675,12 +687,15 @@ def head_sha(detail: dict) -> str:
 TESTS_LINE = re.compile(r"^.*\bTESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
 
 
+INCOMPLETE_LINE = re.compile(r"\bTESTS:\s*INCOMPLETE\b", re.I)   # never a pass, whatever else the comment says
+
+
 def tested_on_head(body: str, head: str, command: str | None) -> bool:
     """A project without CI merges on its reviewer's word, so the approval must state that the reviewer ran the test
     command on the PR head and it passed: a line `TESTS: PASS <head sha> <command>: <result>`. The sha matters because a
     commit pushed while the review ran can still predate the review comment."""
     matches = list(TESTS_LINE.finditer(body or ""))
-    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches):
+    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body or ""):
         return False
     return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
 
@@ -1186,6 +1201,23 @@ class Dispatcher:
                     actions += self.playtest_after_merge(pr, detail, everything)
                 if issue_no:
                     state[issue_no] = "CLOSED"
+            elif review == "INCOMPLETE" and not self.dry_run:
+                # The reviewer's test run couldn't finish: no verdict, so no bounce. Review again, until it keeps
+                # happening at one head (commonroom#174).
+                view = self.reviewer_view(detail)
+                rounds = incomplete_reviews(view)
+                issue = next((i for i in everything if i["number"] == issue_no), None)
+                if (rounds >= INCOMPLETE_ROUNDS and issue and issue["state"] == "OPEN"
+                        and not labels(issue) & {"status:blocked", "needs:director"}):
+                    reasons = [line.strip() for c in view.get("comments") or [] if verdict_of(c.get("body")) == "INCOMPLETE"
+                               for line in (c.get("body") or "").splitlines() if INCOMPLETE_LINE.search(line)]
+                    self.board.set_labels(issue_no, add=["status:blocked", "needs:director"],
+                                          remove=["status:review", "status:in-progress", "needs:changes"])
+                    self.board.comment(issue_no, f"PR #{pr['number']}'s reviewer couldn't finish the test run {rounds} times at "
+                                                 f"the same head, so the room stops re-reviewing it. The director decides: "
+                                                 f"run the tests, or fix what stops them.\n\n"
+                                                 + "\n".join(f"- {r[:300]}" for r in reasons[-rounds:]))
+                    actions.append(f"PR #{pr['number']} review INCOMPLETE {rounds} times; #{issue_no} escalated")
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
                 # Relabelled ready by hand or script without needs:changes: it would rank as fresh work (commonroom#170).
@@ -1790,8 +1822,14 @@ class Dispatcher:
         if not self.ci:
             # No CI: only an approval stating a passing test run on this exact head lets it merge, so an untested
             # approval, or one from before the room merged main into the branch, is reviewed again.
-            return latest_review(self.reviewer_view(detail)) != "CHANGES" and not self.tested(detail)
-        return self.review_verdict(self.reviewer_view(detail)) is None and checks_state(detail) != "red"
+            view = self.reviewer_view(detail)
+            return (latest_review(view) != "CHANGES" and not self.tested(detail)
+                    and incomplete_reviews(view) < INCOMPLETE_ROUNDS)
+        view = self.reviewer_view(detail)
+        verdict = self.review_verdict(view)
+        if verdict == "INCOMPLETE":
+            return incomplete_reviews(view) < INCOMPLETE_ROUNDS and checks_state(detail) != "red"
+        return verdict is None and checks_state(detail) != "red"
 
     def handle_red_ci(self, pr: dict, detail: dict, issue_no: int, everything: list[dict]) -> list[str]:
         failed = failed_checks(detail)
@@ -2704,7 +2742,10 @@ class Dispatcher:
                      f"\nThis repo has no CI: your approval is what merges this PR, so the test run is yours. Run `{test}` "
                      f"here, on the PR head, and approve only if it passes. Put this line in your comment, with the short "
                      f"sha from `git rev-parse --short HEAD`: `TESTS: PASS <sha> {test}: <the result line, e.g. Ran 64 "
-                     f"tests ... OK>` (or `TESTS: FAIL <sha> {test}: <what failed>` with REVIEW: CHANGES). An approval "
+                     f"tests ... OK>` (or `TESTS: FAIL <sha> {test}: <what failed>` with REVIEW: CHANGES). If `{test}` can't finish "
+                     f"(a timeout, a sandbox or environment error, a missing dependency), post `REVIEW: INCOMPLETE` with "
+                     f"`TESTS: INCOMPLETE <sha> {test}: <why>`, never CHANGES for that reason alone: the room reviews again. "
+                     f"Real test failures stay `TESTS: FAIL` with CHANGES. An approval "
                      f"without that line, or for an older commit, does not merge.")
             return (f"Review PR #{p['number']} in {repo} (it implements issue #{m.group(1) if m else '?'}). "
                     f"The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment "
