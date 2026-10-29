@@ -199,7 +199,7 @@ class PureLogic(unittest.TestCase):
 class WithLedger(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
@@ -1228,7 +1228,7 @@ class WithLedger(unittest.TestCase):
         from commonroom import cli
         path = Path(self.tmp.name) / "cli.sqlite3"
         orig = (cli.config_mod.load, cli.Ledger)
-        cli.config_mod.load, cli.Ledger = (lambda: {"project": {"name": "t"}}), (lambda: Ledger(path))
+        cli.config_mod.load, cli.Ledger = (lambda: {"project": {"name": "t"}}), (lambda: Ledger(path, synchronous="OFF"))
         try:
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 cli.main(["pause", "Owner is chatting with the director", "--kind", "paused_by_owner"])
@@ -1236,7 +1236,7 @@ class WithLedger(unittest.TestCase):
             self.assertIn("running workers finish", out.getvalue())
         finally:
             cli.config_mod.load, cli.Ledger = orig
-        ledger = Ledger(path)
+        ledger = Ledger(path, synchronous="OFF")
         kinds = [b["kind"] for b in ledger.open_breakers("t")]
         ledger.close()
         self.assertEqual(kinds, ["paused_by_owner", "paused_by_auditor_hard"])
@@ -1254,7 +1254,7 @@ class WithLedger(unittest.TestCase):
         self.assertEqual((g["runs"], g["wasted"], g["stopped"], g["stopped_minutes"]), (2, 1, 1, 23.2))
         cfg = cfg_with(self.tmp.name); cfg["project"]["repo"] = None          # no board calls
         orig = cli.Ledger
-        cli.Ledger = lambda: Ledger(self.ledger.path)
+        cli.Ledger = lambda: Ledger(self.ledger.path, synchronous="OFF")
         try:
             summary = cli.digest(cfg, 1)["summary"]
         finally:
@@ -1424,7 +1424,7 @@ class WithLedger(unittest.TestCase):
         cfg = cfg_with(self.tmp.name); cfg["project"]["repo"] = None; cfg["roles"]["playtester"] = ["claude:sonnet"]
         run = self.ledger.start_run("t", "#1", "builder", "claude", now=time.time() - 7200); self.ledger.finish_run(run, "done")
         orig = cli.Ledger
-        cli.Ledger = lambda: Ledger(self.ledger.path)
+        cli.Ledger = lambda: Ledger(self.ledger.path, synchronous="OFF")
         try:
             since = cli.digest(cfg, 1)["hours_since_last"]
         finally:
@@ -2178,7 +2178,7 @@ class WithLedger(unittest.TestCase):
 class HousekeepingFailure(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
@@ -2234,7 +2234,7 @@ class StaleClaims(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
@@ -2293,7 +2293,7 @@ class StaleClaims(unittest.TestCase):
 
         cfg = cfg_with(self.tmp.name)
         orig = cli.Ledger, cli.board
-        cli.Ledger, cli.board = (lambda: Ledger(self.ledger.path)), FakeGh
+        cli.Ledger, cli.board = (lambda: Ledger(self.ledger.path, synchronous="OFF")), FakeGh
         try:
             result = cli.digest(cfg, 1)
         finally:
@@ -2383,7 +2383,7 @@ class WorktreeLifecycle(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
         self.root = Path(self.tmp.name) / "game"
         self.root.mkdir()
         self.git("init", "-q", "-b", "main")
@@ -2484,7 +2484,9 @@ class WorktreeLifecycle(unittest.TestCase):
         self.git("worktree", "add", "-q", "-b", "i5-issue-5", str(leftover), "main")
         claude = self.legacy / "agent-a28b11fedd424a3e8"                            # Claude Code's own subagent worktree
         self.git("worktree", "add", "-q", "--detach", str(claude), "main")
-        path, branch = self.d.prepare_worktree(dispatch.Job("build", "builder", issue=self.board.issues[0]), "claude")
+        # The fetch of the not-yet-pushed branch fails and git() retries it after 5 s and 20 s: don't wait for that here.
+        with mock.patch.object(dispatch.time, "sleep"):
+            path, branch = self.d.prepare_worktree(dispatch.Job("build", "builder", issue=self.board.issues[0]), "claude")
         self.assertEqual((path, branch), (self.base / "i5-issue-5", "i5-issue-5"))
         self.assertTrue((path / ".git").exists())
         self.assertFalse(leftover.exists())                                         # it held the branch: removed
@@ -2579,7 +2581,7 @@ class StackedMerge(unittest.TestCase):
         orig = dispatch.board_mod.gh
         dispatch.board_mod.gh = fake_gh
         tmp = tempfile.TemporaryDirectory()
-        ledger = Ledger(Path(tmp.name) / "room.sqlite3")
+        ledger = Ledger(Path(tmp.name) / "room.sqlite3", synchronous="OFF")
         try:
             board = dispatch.GitHubBoard("o/t")
             (fast,) = board.main_checks()

@@ -64,7 +64,7 @@ def project_cfg(root, name="commonroom", ci=False, share=None, host=None):
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
         self._owner = usage.owner_active
         usage.owner_active = lambda *a, **k: None   # this machine's real Claude sessions mustn't sway the tests
 

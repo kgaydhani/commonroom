@@ -17,7 +17,7 @@ class GoldenSerialised(unittest.TestCase):
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()

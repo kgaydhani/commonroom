@@ -22,7 +22,7 @@ class Resume(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.ledger = Ledger(self.root / "room.sqlite3")
+        self.ledger = Ledger(self.root / "room.sqlite3", synchronous="OFF")
         for role in ("builder", "reviewer"):
             (self.root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
             (self.root / ".claude" / "agents" / f"{role}.md").write_text("---\nmodel: sonnet\n---\nX.\n")

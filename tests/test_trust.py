@@ -28,7 +28,7 @@ def from_fork(item):
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
         patcher = mock.patch.object(usage, "owner_active", lambda *a, **k: None)
         patcher.start()
         self.addCleanup(patcher.stop)

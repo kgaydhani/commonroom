@@ -41,7 +41,7 @@ class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.ledger = Ledger(self.root / "room.sqlite3")
+        self.ledger = Ledger(self.root / "room.sqlite3", synchronous="OFF")
         self.cfg = cfg_with(self.root)
 
     def tearDown(self):

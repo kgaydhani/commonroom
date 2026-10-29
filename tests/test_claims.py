@@ -135,7 +135,7 @@ class ClaimChecks(unittest.TestCase):
 class RecordedOnTheRun(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
@@ -174,7 +174,7 @@ class RecordedOnTheRun(unittest.TestCase):
         self.assertNotIn(400, {n for n, _ in board.claim_record.calls})
         cfg = cfg_with(self.tmp.name); cfg["project"]["repo"] = None
         orig = cli.Ledger
-        cli.Ledger = lambda: Ledger(self.ledger.path)
+        cli.Ledger = lambda: Ledger(self.ledger.path, synchronous="OFF")
         try:
             result = cli.digest(cfg, 1)
         finally:
@@ -200,7 +200,7 @@ class RecordedOnTheRun(unittest.TestCase):
         db.execute("INSERT INTO runs (id, project, role, provider, started_at, status) VALUES ('a', 't', 'director', "
                    "'claude', ?, 'done')", (time.time(),))
         db.commit(); db.close()
-        old = Ledger(path)
+        old = Ledger(path, synchronous="OFF")
         try:
             self.assertIn("unverified", {r[1] for r in old.db.execute("PRAGMA table_info(runs)")})
             self.assertEqual(old.recent_runs("t")[0]["unverified"], [])
