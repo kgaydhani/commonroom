@@ -88,5 +88,54 @@ class Shim(unittest.TestCase):
         self.assertEqual(done.stdout.strip(), "1")
 
 
+class ThreadPoolShim(unittest.TestCase):
+    """Run in a subprocess; the shim is imported as if off Windows so its own import-time install does nothing."""
+
+    def run_shim(self, body: str, platform: str = "win32") -> subprocess.CompletedProcess:
+        code = ("import sys; sys.path.insert(0, " + repr(SHIM) + ")\n"
+                "import multiprocessing.pool as mp, multiprocessing.queues as q\n"
+                "real = sys.platform; sys.platform = 'linux'\n"
+                "import sitecustomize as s\n"
+                "sys.platform = real\n"
+                "s.install(" + repr(platform) + ")\n" + body)
+        return python(code, "")
+
+    def test_thread_pool_maps_and_finishes_with_an_in_process_notifier(self):
+        done = self.run_shim(
+            "p = mp.ThreadPool(2)\n"
+            "print(p.map(abs, [-1, -2, -3]), isinstance(p._change_notifier, q.SimpleQueue))\n"
+            "p.close(); p.join()\n"
+            "t = mp.ThreadPool(2); t.map(abs, [1]); t.terminate(); t.join()\n"
+            "print('done')\n")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.splitlines(), ["[1, 2, 3] False", "done"])
+
+    def test_a_thread_pool_subclass_gets_it_too(self):
+        done = self.run_shim(
+            "class Sub(mp.ThreadPool):\n"
+            "    def __init__(self, n):\n"
+            "        super().__init__(n)\n"
+            "p = Sub(2)\n"
+            "print(p.map(abs, [-4]), isinstance(p._change_notifier, q.SimpleQueue))\n"
+            "p.terminate()\n")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "[4] False")
+
+    def test_process_pool_is_untouched(self):
+        done = self.run_shim("print(mp.Pool.__init__.__qualname__, mp.ThreadPool.__init__.__qualname__)")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "Pool.__init__ _thread_pool_init")
+
+    def test_nothing_is_patched_off_windows(self):
+        done = self.run_shim("print(mp.ThreadPool.__init__.__qualname__)", platform="linux")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "ThreadPool.__init__")
+
+    def test_installing_twice_patches_once(self):
+        done = self.run_shim("f = mp.ThreadPool.__init__; s.install('win32'); print(mp.ThreadPool.__init__ is f)")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(done.stdout.strip(), "True")
+
+
 if __name__ == "__main__":
     unittest.main()
