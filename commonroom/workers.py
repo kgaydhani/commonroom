@@ -19,6 +19,7 @@ from commonroom import usage
 from commonroom.ledger import Ledger
 
 RUN_TIMEOUT = 3600   # seconds the room lets one run go; the headless note tells the worker the same number
+CODEX_SITE = Path(__file__).resolve().parent / "codex_site"   # sitecustomize for Codex workers (commonroom#182)
 
 
 @dataclass
@@ -145,6 +146,9 @@ def worker_env(provider: str, cwd, scratch_env: list[str] | None = None) -> dict
         # The Codex sandbox writes only inside the worktree, so its temp folder lives there too: tempfile in
         # `commonroom-tmp` failed with WinError 5 and failed tested reviews (commonroom#158).
         env["TEMP"] = env["TMP"] = env["TMPDIR"] = scratch_dirs(cwd, ["tmp"])["tmp"]
+        # Python 3.13+ makes `tempfile.mkdtemp` folders with an ACL the sandbox's restricted token can't write
+        # into: the shim's sitecustomize gives them the worktree's ACL instead (commonroom#182).
+        env["PYTHONPATH"] = os.pathsep.join(p for p in (str(CODEX_SITE), env.get("PYTHONPATH")) if p)
     else:
         # Scratch files (render captures run to gigabytes) go on the worktree's drive, never the system drive's
         # TEMP, which filled up on 2026-10-07.
