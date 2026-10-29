@@ -206,7 +206,7 @@ class WithLedger(unittest.TestCase):
 
     def test_progress_guarantee(self):
         now = time.time()
-        run = self.ledger.start_run("t", "#1", "builder", "claude", now=now - 3600)
+        run = self.ledger.start_run("t", "#1", "builder", "claude", now=now - 7 * 3600)
         self.ledger.finish_run(run, "failed", now=now - 3000)
         for t, pct in ((now - 3600, 10), (now - 3500, 11), (now - 3400, 10), (now - 3000, 22)):   # incl. a flapping digit
             self.ledger.record_usage([usage.observation("claude", "seven_day", pct, now + 86400, "test")], now=t)
@@ -214,6 +214,16 @@ class WithLedger(unittest.TestCase):
         merge = self.ledger.start_run("t", "#1", "merge", "none", now=now - 100)
         self.ledger.finish_run(merge, "done", outputs=[{"kind": "merge", "ref": "PR #3"}], now=now - 100)
         self.assertIsNone(dispatch.check_progress(self.ledger, "t", now))
+
+    def test_progress_guarantee_waits_six_hours_after_work_starts(self):
+        now = time.time()
+        run = self.ledger.start_run("t", "#1", "builder", "claude", now=now - 3600)
+        self.ledger.finish_run(run, "failed", now=now - 3000)
+        for t, pct in ((now - 3600, 10), (now - 3000, 22)):
+            self.ledger.record_usage([usage.observation("claude", "seven_day", pct, now + 86400, "test")], now=t)
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", now))                   # work began 1 h ago
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", now, attribute=True))
+        self.assertEqual(dispatch.check_progress(self.ledger, "t", now + 6 * 3600)["kind"], "no_progress")
 
     def test_housekeeping_unblocks_and_merges(self):
         issues = [issue(1, ["status:review"], state="CLOSED"), issue(2, ["status:blocked"], body="Depends on #1"),
