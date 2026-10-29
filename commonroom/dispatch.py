@@ -2826,6 +2826,7 @@ class Dispatcher:
             path = path.with_name(f"{path.name}-{int(time.time())}")
         if not clone:
             if branch:
+                self.free_branch(branch, path, start)
                 git(["worktree", "add", "-B", branch, str(path), start], self.root)
             else:
                 git(["worktree", "add", "--detach", str(path), start], self.root)
@@ -2834,6 +2835,32 @@ class Dispatcher:
         git(["clone", "--quiet", "--reference", str(self.root), url, str(path)], self.root)
         git(["checkout", "--quiet", "-B", branch, start] if branch else ["checkout", "--quiet", "--detach", start], path)
         return path
+
+    def free_branch(self, branch: str, path: Path, start: str):
+        """`worktree add -B` refuses a branch another worktree holds (commonroom#186): typically a finished subagent's or
+        a scratchpad, not the room's. Detach a clean one whose HEAD is already on `start`'s history (its files stay);
+        otherwise raise naming it. Never deletes or resets it."""
+        listing = git(["worktree", "list", "--porcelain"], self.root)
+        for block in listing.replace("\r", "").split("\n\n"):
+            fields = dict(line.split(" ", 1) for line in block.splitlines() if " " in line)
+            holder = fields.get("worktree")
+            if fields.get("branch") != f"refs/heads/{branch}" or not holder:
+                continue
+            if Path(holder).resolve() == Path(path).resolve():
+                continue
+            if Path(holder).resolve() == Path(self.root).resolve():
+                raise RuntimeError(f"branch {branch} is checked out in the main checkout {holder}; not detaching it")
+            where = Path(holder)
+            if git(["status", "--porcelain"], where):
+                raise RuntimeError(f"branch {branch} is held by worktree {where}, which has uncommitted changes: "
+                                   f"commit or clear them there (or detach it) so the build can check the branch out")
+            try:
+                git(["merge-base", "--is-ancestor", "HEAD", start], where)
+            except RuntimeError:
+                raise RuntimeError(f"branch {branch} is held by worktree {where}, which has commits that are not on {start}: "
+                                   f"push or move them, then detach that worktree so the build can check the branch out") from None
+            git(["checkout", "--detach"], where)
+            self.log(f"   detached {holder}: it held {branch}, clean and already on {start}")
 
     def find_branch(self, number: int) -> str | None:
         out = git(["branch", "-r", "--list", f"origin/i{number}-*"], self.root)
