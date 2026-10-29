@@ -17,7 +17,7 @@ LIVE = 4242
 class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(self.ledger.close)
         self.lock_path = Path(self.tmp.name) / "t-housekeep.lock"

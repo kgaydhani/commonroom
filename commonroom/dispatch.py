@@ -307,6 +307,10 @@ def merges_back_to(commits: list[dict], head: str, stamp: str) -> bool:
     return False
 
 
+# Who opened a PR and where its head lives, so the room acts only on its trusted logins' own branches (commonroom#176).
+PR_ORIGIN = "author,isCrossRepository,headRepositoryOwner"
+
+
 class GitHubBoard:
     """Board operations through `gh`. Swappable for a fake in tests."""
 
@@ -318,7 +322,7 @@ class GitHubBoard:
 
     def all_issues(self) -> list[dict]:
         return board_mod.gh(["issue", "list", "--repo", self.repo, "--state", "all", "--limit", "500",
-                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt,milestone"],
+                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt,milestone,author"],
                             # 2 MB of JSON: 16 s on a quiet PC, over the 30 s default when the runner is loaded.
                             timeout=120) or []
 
@@ -352,10 +356,11 @@ class GitHubBoard:
         board_mod.gh(["issue", "edit", str(number), "--repo", self.repo, "--title", title, "--body", body])
 
     def issue_comments(self, number: int, since: float) -> list[dict]:
-        """Every comment on an issue updated since `since`, as `createdAt` and `body`: `issue list` stops at 100."""
+        """Every comment on an issue updated since `since`, as `createdAt`, `body` and `author`: `issue list` stops at 100."""
         stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
         pages = board_mod.gh(["api", "--paginate", "--slurp", f"repos/{self.repo}/issues/{number}/comments?since={stamp}&per_page=100"])
-        return [{"createdAt": c.get("created_at"), "body": c.get("body")} for page in pages or [] for c in page]
+        return [{"createdAt": c.get("created_at"), "body": c.get("body"), "author": {"login": (c.get("user") or {}).get("login")}}
+                for page in pages or [] for c in page]
 
     def claim_record(self, number: int, kind: str):
         """One read for checking ACTIONS claims (commonroom#68): the issue or PR, or its timeline events."""
@@ -366,7 +371,7 @@ class GitHubBoard:
 
     def open_prs(self) -> list[dict]:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
-                             "--json", "number,headRefName,headRefOid,url,title,labels"]) or []
+                             "--json", f"number,headRefName,headRefOid,url,title,labels,{PR_ORIGIN}"]) or []
 
     def queued_runs(self) -> list[dict]:
         return board_mod.gh(["run", "list", "--repo", self.repo, "--status", "queued", "--limit", "100",
@@ -383,7 +388,7 @@ class GitHubBoard:
     def pr_detail(self, number: int) -> dict:
         return board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                              "--json", "number,state,headRefName,headRefOid,baseRefName,url,commits,comments,"
-                                       "statusCheckRollup,mergeable,files,labels,createdAt"])
+                                       f"statusCheckRollup,mergeable,files,labels,createdAt,{PR_ORIGIN}"])
 
     def behind_main(self, detail: dict) -> int:
         """Commits on the PR's base branch that its head doesn't contain yet."""
@@ -458,9 +463,10 @@ class GitHubBoard:
         return int(str(url).rstrip("/").rsplit("/", 1)[1])
 
     def pr_for_branch(self, branch: str) -> dict | None:
+        """The newest PR from this repository's own `branch`: a fork's PR can carry the same branch name."""
         prs = board_mod.gh(["pr", "list", "--repo", self.repo, "--head", branch, "--state", "all",
-                            "--json", "number,state,url,headRefName"]) or []
-        return prs[0] if prs else None
+                            "--json", f"number,state,url,headRefName,{PR_ORIGIN}"]) or []
+        return next((pr for pr in prs if pr.get("isCrossRepository") is False), None)
 
     def close_pr(self, number: int, body: str):
         """Close a PR unmerged with a room comment. Its branch stays, so nothing on it is lost."""
@@ -484,7 +490,9 @@ class GitHubBoard:
         if not head:
             return
         for child in board_mod.gh(["pr", "list", "--repo", self.repo, "--base", head, "--state", "open",
-                                   "--json", "number"]) or []:
+                                   "--json", "number,isCrossRepository"]) or []:
+            if child.get("isCrossRepository"):
+                continue   # a fork's PR is never edited by the room (commonroom#176)
             board_mod.gh(["pr", "edit", str(child["number"]), "--repo", self.repo, "--base", base])
         try:
             board_mod.gh(["api", "-X", "DELETE", f"repos/{self.repo}/git/refs/heads/{head}"])
@@ -501,6 +509,65 @@ class GitHubBoard:
             return 0
         board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
         return attempt
+
+
+def login_of(item: dict | None) -> str:
+    """The lower-cased login of whoever wrote an issue, PR or comment; '' when GitHub didn't say."""
+    return str(((item or {}).get("author") or {}).get("login") or "").lower()
+
+
+class TrustedBoard:
+    """The board as the room sees it: only what its trusted logins wrote (commonroom#176). The repos are public, so anyone
+    can open an issue or a PR, or comment, and the room acts on what it reads: a stranger's `REVIEW: APPROVE` on a
+    fork's `i<N>-` PR could have merged code the owner's PC then runs. Issues and comments by anyone else are left out
+    of every read, and so are PRs from another repository or by anyone else, which `untrusted_prs` keeps for the
+    owner's report. No author means untrusted. Writes and everything else pass straight to the board underneath."""
+
+    def __init__(self, board, logins: set[str], repo_owner: str):
+        self.inner, self.logins, self.repo_owner = board, logins, repo_owner.lower()
+        self.untrusted_prs: list[dict] = []
+
+    def __getattr__(self, name):
+        inner = self.__dict__.get("inner")
+        if inner is None:
+            raise AttributeError(name)
+        return getattr(inner, name)
+
+    def trusts(self, item: dict | None) -> bool:
+        return login_of(item) in self.logins
+
+    def own_pr(self, pr: dict | None) -> bool:
+        """A PR the room may review, update or merge: its head is a branch of this repository, opened by a trusted login."""
+        return (bool(pr) and pr.get("isCrossRepository") is False and self.trusts(pr)
+                and str((pr.get("headRepositoryOwner") or {}).get("login") or "").lower() == self.repo_owner)
+
+    def keep_trusted_comments(self, item: dict) -> dict:
+        if any(not self.trusts(c) for c in item.get("comments") or []):
+            item["comments"] = [c for c in item["comments"] if self.trusts(c)]
+        return item
+
+    def open_issues(self, milestone: str | None) -> list[dict]:
+        return [self.keep_trusted_comments(i) for i in self.inner.open_issues(milestone) or [] if self.trusts(i)]
+
+    def all_issues(self) -> list[dict]:
+        return [self.keep_trusted_comments(i) for i in self.inner.all_issues() or [] if self.trusts(i)]
+
+    def issue_comments(self, number: int, since: float) -> list[dict]:
+        return [c for c in self.inner.issue_comments(number, since) or [] if self.trusts(c)]
+
+    def open_prs(self) -> list[dict]:
+        prs = self.inner.open_prs() or []
+        self.untrusted_prs = [pr for pr in prs if not self.own_pr(pr)]
+        return [pr for pr in prs if self.own_pr(pr)]
+
+    def pr_detail(self, number: int) -> dict:
+        """Only trusted comments, and none on a PR that isn't the room's own, so no verdict on it can count."""
+        detail = self.inner.pr_detail(number)
+        return self.keep_trusted_comments(detail) if self.own_pr(detail) else detail | {"comments": []}
+
+    def pr_for_branch(self, branch: str) -> dict | None:
+        pr = self.inner.pr_for_branch(branch)
+        return pr if self.own_pr(pr) else None
 
 
 SQUASH_BODY_MAX = 4000   # well inside Windows' 32 767-character command line
@@ -763,6 +830,8 @@ def pid_alive(pid: int) -> bool:
 
 
 def owner_comments(issue: dict) -> list[dict]:
+    """The owner's own words: comments not by an agent or the room. Only trusted logins' comments reach the room at all
+    (TrustedBoard), and agents post as the owner, so the `[agent:...]`/`[room]` prefix is what tells them apart."""
     return [c for c in issue.get("comments") or [] if not (c.get("body") or "").lstrip().startswith("[")]
 
 
@@ -948,6 +1017,16 @@ class Dispatcher:
         self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
         self.owner = config_mod.owner(cfg)
 
+    @property
+    def board(self) -> TrustedBoard:
+        return self._board
+
+    @board.setter
+    def board(self, board):
+        """Whatever board the room is given, it reads it through TrustedBoard: only its trusted logins' work counts."""
+        repo_owner = str(self.cfg["project"].get("repo") or "").split("/", 1)[0]
+        self._board = board if isinstance(board, TrustedBoard) else TrustedBoard(board, config_mod.trusted(self.cfg), repo_owner)
+
     def worktree_base(self) -> Path:
         """Where worker worktrees go: `[project] worktrees`, or `<project>-wt/room` next to the project. Not the
         project's .claude/worktrees: Claude Code creates and removes its own worktrees there (commonroom#48)."""
@@ -976,6 +1055,7 @@ class Dispatcher:
         everything = self.board.all_issues()
         state = {i["number"]: i["state"] for i in everything}
         prs = self.board.open_prs()
+        actions += self.report_untrusted_prs(self.board.untrusted_prs)
         # An issue in review whose PR was closed unmerged (e.g. a stacked base was deleted) has nothing to review:
         # send it back to its builder, who continues from the preserved branch (gamemirage#278).
         has_pr = {int(m.group(1)) for pr in prs if (m := BRANCH.match(pr["headRefName"]))}
@@ -1148,6 +1228,23 @@ class Dispatcher:
         actions += self.prune_logs()
         return actions
 
+    def report_untrusted_prs(self, prs: list[dict]) -> list[str]:
+        """Open PRs the room never reviews, updates or merges (commonroom#176): from another repository, or opened by a
+        login it doesn't trust. Each is reported once, in the housekeeping log and to the owner's phone."""
+        actions = []
+        for pr in prs:
+            key = f"untrusted-pr:{pr['number']}"
+            if self.ledger.marked(self.project, key) is not None:
+                continue
+            head = f"{(pr.get('headRepositoryOwner') or {}).get('login') or '?'}:{pr.get('headRefName') or '?'}"
+            line = (f"PR #{pr['number']} ({head}, by {login_of(pr) or 'unknown'}) is from another repository or a login "
+                    f"the room doesn't trust: the room won't review, update or merge it; it's the owner's to look at")
+            if not self.dry_run:
+                self.ledger.mark(self.project, key)
+                self.tell_owner(f"{self.cfg['project'].get('name') or ''}: PR #{pr['number']} needs you", line, url=pr.get("url"))
+            actions.append(line)
+        return actions
+
     def prune_logs(self, now: float | None = None) -> list[str]:
         """Delete worker logs older than `[logs] keep_days` (default 14) from the room's log folder and this project's
         `logs/<project>` folder (where its worker runs write), at most once a day (commonroom#162). Only files directly
@@ -1281,7 +1378,9 @@ class Dispatcher:
         (gamemirage#376) and one runner makes each stale run ~23 min of delay (commonroom#138). Never stops a pass."""
         actions = []
         try:
-            stale = stale_ci_runs(self.board.queued_runs(), self.board.open_prs())
+            # Untrusted PRs count as open here too: their runs are cancelled only when superseded, as before.
+            prs = self.board.open_prs()
+            stale = stale_ci_runs(self.board.queued_runs(), prs + self.board.untrusted_prs)
         except Exception as exc:
             return [f"couldn't list queued CI runs: {str(exc)[:100]}"]
         for run_id, reason in stale:
@@ -2078,8 +2177,9 @@ class Dispatcher:
         if time.time() - since < OWNER_COOLDOWN:
             return None
         reasons = []
-        # Agents post as the owner's account, so authorship can't tell them apart. Agent comments start with
-        # `[agent:...]`; the owner-channel bulletin starts with `@<owner>` instead so it reaches his phone.
+        # The board passes only trusted logins' issues and comments (commonroom#176), but agents post as the owner's
+        # account, so authorship can't tell them apart. Agent comments start with `[agent:...]`; the owner-channel
+        # bulletin starts with `@<owner>` instead so it reaches his phone.
         mention = "@" + self.owner
         for issue in self.board.open_issues(None):
             names = labels(issue)

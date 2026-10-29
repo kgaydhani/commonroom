@@ -12,7 +12,7 @@ from test_dispatch import FakeBoard, cfg_with
 class TimeoutNotes(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
         root = Path(self.tmp.name)
         (root / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
         (root / ".claude" / "agents" / "builder.md").write_text("---\nmodel: sonnet\n---\nBuild.\n")

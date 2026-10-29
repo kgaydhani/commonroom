@@ -56,7 +56,7 @@ class WorkerProcessTreeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
-        self.ledger = Ledger(self.base / "room.sqlite3")
+        self.ledger = Ledger(self.base / "room.sqlite3", synchronous="OFF")
         self.wt = self.base / "i50-x"
         self.wt.mkdir()
         self.script = self.base / "worker.py"

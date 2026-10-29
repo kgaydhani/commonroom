@@ -74,13 +74,18 @@ def default_path() -> Path:
     return home / "room.sqlite3"
 
 
+_SYNCHRONOUS = {"NORMAL": 1, "OFF": 0}        # FULL costs an fsync per commit; WAL is safe with NORMAL
+
+
 class Ledger:
-    def __init__(self, path: Path | str | None = None):
+    def __init__(self, path: Path | str | None = None, synchronous: str = "NORMAL"):
+        pragma = _SYNCHRONOUS[synchronous]
         self.path = Path(path) if path else default_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, timeout=5)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute(f"PRAGMA synchronous={pragma}")
         self.db.executescript(SCHEMA)
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
         for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT"),
