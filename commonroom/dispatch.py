@@ -374,7 +374,7 @@ class GitHubBoard:
 
     def open_prs(self) -> list[dict]:
         return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
-                             "--json", f"number,headRefName,headRefOid,url,title,labels,{PR_ORIGIN}"]) or []
+                             "--json", f"number,headRefName,headRefOid,url,title,labels,isDraft,createdAt,body,{PR_ORIGIN}"]) or []
 
     def queued_runs(self) -> list[dict]:
         return board_mod.gh(["run", "list", "--repo", self.repo, "--status", "queued", "--limit", "100",
@@ -2034,11 +2034,29 @@ class Dispatcher:
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready (parallel slot {self.slot})"), *choice
         return None
 
+    def review_order(self, prs: list[dict]) -> list[dict]:
+        """Review candidates in the order to try them (commonroom#150): drafts and PRs waiting on an open PR (or on an
+        open issue that has one) left out; then the linked issue's priority tier (prio:top first, prio:low last), a
+        re-review of a bounced PR (needs:changes) before a first review, and the oldest PR first."""
+        if not prs:
+            return []
+        issues = {i["number"]: i for i in self.board.all_issues()}
+        issue_of = {pr["number"]: int(m.group(1)) for pr in prs if (m := BRANCH.match(pr.get("headRefName") or ""))}
+        open_prs = set(issue_of) | set(issue_of.values())   # `Depends on #N`: N is an open PR, or an issue with one
+
+        def key(pr: dict) -> tuple:
+            _, bounced, tier, _ = priority(issues.get(issue_of.get(pr["number"]), {"number": 0, "labels": []}))
+            return (tier, bounced, pr.get("createdAt") or "", pr["number"])
+
+        ready = [pr for pr in prs if not pr.get("isDraft")
+                 and not (dependencies(pr.get("body")) - {pr["number"], issue_of.get(pr["number"])}) & open_prs]
+        return sorted(ready, key=key)
+
     def pick_review(self, allowed: dict[str, gate.Verdict]) -> tuple[Job, str, str | None] | None:
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
         issue_labels = None
         running = self.busy_tasks()
-        for pr in self.board.open_prs():
+        for pr in self.review_order(self.board.open_prs()):
             m = BRANCH.match(pr["headRefName"])
             # Without CI nothing merges unreviewed, so `review:skip` only applies where CI checks the PR.
             if not m or ("review:skip" in labels(pr) and self.ci) or f"PR #{pr['number']}" in running:
