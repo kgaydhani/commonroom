@@ -2394,12 +2394,13 @@ class Dispatcher:
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
 
     def resumable_run(self, job: Job, provider: str, task: str | None, worktree: Path, run_id: str) -> dict | None:
-        """The earlier Claude run of this build or review to continue instead of starting a fresh session (commonroom#142),
-        or None. It must have been stopped or limited, less than 12 h ago, in this same working folder, with its
+        """The earlier Claude run of this build, review, on-demand role or audit to continue instead of starting a fresh
+        session (commonroom#142, #143), or None. The director never resumes: its triggers change between runs. It must have been stopped or limited, less than 12 h ago, in this same working folder, with its
         session file still on disk, and nothing may have run since; after two resumes in a row the third try starts fresh."""
-        if provider != "claude" or job.kind not in ("build", "review") or not task:
+        if provider != "claude" or job.kind not in ("build", "review", "role", "audit") or (not task and job.kind != "audit"):
             return None
-        runs = self.ledger.task_runs(self.project, task, 3, exclude=run_id)
+        runs = (self.ledger.task_runs(self.project, task, 3, exclude=run_id) if task
+                else self.ledger.role_runs(self.project, job.role, 3, exclude=run_id))
         last = runs[0] if runs else None
         if (not last or last["role"] != job.role or last["provider"] != "claude" or last["status"] not in ("stopped", "limited")
                 or not last["session_id"] or not last["ended_at"] or time.time() - last["ended_at"] > RESUME_WINDOW
@@ -2417,6 +2418,8 @@ class Dispatcher:
             sha = (job.pr or {}).get("headRefOid") or self.remote_head(branch) or "unknown"
             where = (f"PR #{job.pr['number']} is now at head {sha}. Check whether it moved since "
                      f"you started, and review what is there now.")
+        elif not branch:
+            where = "Check the board for changes since you stopped."
         else:
             where = (f"Your work so far is on branch `{branch}` (anything uncommitted was preserved as a WIP commit). "
                      f"Check the issue's comments and labels too before you continue.")
@@ -2792,8 +2795,21 @@ class Dispatcher:
             path = self.checkout(path, f"origin/{branch}", None, clone)
             return path, branch
         path = base / f"{'codex-' if clone else ''}{job.role}-{int(time.time())}"
+        path = self.resume_path(job, provider) or path
         path = self.checkout(path, "origin/main", None, clone)
         return path, None
+
+    def resume_path(self, job: Job, provider: str | None) -> Path | None:
+        """The recorded worktree of a stopped role or audit run that qualifies to resume (commonroom#143), if that path
+        is free now, so the new run starts in the same folder and Claude finds the session."""
+        run_id = getattr(self, "_run_id", None)
+        task = f"#{job.issue['number']}" if job.issue else None
+        runs = (self.ledger.task_runs(self.project, task, 1, exclude=run_id) if task
+                else self.ledger.role_runs(self.project, job.role, 1, exclude=run_id))
+        recorded = Path(runs[0]["worktree"]) if runs and runs[0].get("worktree") else None
+        if not recorded or recorded.exists() or not self.resumable_run(job, provider or "claude", task, recorded, run_id):
+            return None
+        return recorded
 
     def checkout(self, path: Path, start: str, branch: str | None, clone: bool) -> Path:
         self.cleanup_worktree(path, getattr(self, "_run_id", None))
