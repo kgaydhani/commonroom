@@ -530,7 +530,12 @@ def cmd_check(args) -> int:
     poll = float((cfg.get("checks") or {}).get("lock_poll_seconds", 3))
     lock = ledger_mod.default_path().parent / "locks" / f"{_project_name(cfg) or 'default'}-suite.lock"
     deadline, told = time.time() + wait, None
-    while (holder := claim_lock(lock)) is not None:
+    try:
+        holder = claim_lock(lock)
+    except OSError:
+        print("suite lock unavailable here; running unlocked", flush=True)
+        return subprocess.run(test, shell=True, cwd=os.getcwd()).returncode
+    while holder is not None:
         if time.time() >= deadline:
             print("suite lock busy: report TESTS: INCOMPLETE", flush=True)
             return 3
@@ -538,6 +543,7 @@ def cmd_check(args) -> int:
             print(f"waiting for the suite lock (pid {holder})", flush=True)
             told = holder
         time.sleep(min(poll, max(0.05, deadline - time.time())))
+        holder = claim_lock(lock)
     try:
         return subprocess.run(test, shell=True, cwd=os.getcwd()).returncode
     finally:

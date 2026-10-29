@@ -52,6 +52,21 @@ class CheckCommand(unittest.TestCase):
         p = subprocess.Popen([sys.executable, "-c", "pass"]); p.wait()
         return p.pid
 
+    def test_unwritable_room_home_runs_unlocked(self):
+        blocker = Path(self.tmp.name) / "file"
+        blocker.write_text("x")
+        self.env["COMMONROOM_HOME"] = str(blocker / "sub")
+        log = self.project / "log.txt"
+        self.project_with(f"\"{log}\" 0 7")
+        code, out = self.run_check()
+        self.assertEqual(code, 7)
+        self.assertIn("running unlocked", out)
+
+    def test_alive_matches_the_pid_column_only(self):
+        from commonroom.lock import alive
+        self.assertTrue(alive(os.getpid()))
+        self.assertFalse(alive(self.dead_pid()))
+
     def test_two_runs_take_turns(self):
         log = self.project / "log.txt"
         self.project_with(f"\"{log}\" 1.5 0", "lock_poll_seconds = 0.2\n")

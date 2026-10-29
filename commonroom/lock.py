@@ -20,8 +20,9 @@ def acquire_lock(path: Path) -> bool:
 
 
 def alive(pid: int) -> bool:
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
-    return str(pid) in out
+    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                         capture_output=True, text=True).stdout
+    return any(len(f := row.split('","')) > 1 and f[1].strip('"') == str(pid) for row in out.splitlines())
 
 
 def claim_lock(path: Path) -> int | None:
