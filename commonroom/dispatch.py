@@ -59,6 +59,8 @@ STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this l
 EXTERNAL = "claim:external"
 # Issues that re-derive shared golden data conflict when built in parallel: only one is in progress or review at a time (commonroom#52).
 GOLDEN = "risk:golden"
+# Issues sharing an `area:<name>` label touch the same files, so they are built one at a time too (commonroom#161).
+AREA_PREFIX = "area:"
 # Checking a run's ACTIONS claims against GitHub (commonroom#68): the subjects after the first `#N`, the evidence each
 # kind of claim needs (the word nearest before the subjects wins, else the first after them: commonroom#99; "skip" for
 # edits, which leave no timeline event), and how many subjects one run may read.
@@ -779,6 +781,11 @@ MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back 
 CONFLICTS_MAIN = "conflicts with main"   # marks the room's comment that sends a conflicting PR back to its builder
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
 RUN_URL = re.compile(r"(.*/actions/runs/(\d+))")   # a check's workflow run, from its details URL
+
+
+def areas(issue: dict) -> set[str]:
+    """The areas an issue touches: its `area:*` labels, and `risk:golden` as one more."""
+    return {l for l in labels(issue) if l.startswith(AREA_PREFIX) or l == GOLDEN}
 
 
 def merge_main_only(issue: dict) -> bool:
@@ -1921,20 +1928,26 @@ class Dispatcher:
 
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
         running = self.busy_tasks()
-        # A golden issue sent back to merge main still has an open PR, so it holds the others too.
-        golden_held = {i["number"] for i in open_now if GOLDEN in labels(i)
-                       and (labels(i) & {"status:in-progress", "status:review"} or f"#{i['number']}" in running
-                            or merge_main_only(i))}
+        # An issue in an area (`area:*`, or `risk:golden`) that is held (in progress, in review, running, or sent back
+        # to merge main, which still has an open PR) holds every other issue sharing that area.
+        held = [(i["number"], areas(i)) for i in open_now if areas(i)
+                and (labels(i) & {"status:in-progress", "status:review"} or f"#{i['number']}" in running
+                     or merge_main_only(i))]
+
+        def blocked(i: dict) -> bool:
+            return not merge_main_only(i) and any(n != i["number"] and areas(i) & held_areas for n, held_areas in held)
         ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
-                 and f"#{i['number']}" not in running
-                 and not (GOLDEN in labels(i) and golden_held - {i["number"]} and not merge_main_only(i))
+                 and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                       or any(l.startswith("provider:") for l in labels(i)))]
-        # With none held, only the top golden issue is offered, so the Codex path's second pick can't be another one.
-        fresh = [i for i in ready if GOLDEN in labels(i) and not merge_main_only(i)]
-        if len(fresh) > 1:
-            top = min(fresh, key=priority)
-            ready = [i for i in ready if i not in fresh or i is top]
+        # With none held, only the top issue per area is offered, so the Codex path's second pick can't share an area.
+        taken: set[str] = set()
+        chosen = set()
+        for i in sorted((i for i in ready if areas(i) and not merge_main_only(i)), key=priority):
+            if not areas(i) & taken:
+                taken |= areas(i)
+                chosen.add(i["number"])
+        ready = [i for i in ready if not areas(i) or merge_main_only(i) or i["number"] in chosen]
         return ready
 
     def ready_on_demand(self, open_now: list[dict]) -> list[tuple[dict, str]]:
