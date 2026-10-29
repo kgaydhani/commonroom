@@ -1,4 +1,6 @@
 """commonroom#180: `room.py check` runs the project's test command under a per-project lock, so parallel workers queue."""
+import contextlib
+import io
 import os
 import subprocess
 import sys
@@ -6,8 +8,9 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from commonroom import config, dispatch
+from commonroom import cli, config, dispatch
 from commonroom.ledger import Ledger
 from commonroom.lock import claim_lock, release_lock
 
@@ -61,6 +64,25 @@ class CheckCommand(unittest.TestCase):
         code, out = self.run_check()
         self.assertEqual(code, 7)
         self.assertIn("running unlocked", out)
+
+    def test_lock_unwritable_after_waiting_runs_unlocked(self):
+        # Codex: the first claim reads a live holder, the retry after it lets go can't create the file.
+        log = self.project / "log.txt"
+        self.project_with(f"\"{log}\" 0 7", "lock_poll_seconds = 0.05\n")
+        cfg = config.load(self.project / "room.toml")
+        claims = iter([os.getpid() + 1, PermissionError("sandbox")])
+
+        def claim(path):
+            got = next(claims)
+            if isinstance(got, Exception):
+                raise got
+            return got
+        with mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.home)}),                 mock.patch.object(cli.config_mod, "load", return_value=cfg),                 mock.patch.object(cli, "claim_lock", side_effect=claim),                 mock.patch("os.getcwd", return_value=str(self.project)),                 contextlib.redirect_stdout(io.StringIO()) as out:
+            code = cli.cmd_check(None)
+        self.assertEqual(code, 7)
+        self.assertIn("waiting for the suite lock", out.getvalue())
+        self.assertIn("running unlocked", out.getvalue())
+        self.assertIn("start", log.read_text())
 
     def test_alive_matches_the_pid_column_only(self):
         from commonroom.lock import alive
