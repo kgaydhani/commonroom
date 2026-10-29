@@ -146,3 +146,75 @@ class Resume(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResumeRoleAndAudit(Resume):
+    """A stopped auditor or on-demand role run resumes in its recorded worktree (commonroom#143)."""
+    def setUp(self):
+        super().setUp()
+        for role in ("auditor", "director", "designer"):
+            (self.root / ".claude" / "agents" / f"{role}.md").write_text("---\nmodel: sonnet\n---\nX.\n")
+
+    def role_wt(self, name):
+        return self.root / "wt" / f"{name}-1700000000"
+
+    def run_role(self, role, kind, setup, issue=None, provider="claude"):
+        board = FakeBoard([self.issue])
+        d = dispatch.Dispatcher(cfg_with(self.root), self.ledger, board=board, log=lambda *_: None)
+        d.claude_projects = self.projects
+        d.worktree_base = lambda: self.root / "wt"
+        d.worktree_bases = lambda: [self.root / "wt"]
+        d.remote_head = lambda branch: None
+        d.prompt = lambda job, branch: "FULL PROMPT"
+        d.assess = lambda job, branch, before, started, result: ("done", [], "ok")
+        d.preserve_work = lambda job, worktree, branch: None
+        d.cleanup_worktree = lambda path, run_id=None: None
+        d.checkout = lambda path, start, branch, clone: path
+        setup(d)
+        seen = {}
+        orig_git, orig_run = dispatch.git, dispatch.run_worker
+
+        def fake_run(prov, r, prompt, wt, *a, **k):
+            seen.update(prompt=prompt, resume=k.get("resume_session"), wt=Path(wt))
+            return workers.WorkerResult(ok=True, final_text="x", session_id="new")
+        dispatch.git, dispatch.run_worker = lambda args, cwd: "", fake_run
+        try:
+            d.run_job(dispatch.Job(kind, role, issue=issue, reason="r"), provider, "sonnet")
+        finally:
+            dispatch.git, dispatch.run_worker = orig_git, orig_run
+        return seen
+
+    def test_a_stopped_auditor_resumes_in_its_recorded_worktree(self):
+        wt = self.role_wt("auditor")
+        seen = self.run_role("auditor", "audit", lambda d: self.earlier(d, None, role="auditor", wt=wt))
+        self.assertEqual(seen["resume"], SESSION)
+        self.assertEqual(seen["wt"], wt)
+        self.assertNotIn("FULL PROMPT", seen["prompt"])
+
+    def test_a_stopped_role_run_of_an_issue_resumes_in_its_recorded_worktree(self):
+        wt = self.role_wt("designer")
+        seen = self.run_role("designer", "role", lambda d: self.earlier(d, "#7", role="designer", wt=wt), issue=self.issue)
+        self.assertEqual(seen["resume"], SESSION)
+        self.assertEqual(seen["wt"], wt)
+
+    def test_a_director_never_resumes(self):
+        wt = self.role_wt("director")
+        seen = self.run_role("director", "direct", lambda d: self.earlier(d, None, role="director", wt=wt))
+        self.assertIsNone(seen["resume"])
+        self.assertNotEqual(seen["wt"], wt)
+
+    def test_an_existing_recorded_path_means_a_fresh_path_and_session(self):
+        wt = self.role_wt("auditor")
+        def setup(d):
+            self.earlier(d, None, role="auditor", wt=wt)
+            wt.mkdir(parents=True)
+        seen = self.run_role("auditor", "audit", setup)
+        self.assertIsNone(seen["resume"])
+        self.assertNotEqual(seen["wt"], wt)
+        self.assertIn("FULL PROMPT", seen["prompt"])
+
+    def test_a_finished_auditor_run_starts_fresh_in_a_new_path(self):
+        wt = self.role_wt("auditor")
+        seen = self.run_role("auditor", "audit", lambda d: self.earlier(d, None, role="auditor", wt=wt, status="done"))
+        self.assertIsNone(seen["resume"])
+        self.assertNotEqual(seen["wt"], wt)
