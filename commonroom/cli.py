@@ -519,17 +519,48 @@ def cmd_submit(args) -> int:
     return 0
 
 
+def _run_limited(test: str, deadline: float) -> int | None:
+    """Run the test command; None if it is still going at the deadline (its process tree is killed first)."""
+    posix = os.name != "nt"
+    process = subprocess.Popen(test, shell=True, cwd=os.getcwd(), start_new_session=posix)
+    try:
+        return process.wait(timeout=max(0.0, deadline - time.time()))
+    except subprocess.TimeoutExpired:
+        if posix:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        else:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
+        process.kill()
+        process.wait()
+        return None
+
+
 def cmd_check(args) -> int:
-    """Run the project's `[checks] test` under a per-project lock, so parallel workers queue instead of starving each other."""
+    """Run the project's `[checks] test` under a per-project lock, so parallel workers queue instead of starving each other.
+
+    The whole check, lock wait included, stops at `[checks] max_minutes`: exit 3 means the suite didn't finish."""
     cfg = config_mod.load()
-    test = (cfg.get("checks") or {}).get("test")
+    checks = cfg.get("checks") or {}
+    test = checks.get("test")
     if not cfg.get("_root") or not test:
         print("No [checks] test in room.toml; nothing to run")
         return 2
-    wait = float((cfg.get("checks") or {}).get("lock_wait_minutes", 5)) * 60
-    poll = float((cfg.get("checks") or {}).get("lock_poll_seconds", 3))
+    started = time.time()
+    limit = started + float(checks.get("max_minutes", 9)) * 60
+    wait = float(checks.get("lock_wait_minutes", 5)) * 60
+    poll = float(checks.get("lock_poll_seconds", 3))
     lock = ledger_mod.default_path().parent / "locks" / f"{_project_name(cfg) or 'default'}-suite.lock"
-    deadline, told = time.time() + wait, None
+    deadline, told = min(started + wait, limit), None
+
+    def run() -> int:
+        code = _run_limited(test, limit)
+        if code is None:
+            print(f"suite ran out of time after {(time.time() - started) / 60:.0f} min: report TESTS: INCOMPLETE", flush=True)
+            return 3
+        return code
     # A sandbox that can read the room home but not write it (Codex) fails on any claim, the first or a retry after
     # the holder lets go: run unlocked then, as the test command alone would.
     try:
@@ -545,9 +576,9 @@ def cmd_check(args) -> int:
             holder = claim_lock(lock)
     except OSError:
         print("suite lock unavailable here; running unlocked", flush=True)
-        return subprocess.run(test, shell=True, cwd=os.getcwd()).returncode
+        return run()
     try:
-        return subprocess.run(test, shell=True, cwd=os.getcwd()).returncode
+        return run()
     finally:
         release_lock(lock)
 

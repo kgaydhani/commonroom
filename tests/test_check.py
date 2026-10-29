@@ -12,7 +12,7 @@ from unittest import mock
 
 from commonroom import cli, config, dispatch
 from commonroom.ledger import Ledger
-from commonroom.lock import claim_lock, release_lock
+from commonroom.lock import alive, claim_lock, release_lock
 
 REPO = Path(__file__).resolve().parent.parent
 ROOM = REPO / "room.py"
@@ -131,6 +131,47 @@ class CheckCommand(unittest.TestCase):
         self.assertIn("suite lock busy: report TESTS: INCOMPLETE", out)
         self.assertFalse((self.project / "log.txt").exists())          # the suite never ran
 
+    def test_suite_past_max_minutes_is_killed(self):
+        child = self.project / "child.pid"
+        script = self.project / "slow.py"
+        script.write_text("import subprocess, sys, time\n"
+                          "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                          f"open(r'{child}', 'w').write(str(c.pid))\n"
+                          "time.sleep(60)\n")
+        (self.project / "room.toml").write_text(
+            "[project]\nname = \"demo\"\nrepo = \"o/demo\"\n[goal]\nmilestone = \"M\"\n[checks]\n"
+            f"test = '\"{sys.executable}\" \"{script}\"'\nmax_minutes = 0.1\n")
+        code, out = self.run_check()
+        self.assertEqual(code, 3)
+        self.assertIn("suite ran out of time after", out)
+        self.assertIn("report TESTS: INCOMPLETE", out)
+        self.assertFalse(self.lock.exists())
+        pid = int(child.read_text())
+        for _ in range(50):
+            if not alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(alive(pid))
+
+    def test_suite_inside_the_limit_passes_its_code(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 5", "max_minutes = 1\n")
+        self.assertEqual(self.run_check()[0], 5)
+
+    def test_lock_wait_is_capped_by_max_minutes(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 0",
+                          "max_minutes = 0.03\nlock_wait_minutes = 10\nlock_poll_seconds = 0.2\n")
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.lock.parent.mkdir(parents=True)
+            self.lock.write_text(str(holder.pid))
+            started = time.time()
+            code, out = self.run_check()
+        finally:
+            holder.kill(); holder.wait()
+        self.assertEqual(code, 3)
+        self.assertIn("suite lock busy: report TESTS: INCOMPLETE", out)
+        self.assertLess(time.time() - started, 25)
+
     def test_claim_and_release(self):
         path = Path(self.tmp.name) / "x.lock"
         self.assertIsNone(claim_lock(path))
@@ -168,6 +209,7 @@ class CheckPrompts(unittest.TestCase):
         room_py = (Path(d.room_root) / "room.py").as_posix()
         for text in (build, review):
             self.assertIn(f'python "{room_py}" check', text)
+            self.assertIn("exit 3 means `TESTS: INCOMPLETE` / `REVIEW: INCOMPLETE`, never FAIL", text)
         self.assertIn(f"`TESTS: PASS <sha> {self.TEST}: ", review)
         self.assertTrue(dispatch.tested_on_head(f"[agent:reviewer] REVIEW: APPROVE\nTESTS: PASS abc1234 {self.TEST}: Ran 3 tests ... OK",
                                                 "abc1234", self.TEST))
