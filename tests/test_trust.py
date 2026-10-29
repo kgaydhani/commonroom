@@ -227,5 +227,74 @@ class GitHubReads(unittest.TestCase):
         self.assertEqual([c["body"] for c in queue[0]["comments"]], ["done"])
 
 
+class FollowUps(Base):
+    """commonroom#179: follow-ups from the review of the trust change."""
+
+    def test_a_fork_pr_on_the_same_branch_name_does_not_get_the_rooms_run_cancelled(self):
+        mine = {"number": 7, "headRefName": "i7-x", "headRefOid": "new1111"}
+        fork = from_fork({"number": 8, "headRefName": "i7-x", "headRefOid": "fork999"})   # its head moved
+        board = FakeBoard([issue(200, ["status:ready"])], prs=[fork, mine])
+        board.queued = [{"databaseId": 2, "headBranch": "i7-x", "headSha": "new1111", "event": "pull_request"}]
+        board.details = {7: {"number": 7, "headRefName": "i7-x", "mergeable": "MERGEABLE", "commits": [],
+                             "comments": [], "statusCheckRollup": []}}
+        self.dispatcher(board).housekeeping()
+        self.assertEqual(board.cancelled, [])
+
+    def test_a_trusted_pr_cut_off_by_the_limit_is_fetched_by_author(self):
+        forks = [from_fork({"number": 1000 + n, "headRefName": f"f{n}"}) for n in range(dispatch.OPEN_PR_LIMIT)]
+        mine = {"number": 5, "headRefName": "i5-x", "author": {"login": "o"}, "isCrossRepository": False,
+                "headRepositoryOwner": {"login": "o"}}
+        asked = []
+
+        class Inner:
+            def open_prs(self):
+                asked.append(None)
+                return forks
+
+            def open_prs_by(self, author):
+                asked.append(author)
+                return [mine, mine]
+
+        board = dispatch.TrustedBoard(Inner(), {"o"}, "o")
+        self.assertEqual([pr["number"] for pr in board.open_prs()], [5])
+        self.assertEqual(asked, [None, "o"])
+        self.assertEqual(len(board.untrusted_prs), dispatch.OPEN_PR_LIMIT)
+
+    def test_a_short_list_is_not_fetched_again(self):
+        asked = []
+
+        class Inner:
+            def open_prs(self):
+                asked.append(None)
+                return []
+
+        dispatch.TrustedBoard(Inner(), {"o"}, "o").open_prs()
+        self.assertEqual(asked, [None])
+
+    def test_25_new_untrusted_prs_are_one_push_and_25_marks(self):
+        forks = [from_fork({"number": n, "headRefName": f"f{n}"}) for n in range(100, 125)]
+        notes = Notes()
+        d = self.dispatcher(FakeBoard([], prs=forks), notifier=notes)
+        d.report_untrusted_prs(d.board.open_prs() or forks)
+        self.assertEqual(len(notes.sent), 1)
+        self.assertIn("#109", notes.sent[0]["message"])
+        self.assertNotIn("#110", notes.sent[0]["message"])
+        self.assertIn("and 15 more", notes.sent[0]["message"])
+        self.assertEqual(sum(self.ledger.marked(d.project, f"untrusted-pr:{n}") is not None for n in range(100, 125)), 25)
+        d.report_untrusted_prs(forks)
+        self.assertEqual(len(notes.sent), 1)
+
+    def test_a_failed_push_marks_nothing_and_is_tried_again(self):
+        forks = [from_fork({"number": n, "headRefName": f"f{n}"}) for n in (7, 8)]
+        notes = Notes(fail=True)
+        d = self.dispatcher(FakeBoard([], prs=forks), notifier=notes)
+        d.report_untrusted_prs(forks)
+        self.assertTrue(all(self.ledger.marked(d.project, f"untrusted-pr:{n}") is None for n in (7, 8)))
+        notes.fail = False
+        d.report_untrusted_prs(forks)
+        self.assertEqual(len(notes.sent), 1)
+        self.assertTrue(all(self.ledger.marked(d.project, f"untrusted-pr:{n}") is not None for n in (7, 8)))
+
+
 if __name__ == "__main__":
     unittest.main()

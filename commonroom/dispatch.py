@@ -135,6 +135,10 @@ def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], 
     return stale
 
 
+UNTRUSTED_PUSH_MAX = 10   # PR numbers named in the one summary push
+OPEN_PR_LIMIT = 100   # `gh pr list` returns the newest this many open PRs
+
+
 def stale_ci_runs(runs: list[dict], prs: list[dict]) -> list[tuple[int, str]]:
     """Queued `pull_request` runs nobody will read (commonroom#138): (run id, reason) for one whose branch has no open PR
     (merged or closed), or whose sha isn't its open PR's current head (a newer push replaced it). Other events and
@@ -375,7 +379,12 @@ class GitHubBoard:
         return [e for page in pages or [] for e in page]
 
     def open_prs(self) -> list[dict]:
-        return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", "100",
+        return self.open_prs_by(None)
+
+    def open_prs_by(self, author: str | None) -> list[dict]:
+        """Open PRs, newest first, cut off at OPEN_PR_LIMIT; only `author`'s when one is given."""
+        who = ["--author", author] if author else []
+        return board_mod.gh(["pr", "list", "--repo", self.repo, "--state", "open", "--limit", str(OPEN_PR_LIMIT), *who,
                              "--json", f"number,headRefName,headRefOid,url,title,labels,isDraft,createdAt,body,{PR_ORIGIN}"]) or []
 
     def queued_runs(self) -> list[dict]:
@@ -562,6 +571,13 @@ class TrustedBoard:
 
     def open_prs(self) -> list[dict]:
         prs = self.inner.open_prs() or []
+        if len(prs) >= OPEN_PR_LIMIT:
+            # The list was cut off, newest first, so a flood of fork PRs could hide the room's own: ask for each
+            # trusted login's PRs by name and merge them in (commonroom#179).
+            for login in sorted(self.logins):
+                for pr in self.inner.open_prs_by(login) or []:
+                    if pr["number"] not in {p["number"] for p in prs}:
+                        prs = prs + [pr]
         self.untrusted_prs = [pr for pr in prs if not self.own_pr(pr)]
         return [pr for pr in prs if self.own_pr(pr)]
 
@@ -1296,18 +1312,29 @@ class Dispatcher:
     def report_untrusted_prs(self, prs: list[dict]) -> list[str]:
         """Open PRs the room never reviews, updates or merges (commonroom#176): from another repository, or opened by a
         login it doesn't trust. Each is reported once, in the housekeeping log and to the owner's phone."""
-        actions = []
+        actions, fresh = [], []
         for pr in prs:
-            key = f"untrusted-pr:{pr['number']}"
-            if self.ledger.marked(self.project, key) is not None:
+            if self.ledger.marked(self.project, f"untrusted-pr:{pr['number']}") is not None:
                 continue
             head = f"{(pr.get('headRepositoryOwner') or {}).get('login') or '?'}:{pr.get('headRefName') or '?'}"
-            line = (f"PR #{pr['number']} ({head}, by {login_of(pr) or 'unknown'}) is from another repository or a login "
-                    f"the room doesn't trust: the room won't review, update or merge it; it's the owner's to look at")
-            if not self.dry_run:
-                self.ledger.mark(self.project, key)
-                self.tell_owner(f"{self.cfg['project'].get('name') or ''}: PR #{pr['number']} needs you", line, url=pr.get("url"))
-            actions.append(line)
+            actions.append(f"PR #{pr['number']} ({head}, by {login_of(pr) or 'unknown'}) is from another repository or a login "
+                           f"the room doesn't trust: the room won't review, update or merge it; it's the owner's to look at")
+            fresh.append(pr)
+        if fresh and not self.dry_run:
+            # One push per pass, and the marks only after it went out, so a failed push is tried again next pass.
+            shown = ", ".join(f"#{pr['number']}" for pr in fresh[:UNTRUSTED_PUSH_MAX])
+            more = f" and {len(fresh) - UNTRUSTED_PUSH_MAX} more" if len(fresh) > UNTRUSTED_PUSH_MAX else ""
+            name = self.cfg['project'].get('name') or ''
+            try:
+                sent = self.tell_owner(f"{name}: {len(fresh)} PR{'s' if len(fresh) > 1 else ''} need you",
+                                       f"PRs from another repository or an untrusted login, never reviewed or merged: "
+                                       f"{shown}{more}", url=fresh[0].get("url")) or not self.notifier
+            except Exception as exc:
+                self.log(f"   untrusted PR push failed: {type(exc).__name__}: {str(exc)[:120]}")
+                sent = False
+            if sent:
+                for pr in fresh:
+                    self.ledger.mark(self.project, f"untrusted-pr:{pr['number']}")
         return actions
 
     def prune_logs(self, now: float | None = None) -> list[str]:
@@ -1443,9 +1470,10 @@ class Dispatcher:
         (gamemirage#376) and one runner makes each stale run ~23 min of delay (commonroom#138). Never stops a pass."""
         actions = []
         try:
-            # Untrusted PRs count as open here too: their runs are cancelled only when superseded, as before.
+            # Untrusted PRs count as open here too: their runs are cancelled only when superseded, as before. The
+            # trusted PRs come last so that, for a branch name both use, the room's own head is the one kept.
             prs = self.board.open_prs()
-            stale = stale_ci_runs(self.board.queued_runs(), prs + self.board.untrusted_prs)
+            stale = stale_ci_runs(self.board.queued_runs(), self.board.untrusted_prs + prs)
         except Exception as exc:
             return [f"couldn't list queued CI runs: {str(exc)[:100]}"]
         for run_id, reason in stale:
