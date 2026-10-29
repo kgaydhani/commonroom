@@ -72,14 +72,17 @@ CLAIM_SUBJECTS_MAX = 20
 
 def priority(issue: dict) -> tuple:
     """prio:top (foundation work others build on, e.g. a milestone plan) first, then prio:high, prio:low last,
-    otherwise oldest first. An issue labelled needs:changes (a PR the reviewer sent back) ranks as at least
-    prio:high and before the other issues in its tier (among bounced issues: its own tier, then oldest), so an
-    almost-done PR finishes before new work starts (commonroom#121). prio:top still comes first."""
+    otherwise oldest first. An issue labelled needs:changes (a PR the reviewer sent back) ranks one tier above its
+    own and before the other issues in that tier (among bounced issues: their lifted tier, then own tier, then
+    oldest), so an almost-done PR finishes before new work starts (commonroom#121) but a prio:low fix round doesn't
+    jump ahead of prio:high work (commonroom#170): prio:low ranks as the default tier, the default as prio:high,
+    and prio:high and prio:top stay where they are. Housekeeping keeps the label in step with the PR's last review,
+    so this stays a function of labels alone."""
     names = labels(issue)
     tier = -1 if "prio:top" in names else 0 if "prio:high" in names else 2 if "prio:low" in names else 1
     if "needs:changes" not in names:
         return (tier, 1, tier, issue["number"])
-    return (min(tier, 0), 0, tier, issue["number"])
+    return (tier if tier <= 0 else tier - 1, 0, tier, issue["number"])
 
 
 def slug(title: str) -> str:
@@ -1185,6 +1188,12 @@ class Dispatcher:
                     state[issue_no] = "CLOSED"
             elif review == "CHANGES" and not self.dry_run:
                 issue = next((i for i in everything if i["number"] == issue_no), None)
+                # Relabelled ready by hand or script without needs:changes: it would rank as fresh work (commonroom#170).
+                if issue and "status:ready" in labels(issue) and "needs:changes" not in labels(issue):
+                    self.board.set_labels(issue_no, add=["needs:changes"])
+                    issue["labels"] = list(issue.get("labels") or []) + [{"name": "needs:changes"}]
+                    actions.append(f"issue #{issue_no}: re-added needs:changes (PR #{pr['number']}'s last review is CHANGES)")
+                    continue
                 if not issue or labels(issue) & {"status:ready", "status:blocked", "needs:director", EXTERNAL}:
                     continue
                 # A builder already working on the CHANGES: the verdict stays current until it pushes, and bouncing

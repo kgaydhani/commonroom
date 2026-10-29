@@ -1481,6 +1481,42 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(any(call[0] == 61 for call in fake.label_calls))   # its PR is open: still in review
         self.assertTrue(any("#60" in a for a in actions))
 
+    def test_ready_issue_with_changes_review_gets_needs_changes_once(self):
+        """commonroom#170: a relabel to ready without needs:changes ranked a bounced PR's issue as fresh work."""
+        def board(verdict):
+            fake = FakeBoard([issue(70, ["status:ready"])], prs=[{"number": 9, "headRefName": "i70-thing"}],
+                             details={9: {"commits": [], "comments": [{"createdAt": "2026-10-07T02:30:00Z",
+                                                                       "body": f"[agent:reviewer] REVIEW: {verdict}"}],
+                                          "statusCheckRollup": []}})
+
+            def set_labels(n, add=(), remove=()):
+                fake.label_calls.append((n, tuple(add), tuple(remove)))
+                for i in fake.issues:
+                    if i["number"] == n:
+                        i["labels"] = [l for l in i["labels"] if l["name"] not in remove] + [{"name": x} for x in add]
+            fake.set_labels = set_labels
+            return fake, dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+
+        fake, d = board("CHANGES")
+        self.assertIn("issue #70: re-added needs:changes (PR #9's last review is CHANGES)", d.housekeeping())
+        self.assertEqual(fake.label_calls, [(70, ("needs:changes",), ())])
+        self.assertEqual([a for a in d.housekeeping() if "#70" in a], [])          # second pass: nothing
+        self.assertEqual(len(fake.label_calls), 1)
+
+        fake, d = board("APPROVE")
+        d.housekeeping()
+        self.assertEqual(fake.label_calls, [])
+
+        fake, d = board("CHANGES")
+        fake.prs = []                                                             # PR closed: no longer listed
+        d.housekeeping()
+        self.assertFalse(any(call[0] == 70 and "needs:changes" in call[1] for call in fake.label_calls))
+
+        fake, d = board("CHANGES")
+        d.dry_run = True
+        d.housekeeping()
+        self.assertEqual(fake.label_calls, [])
+
     @staticmethod
     def approved_pr(n, branch):
         return {"number": n, "headRefName": branch, "mergeable": "MERGEABLE", "statusCheckRollup": [{"conclusion": "SUCCESS"}],
@@ -2660,11 +2696,19 @@ class BouncedPrOrder(unittest.TestCase):
         self.assertEqual(self.order((5, "prio:high"), (7, "needs:changes"), (9, "prio:high")), [7, 5, 9])
         self.assertEqual(self.order((9, "prio:high"), (7, "needs:changes"), (5, "prio:high")), [7, 5, 9])
 
-    def test_low_needs_changes_beats_unlabelled_and_high(self):
-        self.assertEqual(self.order((1, "prio:high"), (2,), (3, "prio:low", "needs:changes")), [3, 1, 2])
+    def test_low_needs_changes_ranks_as_default_tier(self):
+        """commonroom#170: the lift is one tier: bounced low is after fresh high and before fresh unlabelled."""
+        self.assertEqual(self.order((1, "prio:high"), (2,), (3, "prio:low", "needs:changes")), [1, 3, 2])
+
+    def test_bounced_default_ranks_with_high_ahead_of_fresh_high(self):
+        self.assertEqual(self.order((1, "prio:high"), (2,), (3, "needs:changes")), [3, 1, 2])
+
+    def test_bounced_high_ahead_of_fresh_high(self):
+        self.assertEqual(self.order((1, "prio:high"), (2, "prio:high", "needs:changes")), [2, 1])
 
     def test_top_beats_needs_changes(self):
         self.assertEqual(self.order((8, "needs:changes", "prio:high"), (9, "prio:top")), [9, 8])
+        self.assertEqual(self.order((8, "needs:changes", "prio:top"), (9, "prio:top")), [8, 9])
 
     def test_between_bounced_tier_then_oldest(self):
         self.assertEqual(self.order((4, "needs:changes"), (3, "needs:changes", "prio:low"),
