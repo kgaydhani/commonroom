@@ -2717,3 +2717,87 @@ class BouncedPrOrder(unittest.TestCase):
 
     def test_without_needs_changes_order_unchanged(self):
         self.assertEqual(self.order((4, "prio:low"), (3,), (9, "prio:high"), (1, "prio:top")), [1, 9, 3, 4])
+
+
+class IncompleteReview(unittest.TestCase):
+    """commonroom#174: REVIEW: INCOMPLETE is a reviewer's test run that couldn't finish: not a bounce, review again."""
+    ALLOWED = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(False, "dry")}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(Path(self.tmp.name) / "r.sqlite3")
+
+    def tearDown(self):
+        self.ledger.db.close()
+        self.tmp.cleanup()
+
+    @staticmethod
+    def incomplete(minute, why="timed out"):
+        return {"createdAt": f"2026-10-07T03:{minute:02d}:00Z",
+                "body": f"[agent:reviewer] REVIEW: INCOMPLETE\nTESTS: INCOMPLETE 224aaaa python -m unittest: {why}"}
+
+    def setup_board(self, comments, ci=False, labels=("status:review",)):
+        cfg = cfg_with(self.tmp.name)
+        cfg["checks"] = {"ci": ci, "test": "python -m unittest"}
+        pr = {"number": 224, "headRefName": "i200-x", "headRefOid": "224aaaa", "mergeable": "MERGEABLE",
+              "statusCheckRollup": [{"conclusion": "SUCCESS"}] if ci else [],
+              "commits": [{"oid": "224aaaa", "committedDate": "2026-10-07T02:00:00Z"}], "comments": comments}
+        fake = LabelBoard([issue(200, list(labels))], prs=[{"number": 224, "headRefName": "i200-x"}], details={224: pr})
+        return fake, dispatch.Dispatcher(cfg, self.ledger, board=fake, log=lambda *_: None)
+
+    def test_verdict_of_reads_incomplete_from_a_reviewer_not_a_quote(self):
+        self.assertEqual(dispatch.verdict_of("[agent:reviewer] REVIEW: INCOMPLETE\nTESTS: INCOMPLETE x"), "INCOMPLETE")
+        self.assertEqual(dispatch.verdict_of("[agent:director] REVIEW: INCOMPLETE"), "INCOMPLETE")
+        self.assertIsNone(dispatch.verdict_of("[agent:builder] REVIEW: INCOMPLETE"))
+        self.assertIsNone(dispatch.verdict_of("The reviewer said REVIEW: INCOMPLETE earlier"))
+
+    def test_one_incomplete_leaves_labels_alone_and_is_reviewed_again(self):
+        for ci in (False, True):
+            fake, d = self.setup_board([self.incomplete(0)], ci=ci)
+            d.housekeeping()
+            self.assertEqual(fake.label_calls, [])
+            self.assertFalse(hasattr(fake, "comments"))
+            job, _, _ = d.pick_review(self.ALLOWED)
+            self.assertEqual((job.kind, job.pr["number"]), ("review", 224))
+
+    def test_incomplete_does_not_count_as_a_changes_round(self):
+        detail = {"comments": [self.incomplete(0), self.incomplete(1)]}
+        self.assertEqual(dispatch.changes_rounds(detail), 0)
+
+    def test_second_incomplete_at_one_head_escalates_once_and_stops_reviews(self):
+        fake, d = self.setup_board([self.incomplete(0, "timed out"), self.incomplete(1, "WinError 5")])
+        d.housekeeping()
+        self.assertEqual(fake.label_calls, [(200, ("status:blocked", "needs:director"),
+                                             ("status:review", "status:in-progress", "needs:changes"))])
+        self.assertEqual(len(fake.comments), 1)
+        self.assertIn("timed out", fake.comments[0][1])
+        self.assertIn("WinError 5", fake.comments[0][1])
+        self.assertIsNone(d.pick_review(self.ALLOWED))
+        d.housekeeping()                                     # blocked now: no second comment
+        self.assertEqual(len(fake.comments), 1)
+
+    def test_a_new_commit_resets_the_count(self):
+        fake, d = self.setup_board([self.incomplete(0), self.incomplete(1)])
+        fake.details[224]["commits"].append({"oid": "224bbbb", "committedDate": "2026-10-07T04:00:00Z"})
+        self.assertIsNotNone(d.pick_review(self.ALLOWED))
+
+    def test_an_incomplete_line_is_never_a_pass(self):
+        body = "TESTS: PASS 224aaaa python -m unittest: OK\nTESTS: INCOMPLETE 224aaaa python -m unittest: timed out"
+        self.assertFalse(dispatch.tested_on_head(body, "224aaaa", "python -m unittest"))
+        self.assertFalse(dispatch.tested_on_head("TESTS: INCOMPLETE 224aaaa python -m unittest: x", "224aaaa", "python -m unittest"))
+
+    def test_finished_incomplete_review_is_done_with_its_own_output(self):
+        fake, d = self.setup_board([self.incomplete(5)])
+        job = dispatch.Job("review", "reviewer", pr=fake.details[224], reason="x")
+        result = mock.Mock(final_text="", errors=[])
+        status, outputs, _ = d.assess(job, None, None, "2026-10-07T03:00:00Z", result)
+        self.assertEqual((status, outputs[0]["ref"]), ("done", "PR #224 INCOMPLETE"))
+
+    def test_no_ci_reviewer_prompt_offers_incomplete_and_ci_prompt_unchanged(self):
+        fake, d = self.setup_board([])
+        job = dispatch.Job("review", "reviewer", pr=fake.details[224], reason="x")
+        text = d.prompt(job, None)
+        self.assertIn("TESTS: INCOMPLETE", text)
+        self.assertIn("REVIEW: INCOMPLETE", text)
+        fake, d = self.setup_board([], ci=True)
+        self.assertNotIn("INCOMPLETE", d.prompt(job, None))
