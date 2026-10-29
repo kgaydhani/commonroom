@@ -215,6 +215,34 @@ class WithLedger(unittest.TestCase):
         self.ledger.finish_run(merge, "done", outputs=[{"kind": "merge", "ref": "PR #3"}], now=now - 100)
         self.assertIsNone(dispatch.check_progress(self.ledger, "t", now))
 
+    def _rise(self, now, pairs):
+        for t, pct in pairs:
+            self.ledger.record_usage([usage.observation("claude", "seven_day", pct, now + 86400, "test")], now=t)
+
+    def _run(self, project, role, start, end):
+        run = self.ledger.start_run(project, "#1", role, "claude", now=start)
+        self.ledger.finish_run(run, "failed", now=end)
+
+    def test_progress_ignores_growth_outside_room_runs(self):
+        now = time.time()
+        self._run("t", "director", now - 23000, now - 23000 + 240)          # a 4-minute pass, long before the rise
+        self._rise(now, ((now - 15000, 10), (now - 10000, 10), (now - 5000, 22)))   # 12% with no run active
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", now))
+
+    def test_progress_counts_growth_during_a_room_run_in_any_project(self):
+        now = time.time()
+        self._run("t", "director", now - 23000, now - 23000 + 240)
+        self._run("other", "builder", now - 12000, now - 4000)              # another project's build spans the rise
+        self._rise(now, ((now - 15000, 10), (now - 10000, 10), (now - 5000, 22)))
+        self.assertEqual(dispatch.check_progress(self.ledger, "t", now)["kind"], "no_progress")
+
+    def test_progress_does_not_count_merge_runs_as_work(self):
+        now = time.time()
+        self._run("t", "director", now - 23000, now - 23000 + 240)
+        self._run("other", "merge", now - 12000, now - 4000)
+        self._rise(now, ((now - 15000, 10), (now - 10000, 10), (now - 5000, 22)))
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", now))
+
     def test_progress_guarantee_waits_six_hours_after_work_starts(self):
         now = time.time()
         run = self.ledger.start_run("t", "#1", "builder", "claude", now=now - 3600)

@@ -978,13 +978,22 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
         return None   # the room didn't work: whatever was spent was the owner's own use
     if now - min(work) < PROGRESS_MIN_WORK:
         return None   # the room only just started working (e.g. after a pause): too early to call it no progress
-    # Plan-wide weekly growth over 24h (per-run deltas double-count parallel runs). Within each weekly period
-    # take last minus first, so a reset or a flapping last digit can't inflate it.
+    # Plan-wide weekly growth (per-run deltas double-count parallel runs), counted only across the gap between one
+    # usage sample and the next that overlaps an autonomous Claude run in any project: growth with no room run
+    # active is the owner's own use. Within each weekly period the counted changes are summed and clamped at zero,
+    # so a reset or a flapping last digit can't inflate it.
+    spans = [(r["started_at"], r["ended_at"] or now) for r in ledger.recent_runs(None, limit=500, provider="claude", autonomous=True)
+             if r["role"] != "merge" and (r["ended_at"] or now) >= since]
     periods: dict = {}
+    prev = None
     for r in ledger.usage_history("claude", "seven_day", since):
         key = round((r["resets_at"] or 0) / 3600)
-        periods.setdefault(key, [r["used_pct"], r["used_pct"]])[1] = r["used_pct"]
-    spent = sum(max(0.0, last - first) for first, last in periods.values())
+        if prev and prev[0] == key:
+            lo, hi = prev[1]["observed_at"], r["first_seen"]
+            if any(start <= hi and end >= lo for start, end in spans):
+                periods[key] = periods.get(key, 0.0) + r["used_pct"] - prev[1]["used_pct"]
+        prev = (key, r)
+    spent = sum(max(0.0, d) for d in periods.values())
     if attribute:
         minutes = run_minutes(ledger, "claude", since, now)
         spent *= minutes.get(project, 0.0) / (sum(minutes.values()) or 1.0)
