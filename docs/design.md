@@ -92,6 +92,8 @@ When the owner is away, a scheduled heartbeat runs `room run`. It dispatches rea
 | scout | Claude Haiku | Researches tools and approaches, proposes experiments, never edits code |
 | analyst | Claude Haiku | Summarises test and simulation output |
 
+Issues sharing an `area:<name>` label (or `risk:golden`, treated as one more area) are never built at once: none is offered while another with a shared area is in progress, in review, running or sent back to merge main, and with none held only the top-priority one per area is offered (commonroom#161). The director labels issues by the files they touch.
+
 `[roles] builder_by_label = { "kind:research" = ["codex", "claude:opus"] }` sends builds carrying that label to that provider list first, unless the issue is `size:L`, `risk:high`, `builder:heavy` or pinned with `provider:*`; without the key nothing changes (commonroom#118).
 
 Director, builder, reviewer, scout and auditor have their own triggers. Any other role with a `[roles]` entry and an agent
