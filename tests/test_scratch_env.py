@@ -21,7 +21,7 @@ class ScratchEnv(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
-        self.ledger = Ledger(self.base / "room.sqlite3")
+        self.ledger = Ledger(self.base / "room.sqlite3", synchronous="OFF")
         self.repo = self.base / "repo"
         self.repo.mkdir()
         git("init", "-q", "-b", "main", cwd=self.repo)

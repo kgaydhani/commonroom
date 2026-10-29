@@ -132,7 +132,7 @@ class Gate(unittest.TestCase):
 class LedgerAndBreakers(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3")
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
@@ -163,6 +163,24 @@ class LedgerAndBreakers(unittest.TestCase):
             self.ledger.finish_run(run, "done", outputs=[{"kind": "pr", "ref": f"#{10 + i}"}] if i == 1 else [], now=NOW + i + 1)
         runs = self.ledger.recent_runs("game", limit=3, autonomous=True, finished=True)
         self.assertTrue(gate.breaker_verdict([], runs, 3)[0].allowed)
+
+
+class LedgerDurability(unittest.TestCase):
+    def pragmas(self, **kw):
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Ledger(Path(tmp) / "room.sqlite3", **kw)
+            try:
+                return [ledger.db.execute(f"PRAGMA {n}").fetchone()[0] for n in ("synchronous", "journal_mode")]
+            finally:
+                ledger.close()
+
+    def test_the_default_is_wal_with_synchronous_normal(self):
+        self.assertEqual(self.pragmas(), [1, "wal"])
+
+    def test_only_the_explicit_test_switch_turns_synchronous_off(self):
+        self.assertEqual(self.pragmas(synchronous="OFF"), [0, "wal"])
+        with self.assertRaises(KeyError):
+            self.pragmas(synchronous="FULL")
 
 
 class Config(unittest.TestCase):
