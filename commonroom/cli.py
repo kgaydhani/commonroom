@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -11,8 +12,9 @@ from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, usage
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
+from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
-from commonroom.lock import acquire_lock
+from commonroom.lock import acquire_lock, claim_lock, release_lock
 
 PROVIDERS = ("claude", "codex")
 
@@ -517,6 +519,39 @@ def cmd_submit(args) -> int:
     return 0
 
 
+def cmd_check(args) -> int:
+    """Run the project's `[checks] test` under a per-project lock, so parallel workers queue instead of starving each other."""
+    cfg = config_mod.load()
+    test = (cfg.get("checks") or {}).get("test")
+    if not cfg.get("_root") or not test:
+        print("No [checks] test in room.toml; nothing to run")
+        return 2
+    wait = float((cfg.get("checks") or {}).get("lock_wait_minutes", 5)) * 60
+    poll = float((cfg.get("checks") or {}).get("lock_poll_seconds", 3))
+    lock = ledger_mod.default_path().parent / "locks" / f"{_project_name(cfg) or 'default'}-suite.lock"
+    deadline, told = time.time() + wait, None
+    # A sandbox that can read the room home but not write it (Codex) fails on any claim, the first or a retry after
+    # the holder lets go: run unlocked then, as the test command alone would.
+    try:
+        holder = claim_lock(lock)
+        while holder is not None:
+            if time.time() >= deadline:
+                print("suite lock busy: report TESTS: INCOMPLETE", flush=True)
+                return 3
+            if holder != told:
+                print(f"waiting for the suite lock (pid {holder})", flush=True)
+                told = holder
+            time.sleep(min(poll, max(0.05, deadline - time.time())))
+            holder = claim_lock(lock)
+    except OSError:
+        print("suite lock unavailable here; running unlocked", flush=True)
+        return subprocess.run(test, shell=True, cwd=os.getcwd()).returncode
+    try:
+        return subprocess.run(test, shell=True, cwd=os.getcwd()).returncode
+    finally:
+        release_lock(lock)
+
+
 def cmd_breaker(args) -> int:
     cfg, ledger = config_mod.load(), Ledger()
     project = _project_name(cfg)
@@ -578,6 +613,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
     sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
     sub.add_parser("guard-command", help="PreToolUse hook: block filter-based process kills (hook JSON on stdin)").set_defaults(func=cmd_guard_command)
+    sub.add_parser("check", help="run the project's [checks] test under a per-project lock").set_defaults(func=cmd_check)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     args = parser.parse_args(argv)
     return args.func(args)

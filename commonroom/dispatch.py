@@ -2766,6 +2766,16 @@ class Dispatcher:
         """The trusted logins as "@a, @b" (sorted), or "" when there are none."""
         return ", ".join(f"@{login}" for login in sorted(config_mod.trusted(self.cfg)))
 
+    def suite_note(self) -> str:
+        """Tell workers to run the project's test command through `room.py check`, which queues parallel runs."""
+        test = (self.cfg.get("checks") or {}).get("test")
+        if not test:
+            return ""
+        room_py = (Path(self.room_root) / "room.py").as_posix()
+        return (f" Run the tests through `python \"{room_py}\" check` from your worktree: it runs `{test}` under a lock "
+                f"so parallel workers take turns, and exits with that command's code. If it exits 3 (`suite lock busy`), "
+                f"another run is still going: say so, and don't count it as a test failure.")
+
     def codex_note(self) -> str:
         """The project's Codex sandbox and tooling note (test command, engine, rendering), ending in a space."""
         extra = self.prompt_text("codex")
@@ -2810,12 +2820,12 @@ class Dispatcher:
                         f"AGENTS.md, **except for git**: your sandbox keeps .git read-only, so do not commit, push or open a PR. "
                         f"Leave your changes in the working tree, and Common Room will commit, push and open the PR for you. "
                         f"{self.codex_note()}If something in the sandbox is impossible, finish the rest and say what's left; your "
-                        f"partial work is kept, not discarded.{extra}\n"
+                        f"partial work is kept, not discarded.{self.suite_note()}{extra}\n"
                         f"Finish with: a line `PR_TITLE: <short title>`, then `PR_BODY:` followed by each acceptance criterion and "
                         f"how you verified it, plus anything unverified. Make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
             return (f"Implement GitHub issue #{n} in {repo}. You are already on branch `{branch}` in a fresh worktree "
                     f"based on origin/main. Follow your builder instructions and AGENTS.md. Push with "
-                    f"`git push -u origin {branch}`. Prefix any issue or PR comment you write with `[agent:builder]`.{extra}\n"
+                    f"`git push -u origin {branch}`. Prefix any issue or PR comment you write with `[agent:builder]`.{self.suite_note()}{extra}\n"
                     f"Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.")
         if job.kind == "role":
             n, name = job.issue["number"], job.role
@@ -2831,7 +2841,7 @@ class Dispatcher:
             test = (self.cfg.get("checks") or {}).get("test") or "the project's tests"
             no_ci = ("" if self.ci else
                      f"\nThis repo has no CI: your approval is what merges this PR, so the test run is yours. Run `{test}` "
-                     f"here, on the PR head, and approve only if it passes. Put this line in your comment, with the short "
+                     f"here, on the PR head, and approve only if it passes.{self.suite_note()} Put this line in your comment, with the short "
                      f"sha from `git rev-parse --short HEAD`: `TESTS: PASS <sha> {test}: <the result line, e.g. Ran 64 "
                      f"tests ... OK>` (or `TESTS: FAIL <sha> {test}: <what failed>` with REVIEW: CHANGES). If `{test}` can't finish "
                      f"(a timeout, a sandbox or environment error, a missing dependency), post `REVIEW: INCOMPLETE` with "
