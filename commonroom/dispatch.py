@@ -962,14 +962,22 @@ def share_verdict(ledger: Ledger, cfg: dict, provider: str, now: float) -> gate.
                                f"{hours:g}h, cap {float(share['max']):.0%}); {host} goes first")
 
 
+# The room's own work must have run this long in the 24h window before "nothing merged" is a verdict: after a
+# long pause most of the window is pause time, and no build, review and merge cycle fits in the first hours back.
+PROGRESS_MIN_WORK = 6 * 3600
+
+
 def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit: float = 10.0,
                    attribute: bool = False) -> dict | None:
     """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker.
     With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
-    if not any(r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge" for r in runs):
+    work = [r["started_at"] for r in runs if r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge"]
+    if not work:
         return None   # the room didn't work: whatever was spent was the owner's own use
+    if now - min(work) < PROGRESS_MIN_WORK:
+        return None   # the room only just started working (e.g. after a pause): too early to call it no progress
     # Plan-wide weekly growth over 24h (per-run deltas double-count parallel runs). Within each weekly period
     # take last minus first, so a reset or a flapping last digit can't inflate it.
     periods: dict = {}
