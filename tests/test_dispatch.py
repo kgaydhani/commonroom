@@ -1641,6 +1641,31 @@ class WithLedger(unittest.TestCase):
         d.only_merges_main = lambda branch, oids: False                   # anything more than a merge: review again
         self.assertEqual(d.pick_review(allowed)[0].pr["number"], 225)
 
+    def test_review_order_follows_priority_then_age_and_skips_drafts_and_dependents(self):
+        """commonroom#150: the only review slot went to the newest PR, a dependent one, while prio:top PRs waited."""
+        issues = [issue(300, ["status:review", "prio:low"]), issue(301, ["status:review", "prio:top"]),
+                  issue(302, ["status:review"]), issue(303, ["status:review"]), issue(304, ["status:review"])]
+        prs = [{"number": 410, "headRefName": "i300-newest-low", "createdAt": "2026-10-19T15:00:00Z"},
+               {"number": 401, "headRefName": "i301-oldest-top", "createdAt": "2026-10-10T09:00:00Z"},
+               {"number": 405, "headRefName": "i302-draft", "createdAt": "2026-10-11T09:00:00Z", "isDraft": True},
+               {"number": 407, "headRefName": "i303-dependent", "createdAt": "2026-10-12T09:00:00Z",
+                "body": "Depends on #401: merge it first."},
+               {"number": 408, "headRefName": "i304-after-issue", "createdAt": "2026-10-13T09:00:00Z",
+                "body": "Depends on #300"}]
+        details = {pr["number"]: {**pr, "headRefOid": "a", "commits": [{"oid": "a", "committedDate": "2026-10-07T02:00:00Z"}],
+                                  "comments": [], "statusCheckRollup": [{"conclusion": "SUCCESS"}]} for pr in prs}
+        fake = FakeBoard(issues, prs=prs, details=details)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        allowed = {"claude": gate.Verdict(True, "ok"), "codex": gate.Verdict(True, "ok")}
+        self.assertEqual([pr["number"] for pr in d.review_order(fake.open_prs())], [401, 410])
+        self.assertEqual(d.pick_review(allowed)[0].pr["number"], 401)
+        fake.prs = [pr for pr in prs if pr["number"] != 401]    # #401 merged: its dependent is free, ahead of prio:low
+        self.assertEqual([pr["number"] for pr in d.review_order(fake.open_prs())], [407, 410])
+        # a bounced PR (needs:changes) is reviewed again before an older first review in the same tier
+        fake.issues.append(issue(305, ["status:review", "needs:changes"]))
+        fake.prs.append({"number": 411, "headRefName": "i305-bounced", "createdAt": "2026-10-18T09:00:00Z"})
+        self.assertEqual([pr["number"] for pr in d.review_order(fake.open_prs())], [411, 407, 410])
+
     def test_no_review_while_its_issue_is_building(self):
         """commonroom#124: #554's builder opened draft PR #627 to preserve work, and the next pick was an Opus review."""
         fake = FakeBoard([issue(200, ["status:in-progress"])], prs=[{"number": 224, "headRefName": "i200-x"}],
