@@ -170,7 +170,7 @@ class Ledger:
                  cost_usd, note, session_id, run_id))
 
     def recent_runs(self, project: str | None = None, limit: int = 20, autonomous: bool | None = None,
-                    finished: bool = False, provider: str | None = None) -> list[dict]:
+                    finished: bool = False, provider: str | None = None, since: float | None = None) -> list[dict]:
         clauses, params = [], []
         if project is not None:
             clauses.append("project=?"); params.append(project)
@@ -181,6 +181,8 @@ class Ledger:
         if finished:
             # Room-side errors, provider usage limits and gate stops say nothing about the work, so breakers ignore them.
             clauses.append("status NOT IN ('running', 'room-error', 'limited', 'stopped')")
+        if since is not None:
+            clauses.append("ended_at > ?"); params.append(since)   # only runs that finished after `since`
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = self.db.execute(f"SELECT * FROM runs {where} ORDER BY started_at DESC LIMIT ?", (*params, limit)).fetchall()
         result = []
@@ -273,11 +275,20 @@ class Ledger:
         return [dict(r) for r in rows]
 
     def clear_breakers(self, project: str | None, kind: str | None = None, now: float | None = None) -> int:
-        query, params = "UPDATE breakers SET cleared_at=? WHERE project IS ? AND cleared_at IS NULL", [time.time() if now is None else now, project]
+        now = time.time() if now is None else now
+        query, params = "UPDATE breakers SET cleared_at=? WHERE project IS ? AND cleared_at IS NULL", [now, project]
         if kind:
             query += " AND kind=?"; params.append(kind)
         with self.db:
-            return self.db.execute(query, params).rowcount
+            cleared = self.db.execute(query, params).rowcount
+        # The no_output breaker is recomputed from recent runs, so a reset must also draw a line under them.
+        self.mark(project, f"breaker_reset:{kind}" if kind else "breaker_reset", at=now)
+        return cleared
+
+    def breaker_reset_at(self, project: str | None, *kinds: str) -> float | None:
+        """When the breakers were last reset for a project: all kinds, or any of the given kinds."""
+        times = [self.marked(project, key) for key in ["breaker_reset", *(f"breaker_reset:{k}" for k in kinds)]]
+        return max((t for t in times if t is not None), default=None)
 
     # Cooldowns: a provider refused work (usage limit hit) and must not be asked again until `until`.
     def set_cooldown(self, provider: str, until: float, reason: str):

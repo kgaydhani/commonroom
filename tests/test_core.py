@@ -157,6 +157,13 @@ class LedgerAndBreakers(unittest.TestCase):
         self.assertEqual(self.ledger.clear_breakers("game"), 1)
         self.assertTrue(gate.breaker_verdict(self.ledger.open_breakers("game"), [], 3)[0].allowed)
 
+    def test_reset_of_one_kind_only_moves_that_kinds_window(self):
+        self.ledger.clear_breakers("game", "no_output:codex", now=NOW)
+        self.assertEqual(self.ledger.breaker_reset_at("game", "no_output:codex"), NOW)
+        self.assertIsNone(self.ledger.breaker_reset_at("game", "no_output:claude"))
+        self.ledger.clear_breakers("game", now=NOW + 5)
+        self.assertEqual(self.ledger.breaker_reset_at("game", "no_output:claude"), NOW + 5)
+
     def test_output_keeps_breaker_closed(self):
         for i in range(3):
             run = self.ledger.start_run("game", f"#{i}", "builder", "claude", now=NOW + i)
