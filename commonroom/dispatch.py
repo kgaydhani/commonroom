@@ -2776,7 +2776,8 @@ class Dispatcher:
         room_py = (Path(self.room_root) / "room.py").as_posix()
         return (f" Run the tests through `python \"{room_py}\" check` from your worktree: it runs `{test}` under a lock "
                 f"so parallel workers take turns, and exits with that command's code. If it exits 3 (`suite lock busy`), "
-                f"another run is still going: say so, and don't count it as a test failure.")
+                f"another run is still going; if it exits 3 with `suite ran out of time`, the suite didn't finish in the limit. Either way "
+                f"exit 3 means `TESTS: INCOMPLETE` / `REVIEW: INCOMPLETE`, never FAIL: say so, and don't count it as a test failure.")
 
     def codex_note(self) -> str:
         """The project's Codex sandbox and tooling note (test command, engine, rendering), ending in a space."""
