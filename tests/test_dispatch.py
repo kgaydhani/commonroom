@@ -979,6 +979,29 @@ class WithLedger(unittest.TestCase):
             self.ledger.record_usage([usage.observation(provider, "five_hour", 5, now + 3600, "test"),
                                       usage.observation(provider, "seven_day", 5, now + 3 * 86400, "test")], now=now)
 
+    def test_reset_does_not_re_trip_on_the_runs_it_cleared(self):
+        # Seen live on 30 Oct: a reset cleared the rows, then the same three failed runs re-tripped the breaker.
+        now = time.time()
+        self.fresh_readings(now)
+        cfg = cfg_with(self.tmp.name)
+
+        def fail_three(start):
+            for i in range(3):
+                run = self.ledger.start_run("t", f"#{i}", "reviewer", "claude", now=start + i)
+                self.ledger.finish_run(run, "failed", now=start + i + 0.5)
+
+        fail_three(now - 300)
+        self.assertFalse(dispatch.verdicts(self.ledger, cfg, now, trip=True)["claude"].allowed)
+        self.assertEqual([b["kind"] for b in self.ledger.open_breakers("t")], ["no_output:claude"])
+        self.ledger.clear_breakers("t", now=now - 100)
+        self.assertTrue(dispatch.verdicts(self.ledger, cfg, now, trip=True)["claude"].allowed)
+        self.assertEqual(self.ledger.open_breakers("t"), [])
+        fail_three(now - 50)                                                   # three more failures after the reset
+        self.assertFalse(dispatch.verdicts(self.ledger, cfg, now, trip=True)["claude"].allowed)
+        self.assertEqual([b["kind"] for b in self.ledger.open_breakers("t")], ["no_output:claude"])
+        self.ledger.clear_breakers("t", "no_output:claude", now=now - 10)      # a reset of one kind also counts
+        self.assertTrue(dispatch.verdicts(self.ledger, cfg, now)["claude"].allowed)
+
     def test_breakers_and_limits_hold_one_provider_only(self):
         now = time.time()
         self.fresh_readings(now)

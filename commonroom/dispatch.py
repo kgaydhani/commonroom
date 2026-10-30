@@ -904,7 +904,9 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
     for provider in ("claude", "codex"):
         # A provider that keeps producing nothing is held on its own; the other keeps working.
         # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
-        runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider)
+        # Runs from before the latest reset of this breaker are not counted, or a reset would re-trip at once.
+        reset = ledger.breaker_reset_at(project, "no_output", f"no_output:{provider}")
+        runs = ledger.recent_runs(project, limit=n, autonomous=True, finished=True, provider=provider, since=reset)
         mine = [b for b in ledger.open_breakers(project) if ":" not in b["kind"] or b["kind"].endswith(":" + provider)]
         # A guest also stops when its host's room-wide stops are open (a pause, no_progress). The host's provider
         # breakers judge the host's own runs; the guest's runs have breakers of their own.
