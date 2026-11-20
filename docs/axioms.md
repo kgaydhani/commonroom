@@ -1,6 +1,6 @@
 # Axioms (proposed, 20 Nov 2026: the owner has not yet confirmed them)
 
-These follow the pattern of gamemirage's `design/axioms.md`. They are the owner's values, drafted here from his words for him to correct. Agents do not change them. Where this list and his words differ, his words win. Each has a check that code can run, so any session can verify the room is on track without trusting another session's account. The decisions ledger, [decisions.csv](decisions.csv), has a row for each, naming its test or saying what is missing.
+These follow the pattern of gamemirage's `design/axioms.md`. They are the owner's values, drafted here from his words for him to correct. Agents do not change them. Where this list and his words differ, his words win: they are kept in [owner-statements.md](owner-statements.md). Each has a check that code can run, so any session can verify the room is on track without trusting another session's account. The decisions ledger, [decisions.csv](decisions.csv), has a row for each, naming its test or saying what is missing.
 
 | | Axiom | From | Check |
 |---|---|---|---|
