@@ -73,17 +73,25 @@ def runs(ledger, win: Window, now: float) -> list[dict]:
             if r["model"] is not None and not (r["ended_at"] is None and orphaned(r, now))]
 
 
-def ledger_names(reg: Registry) -> dict[str, str]:
-    """{registry key: the name its runs carry in the ledger}: the `[project] name` in the room.toml at its path, or the
-    key when that has no name."""
-    names = {}
+NO_NAME = "(no project name)"
+
+
+def ledger_names(reg: Registry) -> dict[str, str | None]:
+    """{registry key: the name its runs carry in the ledger}: the `[project] name` in the room.toml at its path, or None
+    when it has none, because the dispatcher then records its runs with a NULL project. Two keys that resolve to one
+    name would each be given the whole spend, so that is refused."""
+    names: dict[str, str | None] = {}
     for key, p in reg.projects.items():
         path = Path(p.path) / "room.toml"
         try:
             cfg = config_mod.load(path, follow_host=False)
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise RegistryError(f"project {key!r}: can't read {path}: {exc}") from None
-        names[key] = cfg["project"].get("name") or key
+        name = cfg["project"].get("name") or None
+        for other, taken in names.items():
+            if taken == name:
+                raise RegistryError(f"projects {other!r} and {key!r} both write runs as {name or 'no name'!r}")
+        names[key] = name
     return names
 
 
@@ -99,4 +107,4 @@ def standings(ledger, reg: Registry, provider: str, now: float) -> Report | None
     slack = config_mod.DEFAULTS["budget"].get(provider, {}).get("weekly_slack", 0)
     rows = pie.standings(projects, by_key, win.elapsed, slack)
     known = set(names.values())
-    return Report(win, rows, reg.owner_share(), {name: pct for name, pct in spent.items() if name not in known})
+    return Report(win, rows, reg.owner_share(), {name or NO_NAME: pct for name, pct in spent.items() if name not in known})

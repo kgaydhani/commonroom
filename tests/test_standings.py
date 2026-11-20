@@ -12,7 +12,7 @@ from unittest import mock
 
 from commonroom import cli, dispatch, gate, liveness, pie, registry, standings, usage
 from commonroom.ledger import Ledger
-from commonroom.registry import Project, Registry
+from commonroom.registry import Project, Registry, RegistryError
 from tests.test_dispatch import FakeBoard, cfg_with
 
 H = 3600
@@ -94,9 +94,31 @@ class Standings(Room):
         self.assertEqual(standings.ledger_names(reg), {"alpha": "alpha-site", "beta": "beta-site"})
         self.assertEqual(self.spent(standings.standings(self.ledger, reg, "claude", self.now))["alpha"], 4.5)
 
-    def test_a_room_toml_with_no_name_maps_to_the_key(self):
+    def test_a_room_toml_with_no_name_maps_to_none_which_its_runs_carry(self):
         reg = Registry({"gamma": Project("gamma", self.project_dir("gamma", None), 10)})
-        self.assertEqual(standings.ledger_names(reg), {"gamma": "gamma"})
+        self.assertEqual(standings.ledger_names(reg), {"gamma": None})
+
+    def test_a_null_project_run_is_counted_for_a_nameless_project(self):
+        self.week()
+        self.add_run(None, self.now - 3 * H, self.now - 2 * H)
+        reg = Registry({"gamma": Project("gamma", self.project_dir("gamma", None), 10)})
+        report = standings.standings(self.ledger, reg, "claude", self.now)
+        self.assertGreater(report.rows[0].spent, 0)
+
+    def test_a_null_project_run_with_no_registered_owner_never_reaches_a_sort(self):
+        self.week()
+        self.add_run(None, self.now - 3 * H, self.now - 2 * H)
+        self.add_run("other", self.now - 2 * H, self.now - 1 * H)
+        report = standings.standings(self.ledger, self.register(), "claude", self.now)
+        self.assertIn(standings.NO_NAME, report.unregistered)
+        self.assertTrue(all(isinstance(k, str) for k in report.unregistered))
+        sorted(report.unregistered.items())
+
+    def test_two_keys_with_one_ledger_name_are_refused(self):
+        reg = Registry({"a": Project("a", self.project_dir("a", "same"), 10),
+                        "a2": Project("a2", self.project_dir("a2", "same"), 10)})
+        with self.assertRaises(RegistryError):
+            standings.ledger_names(reg)
 
     def test_a_reading_from_another_window_is_ignored(self):
         self.week()
