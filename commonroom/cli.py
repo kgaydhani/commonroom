@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from commonroom import board, config as config_mod, gate, guard, usage
+from commonroom import board, config as config_mod, gate, guard, metrics, usage
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
@@ -398,6 +398,8 @@ def digest(cfg: dict, hours: float) -> dict:
                     "actions_reported": sum(r.get("actions_checked") or 0 for r in runs),
                     "actions_unverified": sum(len(r["unverified"]) for r in runs)},
         "efficiency": efficiency(ledger, project, since, now),
+        # Per-merge cost over 7 and 30 days whatever `hours` is, with `over_target` naming any target missed (commonroom#211).
+        "metrics": metrics.project_report(ledger, project, cfg, now),
         "hours_since_last": {role: round((now - t) / 3600, 1) if t is not None else None for role, t in last_role.items()},
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
         "breakers": ledger.open_breakers(project),
