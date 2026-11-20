@@ -12,7 +12,7 @@ from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom import standings
-from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
+from commonroom.dispatch import READER_COOLDOWN, Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom import handshake
 from commonroom.ledger import Ledger
@@ -117,9 +117,14 @@ def cmd_probe(args) -> int:
     ledger, failures = Ledger(), 0
     targets = PROVIDERS if args.provider == "all" else (args.provider,)
     for provider in targets:
+        # The same cooldown as the dispatchers' refresh, so a failing reader is launched once per 30 minutes in all.
+        if not ledger.reader_claim(provider, time.time(), READER_COOLDOWN):
+            print(f"{provider}: skipped - a reader ran within the last {READER_COOLDOWN // 60} minutes")
+            continue
         try:
             observations = usage.codex_limits() if provider == "codex" else usage.claude_screen_limits()
             ledger.record_usage(observations)
+            ledger.reader_clear(provider)
             print(f"{provider}: " + ", ".join(f"{o['window']} {o['used_pct']:.0f}%" for o in observations))
         except Exception as exc:
             failures += 1

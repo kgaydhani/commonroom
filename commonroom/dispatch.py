@@ -42,6 +42,7 @@ INTERACTIVE_PHRASE = "interactive session"
 # names hold the room's values; a Dispatcher reads a number through `Dispatcher.policy`, which applies its project's
 # `[policy]` overrides (POLICY_CONSTANTS maps the names).
 POLICY = policy_mod.DEFAULTS
+READER_COOLDOWN = 1800   # seconds between launches of a provider's meter reader, all processes together
 DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 # What the room tells workers lives in commonroom/ways/prompts/<name>.md, not here (commonroom#216). `{{name}}` marks a
 # value the code fills in. The files are read once, at import: a running dispatcher keeps the text it started with
@@ -3104,19 +3105,17 @@ class Dispatcher:
     def refresh_readings(self, now: float):
         """Re-read stale meters without inference. Failures just leave the reading stale (the gate holds)."""
         limit = self.cfg["freshness_seconds"] * 0.6
-        failed = getattr(self, "_probe_failed", {})
-        self._probe_failed = failed
         for provider, reader in (("codex", usage.codex_limits), ("claude", usage.claude_screen_limits)):
             rows = self.ledger.latest_usage(provider)
             if rows and all(now - r["observed_at"] < limit for r in rows.values()):
                 continue
-            if now - failed.get(provider, 0) < 1800:
-                continue  # a probe that just failed will fail again; workers' own events keep readings fresh
+            # One cooldown per provider in the ledger, so every dispatcher and `room.py probe` share it (commonroom#235).
+            if not self.ledger.reader_claim(provider, now, READER_COOLDOWN):
+                continue  # another process tried within the cooldown; workers' own events keep readings fresh
             try:
                 self.ledger.record_usage(reader())
-                failed.pop(provider, None)
+                self.ledger.reader_clear(provider)
             except Exception as exc:
-                failed[provider] = now
                 self.log(f"   {provider} meter refresh failed (retrying in 30 min): {str(exc)[:160]}")
 
     def recover_orphans(self, now: float | None = None) -> list[str]:
