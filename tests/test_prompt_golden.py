@@ -76,7 +76,7 @@ class GoldenPrompts(unittest.TestCase):
         self.ledger.close(); self.tmp.cleanup()
 
     def dispatcher(self, name, provider="claude"):
-        cfg = config.merge(config.DEFAULTS, CONFIGS[name])
+        cfg = config.merge(config.DEFAULTS, CONFIGS[name] if isinstance(name, str) else name)
         cfg["_root"] = self.tmp.name
         d = dispatch.Dispatcher(cfg, self.ledger, board=Board(), log=lambda *_: None)
         d.room_root = Path("X:/room")      # the checkout `room.py check` runs from
@@ -102,6 +102,32 @@ class GoldenPrompts(unittest.TestCase):
         out["bulletin"] = self.bulletin()
         for env in ("", "docs/machine.md"):
             out["sweep" + ("-environment" if env else "")] = self.sweep(env)
+        return out | self.edges()
+
+    def edges(self) -> dict[str, str]:
+        """Branches the reviewer of #216 found the grid above missed. Unlike the rest, these fixtures were rendered by
+        the code after the move: the reviewer's differential run of old and new code showed them equal."""
+        plain = CONFIGS["plain"]
+        cases = {   # name -> (config, job, branch, open PR)
+            "edge-review-no-ci-no-test": (plain | {"checks": {"ci": False}}, JOBS["review"][0], "i7-thing", None),
+            "edge-review-odd-branch": (plain, lambda: dispatch.Job("review", "reviewer", pr={
+                "number": 5, "headRefName": "fix-thing", "headRefOid": "abc1234"}), "fix-thing", None),
+            "edge-build-pr-closed": (plain, JOBS["build"][0], "i7-make-the-thing", {"number": 5, "state": "CLOSED"}),
+            "edge-why-mission-only": ({"project": plain["project"], "goal": {"milestone": None}}, JOBS["build"][0],
+                                      "i7-make-the-thing", None),
+            "edge-audit-every-0": (plain | {"audit": {"every_hours": 0}}, JOBS["audit"][0], None, None),
+            "edge-audit-every-fraction": (plain | {"audit": {"every_hours": 5.5}}, JOBS["audit"][0], None, None),
+        }
+        out = {}
+        for name, (cfg, job, branch, pr) in cases.items():
+            d = self.dispatcher(cfg)
+            d.board.pr_for_branch = lambda branch, pr=pr: pr
+            out[name] = d.prompt(job(), branch) + d.why() + d.headless_note()
+        # A review continuation whose PR carries no head sha reads the branch's remote head instead.
+        d = self.dispatcher("plain")
+        d.remote_head = lambda branch: "def5678"
+        review = dispatch.Job("review", "reviewer", pr={"number": 5, "headRefName": "i7-thing"})
+        out["edge-continue-review-no-sha"] = d.continuation_prompt(review, "i7-thing", {"status": "limited"}) + d.headless_note()
         return out
 
     def bulletin(self) -> str:
@@ -138,7 +164,14 @@ class GoldenPrompts(unittest.TestCase):
         """Build with and without a PR, merge-main, scout, role, review, audit and director; both providers; trusted
         logins, CI, a test command and both `[prompts]` keys on and off; and the variants each one switches."""
         rendered = self.rendered()
-        self.assertEqual(len(rendered), len(CONFIGS) * (2 * len(JOBS) + len(CONTINUATIONS)) + 6)
+        self.assertEqual(len(rendered), len(CONFIGS) * (2 * len(JOBS) + len(CONTINUATIONS)) + 6 + 7)
+        self.assertIn("Run `the project's tests` here", rendered["edge-review-no-ci-no-test"])
+        self.assertIn("(it implements issue #?)", rendered["edge-review-odd-branch"])
+        self.assertNotIn("A PR already exists", rendered["edge-build-pr-closed"])
+        self.assertIn("it serves the mission: Ship the thing. Judge", rendered["edge-why-mission-only"])
+        self.assertIn("now at head def5678.", rendered["edge-continue-review-no-sha"])
+        self.assertIn("--hours 1`", rendered["edge-audit-every-0"])
+        self.assertIn("--hours 5.5`", rendered["edge-audit-every-fraction"])
         self.assertNotIn("@", rendered["bare-claude-build-pr"])
         self.assertIn("raised by @co-editor, @o,", rendered["full-claude-build-pr"])
         self.assertIn("This repo has no CI", rendered["full-claude-review"])
