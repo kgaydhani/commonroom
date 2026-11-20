@@ -26,6 +26,7 @@ from pathlib import Path
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom import policy as policy_mod
 from commonroom.ledger import Ledger
+from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
 from commonroom.lock import acquire_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -904,22 +905,6 @@ def ci_infra_only(detail: dict) -> bool:
 HEADLESS_NOTE = "\n\n" + WAYS["headless"]
 CODEX_CANNOT = {"kind:perf"}   # Codex's Windows sandbox can't start Chrome/Edge (gamemirage#121)
 ROOM_ROOT = Path(__file__).resolve().parent.parent   # the Common Room checkout this code runs from
-ORPHAN_AGE = 7200   # a worker never runs past an hour; a run 'running' for longer has lost its dispatcher
-
-
-def pid_alive(pid: int) -> bool:
-    """Is this dispatcher process still running? Errs towards yes: wrongly closing a live run is worse."""
-    try:
-        if os.name == "nt":
-            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FI", "IMAGENAME eq python.exe", "/NH"],
-                                 capture_output=True, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
-            return str(pid) in out
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except Exception:
-        return True
 
 
 def owner_comments(issue: dict) -> list[dict]:
@@ -1096,12 +1081,6 @@ def session_file(worktree, session_id: str, projects_dir: Path | None = None) ->
     """Where Claude Code keeps a session started in `worktree`: <projects>/<path, non-alphanumerics as '-'>/<id>.jsonl."""
     root = projects_dir or Path.home() / ".claude" / "projects"
     return root / usage.session_folder(worktree) / f"{session_id}.jsonl"
-
-
-def orphaned(run: dict, now: float) -> bool:
-    """A 'running' row whose dispatcher is gone: older than ORPHAN_AGE, or its pid (not ours) is dead."""
-    dead = run.get("pid") and run["pid"] != os.getpid() and not pid_alive(run["pid"])
-    return bool(dead) or now - run["started_at"] >= ORPHAN_AGE
 
 
 @dataclass

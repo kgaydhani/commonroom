@@ -84,9 +84,9 @@ When the owner is away, a scheduled heartbeat runs `room run`. It dispatches rea
 - **No-output breaker:** if the last 3 finished autonomous runs produced nothing, autonomy stops until someone runs `room breaker reset`, with a diagnosis attached.
 - **Repeated-failure breaker:** a task that fails twice goes to the director, never to an 18th attempt.
 
-## The pie: registry and arithmetic (not yet wired in)
-The first part of "The pie" in [design-v3.md](design-v3.md) exists but nothing uses it yet, so every project runs as
-described above (commonroom#225).
+## The pie: registry, arithmetic and standings (shown, not yet gated on)
+The first part of "The pie" in [design-v3.md](design-v3.md) exists and `room pie` shows it, but nothing is gated on it
+yet, so every project runs as described above (commonroom#225, commonroom#238).
 - **Registry** (`commonroom/registry.py`): `<room home>/projects.toml` lists projects, each with a `path` holding a
   `room.toml`, a `share` of the weekly allowance (0 to 100, summing to at most 100), `work` (`fixed` or `open`), `when`
   (`paced` or `spare`) and `strict`. The owner's own slice is `100 - sum(shares)`, derived. A missing file is an empty
@@ -98,6 +98,13 @@ described above (commonroom#225).
   line for its share, else one over its line on share lent by a non-strict project with nothing ready while the
   projects' total spend is under their lines (strict projects' unused share held back), else a `spare` project. A
   share of zero never runs. The owner's own use is the gate's business, not the pie's.
+- **Standings** (`commonroom/standings.py`, read-only): for one provider at a given `now`, the weekly window of the
+  latest `seven_day` reading (none once it has reset), that window's readings only (another window's reset time is
+  left out), every run on the provider in it except runs with no model and open runs whose dispatcher died
+  (`liveness.orphaned`), and each registered project's estimated spend, line (the room's default `weekly_slack`) and
+  headroom. Runs are matched to a registry entry by the `[project] name` in the `room.toml` at its path. `room pie
+  [--json]` prints them per provider with the owner's slice and his estimated own use (plan-wide less every room
+  project's estimate), marks every estimate, and marks a reading older than `freshness_seconds` as STALE.
 - **Registry warnings.** `add`, `set` and `remove` refuse only for the project being changed and for rules of the
   whole registry. Another project's problem, such as a missing folder, is printed as a warning and the change is
   saved.

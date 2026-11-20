@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from commonroom import config, dispatch, gate, usage, workers
+from commonroom import config, dispatch, gate, liveness, usage, workers
 from commonroom.ledger import Ledger
 
 
@@ -1408,9 +1408,9 @@ class WithLedger(unittest.TestCase):
         run = self.ledger.start_run("gone", "#1", "builder", "claude")
         with self.ledger.db:
             self.ledger.db.execute("UPDATE runs SET pid=? WHERE id=?", (os.getpid() + 1, run))
-        with mock.patch.object(dispatch, "pid_alive", return_value=False):
+        with mock.patch.object(liveness, "pid_alive", return_value=False):
             self.assertIsNotNone(self.background(only))
-        with mock.patch.object(dispatch, "pid_alive", return_value=True):
+        with mock.patch.object(liveness, "pid_alive", return_value=True):
             self.assertIsNone(self.background(only))
 
     def test_background_window(self):

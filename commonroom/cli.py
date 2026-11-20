@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
+from commonroom import standings
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
@@ -616,6 +617,61 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def _pie_json(report: standings.Report | None, now: float) -> dict | None:
+    if report is None:
+        return None
+    w = report.window
+    return {"resets_at": w.resets_at, "week_gone": w.elapsed, "used_pct": w.used_pct, "reading_at": w.observed_at,
+            "reading_age_seconds": now - w.observed_at,
+            "stale": now - w.observed_at > config_mod.DEFAULTS["freshness_seconds"],
+            "projects_total_est": report.projects_total, "unregistered_est": report.unregistered,
+            "owner_share": report.owner_share, "owner_use_est": report.owner_use,
+            "projects": [{"name": s.name, "share": s.share, "when": s.when, "strict": s.strict, "spent_est": s.spent,
+                          "line": s.allowed, "headroom_est": s.headroom} for s in report.rows]}
+
+
+def cmd_pie(args) -> int:
+    """Each registered project's standing against its share of each provider's week (commonroom#238). Read-only:
+    nothing is gated on it. Spend per project is an estimate, because the meter is plan-wide."""
+    path, now = registry.default_path(), time.time()
+    try:
+        reg = registry.load(path)
+        if not reg.projects:
+            print(json.dumps({"registry": str(path), "providers": {}}) if args.json else f"no projects are registered in {path}")
+            return 0
+        ledger = Ledger()
+        try:
+            reports = {provider: standings.standings(ledger, reg, provider, now) for provider in PROVIDERS}
+        finally:
+            ledger.close()
+    except registry.RegistryError as exc:
+        print(json.dumps({"registry": str(path), "error": str(exc)}) if args.json else f"problem: {exc}",
+              file=sys.stdout if args.json else sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps({"registry": str(path), "providers": {p: _pie_json(r, now) for p, r in reports.items()}}, indent=2))
+        return 0
+    print("est. = an estimate: the meter is plan-wide, so each project's part is inferred from its runs")
+    for provider, report in reports.items():
+        if report is None:
+            print(f"{provider}: no current weekly reading")
+            continue
+        w = report.window
+        resets = datetime.fromtimestamp(w.resets_at).strftime("%a %d %b %H:%M")
+        print(f"{provider}: {w.elapsed:.0%} of the week gone, resets {resets}; plan-wide {w.used_pct:.1f}% used")
+        if now - w.observed_at > config_mod.DEFAULTS["freshness_seconds"]:
+            print(f"  STALE: the latest reading is from {_clock(w.observed_at)}, {_ago(now - w.observed_at)} old; "
+                  "use since then is not counted, and the lines are for now")
+        others = "".join(f"; {name} (not registered) est. {pct:.1f}%" for name, pct in sorted(report.unregistered.items()))
+        print(f"  projects est. {report.projects_total:.1f}%{others}; owner's slice "
+              f"{registry.fmt_number(report.owner_share)}, his own use est. {report.owner_use:.1f}%")
+        print(f"  {'project':<16} {'share':>5}  {'when':<6} {'spent est.':>10} {'line':>6} {'headroom est.':>13}")
+        for s in report.rows:
+            print(f"  {s.name:<16} {registry.fmt_number(s.share):>5}  {s.when:<6} {s.spent:>10.1f} {s.allowed:>6.1f} "
+                  f"{s.headroom:>+13.1f}")
+    return 0
+
+
 def cmd_reddit(args) -> int:
     """Read-only Reddit research through public archives. Small reads only: no bulk collection, never training."""
     from commonroom import reddit
@@ -674,6 +730,7 @@ def main(argv: list[str] | None = None) -> int:
     q = ps.add_parser("set", help="change a project's share or mode"); q.add_argument("name"); q.add_argument("--share", type=float)
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
+    p = sub.add_parser("pie", help="each project's standing against its share of the week (read-only, estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     args = parser.parse_args(argv)
     return args.func(args)
 
