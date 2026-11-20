@@ -82,6 +82,18 @@ When the owner is away, a scheduled heartbeat runs `room run`. It dispatches rea
 - **No-output breaker:** if the last 3 finished autonomous runs produced nothing, autonomy stops until someone runs `room breaker reset`, with a diagnosis attached.
 - **Repeated-failure breaker:** a task that fails twice goes to the director, never to an 18th attempt.
 
+## The pie: registry and arithmetic (not yet wired in)
+The first part of "The pie" in [design-v3.md](design-v3.md) exists but nothing uses it yet, so every project runs as
+described above (commonroom#225).
+- **Registry** (`commonroom/registry.py`): `<room home>/projects.toml` lists projects, each with a `path` holding a
+  `room.toml`, a `share` of the weekly allowance (0 to 100, summing to at most 100), `work` (`fixed` or `open`), `when`
+  (`paced` or `spare`) and `strict`. The owner's own slice is `100 - sum(shares)`, derived. A missing file is an empty
+  registry. `room projects` lists it; `add`, `set` and `remove` change it, and refuse a change that breaks a rule.
+- **Arithmetic** (`commonroom/pie.py`, pure): an estimate of each project's weekly spend from plan-wide readings and
+  run times; each project's line, `share × elapsed + share% of weekly_slack`; and whose turn it is: the `paced` project
+  with work furthest under its line for its share, else one over its line on share lent by a non-strict project with
+  nothing ready, else a `spare` project. A share of zero never runs.
+
 ## Roles (defaults)
 | Role | Default | Notes |
 |---|---|---|
