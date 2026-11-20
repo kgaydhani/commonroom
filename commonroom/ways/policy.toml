@@ -53,5 +53,5 @@ run_timeout_seconds = { value = 3600, min = 300, max = 14400 }
 
 # The most tokens one rendered prompt may have: the room hands over the task and leaves the method to the model.
 prompt_max_tokens = 700
-# The most tokens all of commonroom/ways/prompts/ may have together, so new text replaces old instead of piling up.
-templates_max_tokens = 2500
+# The most tokens commonroom/ways/prompts/ and handshake/ may have together, so new text replaces old instead of piling up.
+templates_max_tokens = 2530

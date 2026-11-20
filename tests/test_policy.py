@@ -33,7 +33,7 @@ PINNED = {
 
 
 # Values added to the table since the move, with the value each was added at.
-NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 2500}   # commonroom#231
+NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 2530}   # commonroom#231; 2530: #262
 
 
 class PinnedValues(unittest.TestCase):
