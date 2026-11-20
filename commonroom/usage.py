@@ -193,6 +193,16 @@ def parse_claude_screen(text: str, now: float) -> list[dict]:
     return result
 
 
+def claude_screen_blocker(text: str, cwd: str) -> str | None:
+    """Why the hidden Claude terminal can never show a usage panel, or None. A logged-out CLI says
+    'Not logged in · Run /login' in its start-up footer and its /usage shows only API cost, so waiting is pointless."""
+    if "Yes, I trust this folder" in text:
+        return f"Open Claude once in {cwd} and trust the folder to enable the /usage reader"
+    if "Not logged in" in text:
+        return "Claude CLI is logged out: the owner must run `claude` in a terminal and /login"
+    return None
+
+
 def claude_executable() -> str | None:
     found = shutil.which("claude")
     if found:
@@ -240,8 +250,9 @@ def claude_screen_limits(cwd: str | None = None, timeout: float = 45) -> list[di
             except queue.Empty:
                 pass
             text = "\n".join(screen.display)
-            if "Yes, I trust this folder" in text:
-                raise RuntimeError(f"Open Claude once in {cwd} and trust the folder to enable the /usage reader")
+            blocker = claude_screen_blocker(text, cwd)
+            if blocker:
+                raise RuntimeError(blocker)
             if "Claude Code v" in text and ready_at is None:
                 ready_at = max(time.monotonic() + 2, launched + 10)
             if ready_at and time.monotonic() >= ready_at and not sent:
