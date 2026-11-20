@@ -80,11 +80,11 @@ On what "better" means for a project:
 
 13 Nov 2026
 
-> it makes collaboration between different peoples llms easier (like when i want to send [my partner] magazine stuff for her claude so that when shes using her claude to make instagram posts then it can benefit from the stuff we send it), it makes collaboration between peoples own multupke agents a million times easier (ie if i want my claude to prompt my chatgpt image gen, or i want my chatgpt to review my claudes code or whatever)
+> it makes collaboration between different peoples llms easier (like when i want to send [his co-editor] magazine stuff for her claude so that when shes using her claude to make instagram posts then it can benefit from the stuff we send it), it makes collaboration between peoples own multupke agents a million times easier (ie if i want my claude to prompt my chatgpt image gen, or i want my chatgpt to review my claudes code or whatever)
 
 20 Nov 2026
 
-> i wouldnt want [her] to be donating token resource to the shared pool but i would still want it connected so that i can quickly share infornation with her claude and have it set up very non costly things on her lower pro subscription like just having a quick pull in every couple hours, but like at the moment everytime im like pull in from git it has to check everything, and i have to tell [her] to do it who forgets or doesnt really get why and i have to repeat so much stuff between the two claudes
+> i wouldnt want [her] to be donating token resource to the shared pool but i would still want it connected so that i can quickly share infornation with her claude and have it set up very non costly things on her [smaller plan] like just having a quick pull in every couple hours, but like at the moment everytime im like pull in from git it has to check everything, and i have to tell [her] to do it who forgets or doesnt really get why and i have to repeat so much stuff between the two claudes
 
 13 Nov 2026
 
