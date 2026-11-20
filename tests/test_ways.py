@@ -38,7 +38,21 @@ def long_literals(node: ast.AST) -> list[str]:
         if (isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub is not skip and id(sub) not in parts
                 and len(sub.value) > LONGEST):
             found.append(sub.value)
+    for sub in ast.walk(node):   # text assembled with `+` from short literals counts as one
+        if isinstance(sub, ast.BinOp) and isinstance(sub.op, ast.Add):
+            literal = "".join(literal_text(sub))
+            if len(literal) > LONGEST and literal not in found:
+                found.append(literal)
     return found
+
+
+def literal_text(node: ast.AST) -> list[str]:
+    """The literal string parts of a `+` chain, f-strings included."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return literal_text(node.left) + literal_text(node.right)
+    if isinstance(node, ast.JoinedStr):
+        return [v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str)]
+    return [node.value] if isinstance(node, ast.Constant) and isinstance(node.value, str) else []
 
 
 class AxiomA1(unittest.TestCase):
@@ -65,6 +79,8 @@ class AxiomA1(unittest.TestCase):
         self.assertEqual(len(found(f"def f(a):\n    return f'{long[:50]}{{a}}{long[50:]}'")), 1)
         self.assertEqual(len(found(f"def f():\n    return ('{long[:50]}' '{long[50:]}')")), 1)
         self.assertEqual(found(f"def f():\n    '''{long}'''\n    return 'short'"), [])
+        self.assertEqual(len(found(f"def f(a):\n    return '{long[:50]}' + a + f'{{a}}{long[50:]}'")), 1)
+        self.assertEqual(found("def f(a):\n    return '\\n\\n' + a + ' ' + a"), [])
 
 
 class Templates(unittest.TestCase):
