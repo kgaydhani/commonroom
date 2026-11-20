@@ -32,6 +32,10 @@ PINNED = {
 }
 
 
+# Values added to the table since the move, with the value each was added at.
+NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 2500}   # commonroom#231
+
+
 class PinnedValues(unittest.TestCase):
     def test_every_constant_keeps_its_value(self):
         for (module, name), value in PINNED.items():
@@ -54,9 +58,12 @@ class PinnedValues(unittest.TestCase):
                  "run_timeout_seconds": ("RUN_TIMEOUT", 3600)}
         with open(REPO / "commonroom" / "ways" / "policy.toml", "rb") as f:
             raw = tomllib.load(f)
-        self.assertEqual(set(raw), set(table))
-        self.assertEqual(set(policy.NAMES), set(table))
+        self.assertEqual(set(raw), set(table) | set(NEW))
+        self.assertEqual(set(policy.NAMES), set(table) | set(NEW))
         self.assertEqual(dispatch.POLICY_CONSTANTS, {k: c for k, (c, _) in table.items()})
+        for name, value in NEW.items():   # no code constant: tests/test_prompt_budget.py reads them
+            with self.subTest(name=name):
+                self.assertEqual((raw[name], policy.DEFAULTS[name]), (value, value))
         for name, (constant, value) in table.items():
             with self.subTest(name=name):
                 self.assertEqual(raw[name], value)
@@ -116,7 +123,7 @@ class ProjectOverride(unittest.TestCase):
     def test_unset_means_the_rooms_values(self):
         for d in (self.dispatcher("a"), self.dispatcher("b", {})):
             self.assertEqual(d.policy_overrides, {})
-            for name in policy.NAMES:
+            for name in dispatch.POLICY_CONSTANTS:   # the dispatcher's numbers; the rest are room-wide only
                 self.assertEqual(d.policy(name), policy.DEFAULTS[name], name)
 
     def test_an_unknown_room_wide_or_bad_name_fails_naming_it(self):
@@ -124,6 +131,9 @@ class ProjectOverride(unittest.TestCase):
             self.dispatcher("a", {"review_round": 3})
         with self.assertRaisesRegex(ValueError, "ci_reruns is room-wide only"):
             self.dispatcher("a", {"ci_reruns": 1})
+        for name in NEW:
+            with self.assertRaisesRegex(ValueError, f"{name} is room-wide only because it limits the room's own text"):
+                self.dispatcher("a", {name: 5000})
         with self.assertRaisesRegex(ValueError, "review_rounds must be a whole number"):
             self.dispatcher("a", {"review_rounds": True})
 
