@@ -124,6 +124,7 @@ td.t{color:var(--dim);white-space:nowrap}
     <section id="queueSec"><h2><span>Your queue · <span id="qcount">0</span></span><span class="pg">P201</span></h2><div id="queue"><div class="empty">Loading</div></div></section>
     <div class="side">
       <section id="proofSec"><h2><span>Proof · last 24h</span><span class="pg">P300</span></h2><div id="proof"></div></section>
+      <section id="metricsSec"><h2><span>Cost per merge</span><span class="pg">P350</span></h2><table id="metrics"></table><div id="metricsFlags"></div></section>
       <section id="usageSec"><h2><span>Allowance</span><span class="pg">P400</span></h2><div id="usage"></div></section>
     </div>
     <section class="full" id="liveSec"><h2><span>Live</span><span class="pg">P500</span></h2><div class="feedhead" id="feedHead"></div><pre class="feed" id="feed"></pre></section>
@@ -200,6 +201,24 @@ function renderProof(p){
     +row('CLAUDE WEEKLY SPENT',p.weekly_spent_24h+'%','')+row('FAILURES',p.failed_24h,'');
 }
 
+function renderMetrics(m){
+  if(!m){$('metrics').innerHTML='';return}
+  const t=m.targets||{},a=m['7d']||{},b=m['30d']||{};
+  const n=v=>v==null?'n/a':v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e4?Math.round(v/1e3)+'k':String(v);
+  const row=(k,key,target)=>`<tr><td class="t">${k}</td><td>${n(a[key])}</td><td>${n(b[key])}</td><td class="t">${target==null?'':'&le;'+n(target)}</td></tr>`;
+  const roles=[...new Set([...Object.keys(a.runs_per_merge_by_role||{}),...Object.keys(b.runs_per_merge_by_role||{})])];
+  const models=[...new Set([...Object.keys(a.by_builder_model||{}),...Object.keys(b.by_builder_model||{})])];
+  const sub=(x,k,key)=>((x[k]||{})[key]);
+  $('metrics').innerHTML=`<tr><td class="t"></td><td class="dim">7D</td><td class="dim">30D</td><td class="dim">TARGET</td></tr>`
+    +row('MERGES','merges')+row('INPUT TOKENS','input_tokens_per_merge',t.input_tokens_per_merge)
+    +row('&nbsp;UNCACHED','uncached_per_merge')+row('&nbsp;CACHE WRITE','cache_write_per_merge')+row('&nbsp;CACHE READ','cache_read_per_merge')
+    +row('REVIEW RUNS','review_runs_per_merge',t.review_runs_per_merge)+row('CHANGES ROUNDS','changes_rounds_per_merge')
+    +row('RUNS','runs_per_merge')+roles.map(r=>`<tr><td class="t">&nbsp;${esc((roleName[r]||r).toUpperCase())}</td><td>${n((a.runs_per_merge_by_role||{})[r])}</td><td>${n((b.runs_per_merge_by_role||{})[r])}</td><td></td></tr>`).join('')
+    +row('MINUTES','minutes_per_merge')
+    +models.map(k=>`<tr><td class="t">&nbsp;${esc(k)} REV/CHG</td><td>${n(sub(a.by_builder_model||{},k,'review_runs_per_merge'))}/${n(sub(a.by_builder_model||{},k,'changes_rounds_per_merge'))}</td><td>${n(sub(b.by_builder_model||{},k,'review_runs_per_merge'))}/${n(sub(b.by_builder_model||{},k,'changes_rounds_per_merge'))}</td><td></td></tr>`).join('');
+  $('metricsFlags').innerHTML=(m.over_target||[]).map(f=>`<div><span class="blk bg-w">OVER</span> ${esc(f)}</div>`).join('');
+}
+
 function renderUsage(u){
   let h='';
   for(const [p,v] of Object.entries(u)){
@@ -244,7 +263,7 @@ async function refresh(){
     $('verdict').className='blk '+cls;$('verdict').textContent=rp.verdict;$('headline').textContent=rp.headline;
     $('reportWhen').textContent='UPDATED '+new Date(rp.updated*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+ago(rp.updated)+' AGO';
     if(!$('reportFull').open)$('reportBody').textContent=rp.body}
-  beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
+  beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderMetrics(d.metrics);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
   const w=d.worker;$('feedHead').textContent=w?`${w.file} · ${w.count} events · updated ${ago(w.updated)} ago`:'No worker activity yet';
   $('feed').textContent=w?w.events.join('\n'):'';const f=$('feed');f.scrollTop=f.scrollHeight;
   const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';

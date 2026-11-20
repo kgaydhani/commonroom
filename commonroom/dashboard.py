@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from commonroom import board, config as config_mod
+from commonroom import board, config as config_mod, metrics
 from commonroom.dispatch import verdicts
 from commonroom.ledger import Ledger
 
@@ -101,6 +101,7 @@ def state(cfg: dict) -> dict:
         result = {
             "report": latest_report(ledger, project),
             "proof": proof,
+            "metrics": metrics.project_report(ledger, project, cfg, now),
             "now": now, "version": VERSION, "project": cfg["project"], "goal": goal, "usage": usage_state, "runs": runs,
             "running": [r for r in runs if r["status"] == "running"],
             "breakers": ledger.open_breakers(project),
