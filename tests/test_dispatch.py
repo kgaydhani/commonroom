@@ -527,7 +527,7 @@ class WithLedger(unittest.TestCase):
         d, board, digest = self.bulletin_setup()
         with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
             reason = d.director_trigger()
-            self.assertEqual(reason, dispatch.BULLETIN_REASON.format(due="10:00", issue=286, owner="o"))
+            self.assertEqual(reason, dispatch.fill_way(dispatch.BULLETIN_REASON, due="10:00", issue=286, owner="o"))
             self.assertIn("bulletin missed (due 10:00): post a short text digest to #286 starting with @o", reason)
             # Agent comments don't count, nor does the bulletin for the previous slot (posted before its deadline).
             digest["comments"] += [self.said("[agent:director] @o morning digest", self.local(11, 8)),

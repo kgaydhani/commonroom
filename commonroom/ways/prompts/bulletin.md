@@ -1,0 +1,1 @@
+bulletin missed (due {{due}}): post a short text digest to #{{issue}} starting with @{{owner}} (merges since the last bulletin, open problems, a pointer to the Director log), and add a Director log entry saying the interactive session's schedules need recreating
