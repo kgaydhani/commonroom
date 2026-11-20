@@ -1,6 +1,6 @@
 # Common Room v3: design (draft for discussion)
 
-Draft of 20 Nov 2026. Nothing here is built or agreed. It follows the owner's vision as stated on 13 and 20 Nov, research done on 20 Nov, and the room's own ledger. [design.md](design.md) still describes what runs today.
+Draft of 20 Nov 2026. An agent's distillation of [the owner's statements](owner-statements.md), which win wherever this page differs from them. Nothing here is built or agreed. It follows the owner's vision as stated on 13 and 20 Nov, research done on 20 Nov, and the room's own ledger. [design.md](design.md) still describes what runs today.
 
 ## What it is for
 
