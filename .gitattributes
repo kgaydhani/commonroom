@@ -1,0 +1,2 @@
+# Prompt fixtures are compared byte for byte (commonroom#216): never convert their line endings.
+tests/golden_prompts/*.txt -text
