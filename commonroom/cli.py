@@ -336,7 +336,7 @@ def efficiency(ledger, project, since: float, now: float) -> dict:
     runs = [r for r in ledger.recent_runs(project, limit=2000) if r["started_at"] >= since]
     groups: dict = {}
     for r in runs:
-        if r["role"] in ("merge", "update"):
+        if r["role"] in metrics.ROOM_ROLES:
             continue
         g = groups.setdefault(f"{r['role']}/{r['provider']}:{r['model']}@{r.get('effort') or 'default'}",
                               {"runs": 0, "done": 0, "wasted": 0, "stopped": 0, "stopped_minutes": 0.0,
@@ -385,10 +385,10 @@ def digest(cfg: dict, hours: float) -> dict:
     result = {
         "window_hours": hours, "now": now, "project": cfg["project"], "goal": goal,
         "runs": runs,
-        "summary": {"runs": len([r for r in runs if r["role"] not in ("merge", "update")]),
+        "summary": {"runs": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES]),
                     "merges": len([r for r in runs if r["role"] == "merge"]),
                     "failed": len([r for r in runs if r["status"] in ("failed", "blocked")]),
-                    "no_output": len([r for r in runs if r["role"] not in ("merge", "update") and not r["outputs"]
+                    "no_output": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES and not r["outputs"]
                                       and r["status"] not in ("running", "room-error", "limited", "stopped")]),
                     "limited": len([r for r in runs if r["status"] == "limited"]),
                     # Cut short by the room (pause, reserve, breaker, dead dispatcher), not failed by the agent.

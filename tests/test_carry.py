@@ -157,6 +157,12 @@ class Carry(Base):
         rows = [{"role": "carry", "status": "done", "started_at": 5.0}, {"role": "reviewer", "status": "done", "started_at": 5.0}]
         self.assertEqual([r["role"] for r in metrics.model_runs(rows, 0, 10)], ["reviewer"])
 
+    def test_every_count_of_model_runs_uses_the_one_list_of_room_roles(self):
+        # The dashboard and the auditor's digest counted ("merge", "update") by hand, so a carry row read as a model run.
+        root = Path(__file__).resolve().parent.parent / "commonroom"
+        for path in root.glob("*.py"):
+            self.assertNotIn('("merge", "update")', path.read_text(encoding="utf-8"), path.name)
+
     def test_a_director_path_whose_stamp_cannot_be_carried_carries_nothing(self):
         board = self.board(self.merge_main(), files=["room.toml"])
         cfg = self.cfg()
