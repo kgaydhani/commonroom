@@ -2,10 +2,10 @@
 with `TESTS: PASS <head sha>`, so every merge of main into it used to cost a model re-review of a tree that only main
 changed. Code runs the project's tests on the new head instead, and a room comment records the result:
 
-    [room] TESTS: PASS <head sha> <command>: <result line>
+    TESTS: PASS <head sha> <command>: <result line>
     CARRIES: APPROVE <approval createdAt> TESTED <sha the reviewer tested>
 
-Plain functions here; the Dispatcher decides when a PR qualifies."""
+The board adds the `[room]` mark when it posts; `parse` takes it once or more. Plain functions here; the Dispatcher decides when a PR qualifies."""
 from __future__ import annotations
 
 import re
@@ -16,15 +16,15 @@ from pathlib import Path
 from commonroom import workers as workers_mod
 from commonroom.lock import claim_lock, release_lock
 
-RESULT = re.compile(r"\A\s*\[room\] TESTS: (PASS|FAIL|INCOMPLETE) ([0-9a-f]{7,40}) (.*)$", re.M)
+RESULT = re.compile(r"\A\s*(?:\[room\]\s*)+TESTS: (PASS|FAIL|INCOMPLETE) ([0-9a-f]{7,40}) (.*)$", re.M)
 CARRIES = re.compile(r"^CARRIES: APPROVE (\S+) TESTED ([0-9a-f]{7,40})\s*$", re.M)
 HEX = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
 DEFAULT_MAX_MINUTES = 10   # a hung suite gives the housekeeping lock back after this; `[checks] max_minutes` overrides
 
 
 def comment(result: str, head: str, command: str, line: str, approval_at: str, tested: str, url: str = "") -> str:
-    """The room's comment on a PR after it ran the tests on `head` for the approval posted at `approval_at`."""
-    first = f"[room] TESTS: {result} {head} {command}: {line}"
+    """The body of the room's comment on a PR (the board adds the `[room]` mark) after it ran the tests on `head` for the approval posted at `approval_at`."""
+    first = f"TESTS: {result} {head} {command}: {line}"
     if result == "PASS":
         return (f"{first}\nCARRIES: APPROVE {approval_at} TESTED {tested}\n\nThis head differs from {tested[:7]}, which "
                 f"the reviewer approved and tested ({url or approval_at}), only by clean merges of main, and the tests pass "

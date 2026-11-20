@@ -2045,7 +2045,7 @@ class Dispatcher:
                                  approval.get("url") or "")
         self.board.comment(n, body)
         detail.setdefault("comments", []).append({"createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                                                  "body": body})
+                                                  "body": f"{MARK} {body}"})
         if result == "PASS":
             return [f"PR #{n}: tests pass on {head[:7]} in code ({line}); the approval of {tested[:7]} carries"]
         return [f"PR #{n}: tests {'failed' if result == 'FAIL' else 'could not finish'} on {head[:7]} in code ({line}); "
