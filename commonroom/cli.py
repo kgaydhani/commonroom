@@ -14,7 +14,7 @@ from commonroom import board, config as config_mod, gate, guard, metrics, policy
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
-from commonroom.lock import acquire_lock, claim_lock, release_lock
+from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
 PROVIDERS = ("claude", "codex")
 
@@ -336,7 +336,7 @@ def efficiency(ledger, project, since: float, now: float) -> dict:
     runs = [r for r in ledger.recent_runs(project, limit=2000) if r["started_at"] >= since]
     groups: dict = {}
     for r in runs:
-        if r["role"] in ("merge", "update"):
+        if r["role"] in metrics.ROOM_ROLES:
             continue
         g = groups.setdefault(f"{r['role']}/{r['provider']}:{r['model']}@{r.get('effort') or 'default'}",
                               {"runs": 0, "done": 0, "wasted": 0, "stopped": 0, "stopped_minutes": 0.0,
@@ -385,10 +385,10 @@ def digest(cfg: dict, hours: float) -> dict:
     result = {
         "window_hours": hours, "now": now, "project": cfg["project"], "goal": goal,
         "runs": runs,
-        "summary": {"runs": len([r for r in runs if r["role"] not in ("merge", "update")]),
+        "summary": {"runs": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES]),
                     "merges": len([r for r in runs if r["role"] == "merge"]),
                     "failed": len([r for r in runs if r["status"] in ("failed", "blocked")]),
-                    "no_output": len([r for r in runs if r["role"] not in ("merge", "update") and not r["outputs"]
+                    "no_output": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES and not r["outputs"]
                                       and r["status"] not in ("running", "room-error", "limited", "stopped")]),
                     "limited": len([r for r in runs if r["status"] == "limited"]),
                     # Cut short by the room (pause, reserve, breaker, dead dispatcher), not failed by the agent.
@@ -531,7 +531,7 @@ def cmd_check(args) -> int:
         return 2
     wait = float((cfg.get("checks") or {}).get("lock_wait_minutes", 5)) * 60
     poll = float((cfg.get("checks") or {}).get("lock_poll_seconds", 3))
-    lock = ledger_mod.default_path().parent / "locks" / f"{_project_name(cfg) or 'default'}-suite.lock"
+    lock = suite_lock(ledger_mod.default_path().parent, _project_name(cfg))
     deadline, told = time.time() + wait, None
     # A sandbox that can read the room home but not write it (Codex) fails on any claim, the first or a retry after
     # the holder lets go: run unlocked then, as the test command alone would.

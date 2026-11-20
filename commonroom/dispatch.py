@@ -24,9 +24,9 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
-from commonroom import policy as policy_mod
+from commonroom import carry as carry_mod, policy as policy_mod
 from commonroom.ledger import Ledger
-from commonroom.lock import acquire_lock
+from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
 DEPENDS = re.compile(r"^(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
@@ -804,9 +804,10 @@ def resolves_only_conflicts(conflicted: str, resolved: str) -> bool:
     return True
 
 
-def merges_main_only(root: Path, oid: str, main: str = "origin/main") -> bool:
+def merges_main_only(root: Path, oid: str, main: str = "origin/main", clean: bool = False) -> bool:
     """Is this commit a merge of main into the branch that brings in main and nothing else? Its tree must be git's own
-    merge of its parents, or differ from it only inside the conflict hunks (commonroom#14). Any doubt: no."""
+    merge of its parents, or differ from it only inside the conflict hunks (commonroom#14). With `clean`, the merge
+    must have had no conflicts at all (commonroom#226). Any doubt: no."""
     def run(*args):
         return subprocess.run(["git", *args], cwd=root, capture_output=True, text=True, encoding="utf-8", errors="replace")
     try:
@@ -814,7 +815,7 @@ def merges_main_only(root: Path, oid: str, main: str = "origin/main") -> bool:
         if len(parents) != 2 or run("merge-base", "--is-ancestor", parents[1], main).returncode != 0:
             return False
         merged = run("merge-tree", "--write-tree", "--name-only", "--no-messages", *parents)
-        if merged.returncode not in (0, 1):
+        if merged.returncode not in (0, 1) or (clean and merged.returncode):
             return False
         tree, *conflicted = [line for line in merged.stdout.splitlines() if line]
         changed = run("diff", "--name-only", "--no-renames", tree, oid)
@@ -1132,6 +1133,10 @@ class Dispatcher:
         # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
         self.carry_cache = {}   # (stamp sha, head sha) -> may the stamp be carried; one compare per pair per pass
+        # Run the tests in code to carry an approval across clean merges of main (commonroom#226). Off unless the
+        # project asks, and never with CI, which already tests every head.
+        self.carry = bool((cfg.get("merge") or {}).get("carry_tested_approval")) and not self.ci
+        self.clean_merges = {}   # (tested sha, head sha) -> only clean merges of main between them; per pass
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
         # Pushes owner notifications to a phone (`[notify]`, commonroom#151). None: nothing is sent.
         self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
@@ -1181,7 +1186,7 @@ class Dispatcher:
     # Housekeeping (no model) -----------------------------------------------------------------------
     def housekeeping(self) -> list[str]:
         actions = []
-        self.carry_cache = {}
+        self.carry_cache, self.clean_merges = {}, {}
         everything = self.board.all_issues()
         state = {i["number"]: i["state"] for i in everything}
         prs = self.board.open_prs()
@@ -1207,7 +1212,7 @@ class Dispatcher:
                 self.board.comment(n, f"Released a stale claim: no room or moonshot run is working on this and it hasn't "
                                       f"changed for {claim['minutes']} min. Back to ready.")
             actions.append(f"released stale claim #{n}")
-        merged = updated = False
+        merged = updated = carried = False
         # Is main red? Read once per pass, mergeable PR or not, so a red main is rerun or gets its fix task within one
         # heartbeat (commonroom#111: gamemirage's main sat red 1 h 42 min unseen until a PR was approved). Without CI
         # there are no checks to read; it is then read only when a PR is first ready to merge, as before.
@@ -1247,6 +1252,12 @@ class Dispatcher:
                 # No CI: the reviewer's approval is the test, so it must state a passing run on this exact head. A
                 # branch the room brings up to date with main gets a new head, so the merged tree is reviewed again.
                 mergeable = review == "APPROVE" and self.tested(detail)
+                # One suite run per pass, and none once a merge moved main: this PR is then behind it again.
+                if (review == "APPROVE" and not mergeable and not merged and not carried and not self.dry_run
+                        and self.carry_pending(detail)):
+                    carried = True
+                    actions += self.carry_approval(pr, detail, issue_no)
+                    mergeable = self.tested(detail)
             if mergeable:
                 if not self.dry_run:
                     # One merge per pass, and only of a branch that already contains main, so the CI that passed ran
@@ -1941,7 +1952,104 @@ class Dispatcher:
     def tested(self, detail: dict) -> bool:
         """No CI: the approving review states a passing run of the project's test command on the PR head."""
         c = review_comment(self.reviewer_view(detail))
-        return bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test"))
+        return ((bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test")))
+                or self.carried_test(detail))
+
+    # Carrying a tested approval across clean merges of main (commonroom#226) --------------------------------------
+    def approval(self, detail: dict) -> dict | None:
+        """The reviewer's newest verdict comment if it is an APPROVE, whatever commits followed it."""
+        found = None
+        for c in self.reviewer_view(detail).get("comments") or []:
+            if verdict_of(c.get("body")):
+                found = c
+        return found if found and verdict_of(found.get("body")) == "APPROVE" else None
+
+    def room_result(self, detail: dict) -> dict | None:
+        """The room's newest `[room] TESTS:` comment that follows the last commit and names the PR head, parsed."""
+        last_commit = max((c.get("committedDate") or "" for c in detail.get("commits") or []), default="")
+        head, found = head_sha(detail).lower(), None
+        for c in detail.get("comments") or []:   # only trusted authors' comments reach here (TrustedBoard)
+            parsed = carry_mod.parse(c.get("body"))
+            if parsed and head and head.startswith(parsed["head"]) and (c.get("createdAt") or "") >= last_commit:
+                found = parsed
+        return found
+
+    def carried_test(self, detail: dict) -> bool:
+        """The room ran the tests on this head and they passed, carrying the reviewer's current approval, which tested
+        the commit it names."""
+        result, approval = self.room_result(detail) if self.carry else None, self.approval(detail)
+        command = (self.cfg.get("checks") or {}).get("test")
+        return bool(result and approval and command and result["result"] == "PASS"
+                    and result["line"].startswith(f"{command}:") and result["approval_at"] == approval.get("createdAt")
+                    and tested_on_head(approval.get("body") or "", result["tested"], command))
+
+    def carry_reason(self, detail: dict) -> str:
+        """Why the approval can't be carried to this head by running the tests in code, or '' if it can: the reviewer
+        approved and tested a commit of this PR, and every commit after it is a merge of main that had no conflicts.
+        A PR that waits for a director stamp which can't itself be carried is the director's (commonroom#168)."""
+        command, approval = (self.cfg.get("checks") or {}).get("test"), self.approval(detail)
+        if not self.carry or not command:
+            return "carrying is off"
+        if not approval:
+            return "no approval to carry"
+        oids = [(c.get("oid") or "").lower() for c in detail.get("commits") or []]
+        tested = carry_mod.tested_sha(approval.get("body"), oids)
+        if not tested or not tested_on_head(approval.get("body") or "", tested, command):
+            return "the approval names no tested commit of this PR"
+        later = oids[oids.index(tested) + 1:]
+        if not later or not all(later):
+            return "nothing to carry it across"
+        if self.needs_director(detail) and self.waits_for_director(detail):
+            return "the director's stamp can't be carried to this head"
+        key = (tested, head_sha(detail).lower())
+        if key not in self.clean_merges:
+            self.clean_merges[key] = self.cleanly_merges_main(detail.get("headRefName") or "", tested, key[1])
+        return "" if self.clean_merges[key] else "a commit since the tested one is not a clean merge of main"
+
+    def carry_pending(self, detail: dict) -> bool:
+        """The room will run the tests on this head itself, so it waits for that rather than for a reviewer."""
+        return (self.carry and not self.tested(detail) and self.room_result(detail) is None
+                and self.carry_reason(detail) == "")
+
+    def cleanly_merges_main(self, branch: str, tested: str, head: str) -> bool:
+        """Walking first parents back from `head` reaches `tested`, and every commit on the way is a clean merge of
+        main. The walk follows the branch's own history, not GitHub's date-ordered commit list, so a commit dated
+        before the tested one but added after it can't slip through. Any doubt: no."""
+        if not self.root or not branch or not tested or not head:
+            return False
+        try:
+            git(["fetch", "--quiet", "origin", "main", branch], self.root)
+            chain = git(["rev-list", "--first-parent", head], self.root).split()
+        except RuntimeError:
+            return False
+        chain = [c.lower() for c in chain]
+        if tested not in chain or chain.index(tested) == 0:
+            return False
+        return all(merges_main_only(self.root, oid, clean=True) for oid in chain[:chain.index(tested)])
+
+    def carry_approval(self, pr: dict, detail: dict, issue_no: int | None) -> list[str]:
+        """Run the tests on the PR head in code and say on the PR whether the approval carries. The run is a ledger row
+        with no model (provider none), like a merge."""
+        n, head, approval = pr["number"], head_sha(detail).lower(), self.approval(detail)
+        checks = self.cfg.get("checks") or {}
+        tested = carry_mod.tested_sha(approval.get("body"), [(c.get("oid") or "") for c in detail.get("commits") or []])
+        started = time.time()
+        result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
+                                           suite_lock(Path(self.ledger.path).parent, self.project),
+                                           float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+        if result == "BUSY":
+            return [f"PR #{n}: tests not run in code yet ({line}); next pass"]
+        run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{n}", "carry", "none", now=started)
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"PR #{n}", "head": head, "result": result}])
+        body = carry_mod.comment(result, head, checks["test"], line, approval.get("createdAt") or "", tested,
+                                 approval.get("url") or "")
+        self.board.comment(n, body)
+        detail.setdefault("comments", []).append({"createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                                  "body": body})
+        if result == "PASS":
+            return [f"PR #{n}: tests pass on {head[:7]} in code ({line}); the approval of {tested[:7]} carries"]
+        return [f"PR #{n}: tests {'failed' if result == 'FAIL' else 'could not finish'} on {head[:7]} in code ({line}); "
+                f"the approval is not carried, back to review"]
 
     def needs_review(self, detail: dict) -> bool:
         if not self.ci:
@@ -1949,7 +2057,7 @@ class Dispatcher:
             # approval, or one from before the room merged main into the branch, is reviewed again.
             view = self.reviewer_view(detail)
             return (latest_review(view) != "CHANGES" and not self.tested(detail)
-                    and incomplete_reviews(view) < self.policy("incomplete_rounds"))
+                    and incomplete_reviews(view) < self.policy("incomplete_rounds") and not self.carry_pending(detail))
         view = self.reviewer_view(detail)
         verdict = self.review_verdict(view)
         if verdict == "INCOMPLETE":

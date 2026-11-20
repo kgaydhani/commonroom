@@ -56,6 +56,11 @@ def claim_lock(path: Path) -> int | None:
         return None
 
 
+def suite_lock(home: Path, project: str | None) -> Path:
+    """The per-project lock every run of the project's test suite takes: `room.py check` and the room's own runs."""
+    return Path(home) / "locks" / f"{project or 'default'}-suite.lock"
+
+
 def release_lock(path: Path) -> None:
     try:
         if path.read_text().strip() == str(os.getpid()):
