@@ -20,6 +20,9 @@ from zoneinfo import ZoneInfo
 
 WINDOW_SECONDS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
 ROOT = Path(__file__).resolve().parent.parent
+# The readers `refresh_readings` runs: each reports every window the provider currently has, in one batch. Events and
+# the status line report one window at a time, so only these say which windows are gone (commonroom#265).
+READER_SOURCES = ("usage-screen", "app-server")
 
 
 def observation(provider: str, window: str, used_pct, resets_at, source: str) -> dict:

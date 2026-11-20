@@ -8,6 +8,8 @@ import time
 import uuid
 from pathlib import Path
 
+from commonroom import usage
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage (
     id INTEGER PRIMARY KEY,
@@ -121,10 +123,16 @@ class Ledger:
         return changed
 
     def latest_usage(self, provider: str) -> dict[str, dict]:
+        """The current windows' latest rows. A window the provider's reader left out of its latest successful reading
+        (and that nothing has reported since) is no longer current, so it is left out; its old rows stay in the
+        ledger (commonroom#265). Without a reader reading, every window ever seen counts."""
         rows = self.db.execute(
             "SELECT window, used_pct, resets_at, observed_at, source FROM usage u WHERE provider=? AND observed_at = "
             "(SELECT MAX(observed_at) FROM usage WHERE provider=u.provider AND window=u.window)", (provider,)).fetchall()
-        return {r["window"]: dict(r) for r in rows}
+        marks = ",".join("?" * len(usage.READER_SOURCES))
+        reader = self.db.execute(f"SELECT MAX(observed_at) AS t FROM usage WHERE provider=? AND source IN ({marks})",
+                                 (provider, *usage.READER_SOURCES)).fetchone()["t"]
+        return {r["window"]: dict(r) for r in rows if reader is None or r["observed_at"] >= reader}
 
     def usage_history(self, provider: str, window: str, since: float) -> list[dict]:
         rows = self.db.execute(

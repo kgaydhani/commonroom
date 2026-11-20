@@ -145,6 +145,48 @@ class LedgerAndBreakers(unittest.TestCase):
         self.ledger.record_usage([usage.observation("claude", "five_hour", 12, NOW + 100, "stream")], now=NOW + 60)
         self.assertEqual(len(self.ledger.usage_history("claude", "five_hour", 0)), 2)
 
+    def _reading(self, now, windows=("five_hour", "seven_day"), source="usage-screen"):
+        self.ledger.record_usage([usage.observation("claude", w, 10, NOW + 100000, source) for w in windows], now=now)
+
+    def _verdict(self, now):
+        cfg = config.DEFAULTS
+        return gate.usage_verdict("claude", self.ledger.latest_usage("claude"), config.budget(cfg, "claude"), now,
+                                  cfg["freshness_seconds"])
+
+    def test_window_the_reader_dropped_is_not_current(self):
+        # An old overage row from the event stream, then readers that no longer report it (commonroom#265).
+        self.ledger.record_usage([usage.observation("claude", "seven_day_overage_included", 0, NOW + 100000, "stream")],
+                                 now=NOW - 774 * 3600)
+        self._reading(NOW)
+        self.assertEqual(set(self.ledger.latest_usage("claude")), {"five_hour", "seven_day"})
+        self.assertEqual(len(self.ledger.usage_history("claude", "seven_day_overage_included", 0)), 1)  # rows kept
+        self.assertTrue(self._verdict(NOW + 30).allowed)
+
+    def test_dropped_window_does_not_hide_real_staleness(self):
+        self.ledger.record_usage([usage.observation("claude", "seven_day_overage_included", 0, NOW + 100000, "stream")],
+                                 now=NOW - 774 * 3600)
+        self._reading(NOW)
+        v = self._verdict(NOW + 7200)   # the reported windows are two hours old
+        self.assertFalse(v.allowed)
+        self.assertIn("min old", v.reason)
+
+    def test_window_that_reappears_counts_again(self):
+        self.ledger.record_usage([usage.observation("claude", "seven_day_overage_included", 0, NOW + 100000, "stream")],
+                                 now=NOW - 5000)
+        self._reading(NOW)
+        self.assertNotIn("seven_day_overage_included", self.ledger.latest_usage("claude"))
+        self.ledger.record_usage([usage.observation("claude", "seven_day_overage_included", 3, NOW + 100000, "stream")],
+                                 now=NOW + 10)
+        self.assertIn("seven_day_overage_included", self.ledger.latest_usage("claude"))
+
+    def test_event_readings_after_the_reader_stay_current_and_no_reader_changes_nothing(self):
+        self._reading(NOW)
+        self.ledger.record_usage([usage.observation("claude", "five_hour", 20, NOW + 100000, "stream")], now=NOW + 60)
+        self.assertEqual(set(self.ledger.latest_usage("claude")), {"five_hour", "seven_day"})
+        self.ledger.record_usage([usage.observation("codex", "seven_day_x", 1, NOW + 1, "stream"),
+                                  usage.observation("codex", "five_hour", 1, NOW + 1, "stream")], now=NOW)
+        self.assertEqual(set(self.ledger.latest_usage("codex")), {"seven_day_x", "five_hour"})
+
     def test_no_output_breaker_trips_and_resets(self):
         for i in range(3):
             run = self.ledger.start_run("game", f"#{i}", "builder", "codex", now=NOW + i)
