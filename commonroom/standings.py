@@ -4,6 +4,9 @@ and the registry (commonroom#238).
 Read-only: it shows standings and gates nothing. Every function is given what it reads (the ledger, the registry, the
 provider and `now`): no clock, no global. The arithmetic is `commonroom.pie`'s; this module only picks its inputs. Every
 spend figure is an ESTIMATE, because the meter is plan-wide (see `pie.estimate_spend`).
+
+On Claude, the owner's own sessions in a project's folder count as that project's, beside its room runs
+(commonroom#239): `commonroom.sessions` reads them from Claude Code's transcripts.
 """
 from __future__ import annotations
 
@@ -11,11 +14,14 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from commonroom import config as config_mod, pie
+from commonroom import config as config_mod, pie, sessions
 from commonroom.liveness import orphaned
 from commonroom.registry import Registry, RegistryError
 
 WINDOW = "seven_day"
+OWN = "own sessions"
+# The providers whose interactive sessions `commonroom.sessions` can read.
+SESSION_PROVIDERS = ("claude",)
 # Readings of one weekly window carry the same reset time give or take seconds; another window's is days away.
 SAME_WINDOW = 3600
 
@@ -35,6 +41,11 @@ class Report:
     rows: list[pie.Standing]                            # one per registered project, by registry key
     owner_share: float                                  # the owner's unassigned slice
     unregistered: dict = field(default_factory=dict)    # room projects in the ledger but not the registry: estimates
+    own: dict = field(default_factory=dict)             # {registry key: the part of its spend from the owner's sessions}
+
+    def room(self, key: str) -> float:
+        """A project's estimated spend by room runs: its total less its own sessions'."""
+        return next(s.spent for s in self.rows if s.name == key) - self.own.get(key, 0.0)
 
     @property
     def projects_total(self) -> float:
@@ -95,16 +106,34 @@ def ledger_names(reg: Registry) -> dict[str, str | None]:
     return names
 
 
-def standings(ledger, reg: Registry, provider: str, now: float) -> Report | None:
-    """The registry's projects' standings on `provider` at `now`, or None when there is no current weekly window."""
+def own_runs(ledger, reg: Registry, win: Window, now: float, transcripts: Path | None = None) -> list[dict]:
+    """The owner's own sessions in each registered project's folder from the window's start to `now`, as runs with no
+    cost whose project is (registry key, OWN). Sessions of room workers (a folder or session id of a run in the ledger)
+    are left out: they are runs already. Only for a provider whose sessions can be read, and only with projects."""
+    if win.provider not in SESSION_PROVIDERS or not reg.projects:
+        return []
+    start = win.resets_at - pie.WEEK
+    workers = [r["session_id"] for r in ledger.runs_during(win.provider, start, now) if r["session_id"]]
+    found = sessions.spans({key: p.path for key, p in reg.projects.items()}, start, now,
+                           exclude_dirs=ledger.worker_dirs(start), exclude_sessions=workers, projects_dir=transcripts)
+    return [{"project": (span["project"], OWN), "started_at": span["started_at"], "ended_at": span["ended_at"],
+             "cost_usd": None} for span in found]
+
+
+def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Path | None = None) -> Report | None:
+    """The registry's projects' standings on `provider` at `now`, or None when there is no current weekly window.
+    Each project's spend is its room runs' and its own sessions' (read from `transcripts`, default Claude Code's)."""
     win = window(ledger, provider, now)
     if win is None:
         return None
-    spent = pie.estimate_spend(samples(ledger, win, now), runs(ledger, win, now), now)
+    spent = pie.estimate_spend(samples(ledger, win, now),
+                               runs(ledger, win, now) + own_runs(ledger, reg, win, now, transcripts), now)
     names = ledger_names(reg)
     projects = {key: {"share": p.share, "when": p.when, "strict": p.strict} for key, p in reg.projects.items()}
-    by_key = {key: spent.get(name, 0.0) for key, name in names.items()}
+    own = {key: spent.get((key, OWN), 0.0) for key in names}
+    by_key = {key: spent.get(name, 0.0) + own[key] for key, name in names.items()}
     slack = config_mod.DEFAULTS["budget"].get(provider, {}).get("weekly_slack", 0)
     rows = pie.standings(projects, by_key, win.elapsed, slack)
     known = set(names.values())
-    return Report(win, rows, reg.owner_share(), {name or NO_NAME: pct for name, pct in spent.items() if name not in known})
+    unregistered = {name or NO_NAME: pct for name, pct in spent.items() if name not in known and not isinstance(name, tuple)}
+    return Report(win, rows, reg.owner_share(), unregistered, own)

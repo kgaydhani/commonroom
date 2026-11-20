@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from commonroom import cli, dispatch, gate, liveness, pie, registry, standings, usage
+from commonroom import cli, dispatch, gate, liveness, pie, registry, sessions, standings, usage
 from commonroom.ledger import Ledger
 from commonroom.registry import Project, Registry, RegistryError
 from tests.test_dispatch import FakeBoard, cfg_with
@@ -38,6 +38,11 @@ class Room(unittest.TestCase):
         self.addCleanup(env.stop)
         self.ledger = Ledger(synchronous="OFF")
         self.addCleanup(self.ledger.close)
+        self.transcripts = self.root / "claude-projects"          # never the real ~/.claude/projects
+        self.transcripts.mkdir()
+        transcripts = mock.patch.object(sessions, "default_dir", return_value=self.transcripts)
+        transcripts.start()
+        self.addCleanup(transcripts.stop)
         self.now = time.time()
         self.resets = self.now + 3.5 * 86400
 
@@ -213,8 +218,8 @@ class PieCommand(Room):
         self.assertIn("claude: 50% of the week gone", out)
         self.assertIn("plan-wide 20.0% used", out)
         self.assertIn("projects est. 6.0%; owner's slice 40, his own use est. 14.0%", out)
-        self.assertRegex(out, r"alpha\s+40\s+paced\s+4\.5\s+23\.2\s+\+18\.7")
-        self.assertRegex(out, r"beta\s+20\s+spare\s+1\.5\s+11\.6\s+\+10\.1")
+        self.assertRegex(out, r"alpha\s+40\s+paced\s+4\.5\s+4\.5\s+0\.0\s+23\.2\s+\+18\.7")
+        self.assertRegex(out, r"beta\s+20\s+spare\s+1\.5\s+1\.5\s+0\.0\s+11\.6\s+\+10\.1")
         self.assertIn("STALE: the latest reading is from", out)          # an hour old
         self.assertIn("codex: no current weekly reading", out)
         code, out, _ = self.room("--json")

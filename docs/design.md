@@ -106,6 +106,15 @@ yet, so every project runs as described above (commonroom#225, commonroom#238).
   headroom. Runs are matched to a registry entry by the `[project] name` in the `room.toml` at its path. `room pie
   [--json]` prints them per provider with the owner's slice and his estimated own use (plan-wide less every room
   project's estimate), marks every estimate, and marks a reading older than `freshness_seconds` as STALE.
+- **Own sessions** (`commonroom/sessions.py`, commonroom#239): on Claude, the owner's own Claude Code sessions count
+  as the project they ran in, beside its room runs, as runs with no cost. The reader opens the transcript folders
+  under `~/.claude/projects` whose name starts with a registered path's encoding (each session's file and its
+  `subagents/`), skips files not modified since the window began, and books each assistant line by its `cwd`: to the
+  registered project whose folder equals it or holds it (real paths, case-insensitive on Windows). The folder name
+  can't decide this, because `/` and `.` both encode as `-`. Lines of room workers (a run's folder or session id in
+  the ledger) are left out. One session's messages less than `GAP` apart are one span. It reads only timestamps,
+  session ids, `cwd` and usage numbers, never message text. `room pie` splits each project's estimate into "room"
+  and "own sessions". With no registered project it reads nothing.
 - **Registry warnings.** `add`, `set` and `remove` refuse only for the project being changed and for rules of the
   whole registry. Another project's problem, such as a missing folder, is printed as a warning and the change is
   saved.
