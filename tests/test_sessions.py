@@ -99,7 +99,7 @@ class Transcripts(unittest.TestCase):
         self.assertEqual({(s["project"], s["session_id"]) for s in self.spans()},
                          {("alpha", "s1"), ("alpha", "s2"), ("beta", "s3")})
 
-    def test_a_session_elsewhere_goes_to_nobody_even_when_its_folder_name_looks_alike(self):
+    def test_a_session_elsewhere_is_the_owners_own_even_when_its_folder_name_looks_alike(self):
         sibling = Path(str(self.alpha) + "-wt") / "room" / "i1"         # encodes with alpha's folder name as a prefix
         sibling.mkdir(parents=True)
         dotted = Path(str(self.alpha) + ".old")                          # `.` encodes as `-`, like `/`
@@ -109,7 +109,7 @@ class Transcripts(unittest.TestCase):
         self.write(sibling, "s1", [assistant(T0, "s1", str(sibling), "m1")])
         self.write(dotted, "s2", [assistant(T0, "s2", str(dotted), "m1")])
         self.write(other, "s3", [assistant(T0, "s3", str(other), "m1")])
-        self.assertEqual(self.spans(), [])
+        self.assertEqual({(s["project"], s["session_id"]) for s in self.spans()}, {(None, "s1"), (None, "s2"), (None, "s3")})
 
     def test_a_subagent_goes_by_its_own_cwd_and_joins_its_sessions_spans(self):
         cwd, tree = str(self.alpha), self.alpha / ".claude" / "worktrees" / "b"
@@ -125,15 +125,19 @@ class Transcripts(unittest.TestCase):
 
     def test_a_room_workers_folder_and_session_are_left_out(self):
         worker = self.alpha / "wt" / "room-i5"
-        worker.mkdir(parents=True)
+        outside = self.root / "alpha-wt" / "room" / "i6"                  # a worker folder in no project's folder
+        for folder in (worker, outside):
+            folder.mkdir(parents=True)
         cwd = str(self.alpha)
         self.write(worker, "w1", [assistant(T0, "w1", str(worker), "m1")])
+        self.write(outside, "w3", [assistant(T0, "w3", str(outside), "m1")])
         self.write(cwd, "w2", [assistant(T0, "w2", cwd, "m1")])
         self.write(cwd, "s1", [assistant(T0, "s1", cwd, "m1")])
-        self.assertEqual({s["session_id"] for s in self.spans()}, {"w1", "w2", "s1"})
+        self.assertEqual({s["session_id"] for s in self.spans()}, {"w1", "w2", "w3", "s1"})
         # The ledger stores worker folders case-folded, as `Ledger.set_worktree` does.
-        left = self.spans(exclude_dirs=[os.path.normcase(os.path.abspath(worker))], exclude_sessions=["w2"])
-        self.assertEqual({s["session_id"] for s in left}, {"s1"})
+        left = self.spans(exclude_dirs=[os.path.normcase(os.path.abspath(f)) for f in (worker, outside)],
+                          exclude_sessions=["w2"])
+        self.assertEqual({(s["project"], s["session_id"]) for s in left}, {("alpha", "s1")})
 
     def test_a_malformed_line_is_skipped(self):
         cwd = str(self.alpha)
@@ -220,6 +224,23 @@ class OwnSessionsInTheStandings(test_standings.Room):
         self.assertAlmostEqual(report.room("alpha"), 0.0)
         self.assertAlmostEqual(report.owner_use, 14.0)
         self.assertEqual(report.unregistered, {})
+
+    def test_a_long_gap_is_shared_with_the_owners_work_in_unregistered_folders(self):
+        """One meter step of 17 over an 11-hour gap with no reading between: the owner worked 2 hours in alpha's
+        folder and 3 hours in a folder no project holds. By time, alpha gets 17 x 2/5 = 6.8 and the owner keeps
+        17 x 3/5 = 10.2; the whole step no longer goes to alpha."""
+        self.reading(self.now - 12 * H, 10)
+        self.reading(self.now - H, 27)
+        reg = self.register()
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        self.session(reg.projects["alpha"].path, "s1", self.now - 4 * H + sessions.LEAD, self.now - 2 * H)
+        self.session(str(elsewhere), "s2", self.now - 10 * H + sessions.LEAD, self.now - 7 * H)
+        report = standings.standings(self.ledger, reg, "claude", self.now)
+        self.assertEqual(self.spent(report), {"alpha": 6.8, "beta": 0})
+        self.assertAlmostEqual(report.own["alpha"], 6.8)
+        self.assertEqual(report.unregistered, {})
+        self.assertAlmostEqual(report.owner_use, 27 - 6.8)
 
     def test_own_sessions_and_room_runs_share_a_gap_by_time(self):
         self.readings()

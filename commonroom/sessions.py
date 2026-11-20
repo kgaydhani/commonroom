@@ -6,9 +6,12 @@ transcript sits under its parent session's folder even when it works in a worktr
 timestamp, the session id and the `cwd`; each assistant line carries the call's token counts.
 
 A line belongs to the registered project whose folder equals its `cwd` or holds it, compared as real paths and
-case-insensitively on Windows. The encoded folder name only chooses which folders to open: it turns `/` and `.` into
-`-`, so a project's own worktree (`<project>/.claude/worktrees/x`) and a sibling folder (`<project>-wt/...`) encode
-alike. Lines of room workers (their folder or session id is in the ledger) are left out: those are runs already.
+case-insensitively on Windows; a line in no registered project's folder is the owner's own (project None). The
+encoded folder name never decides it: it turns `/` and `.` into `-`, so a project's own worktree
+(`<project>/.claude/worktrees/x`) and a sibling folder (`<project>-wt/...`) encode alike. Every folder is opened,
+because the owner's work elsewhere must share a meter step by time with the projects' (a step during his unregistered
+work is his, not whichever project also had a session open); only files modified since the span began are read.
+Lines of room workers (their folder or session id is in the ledger) are left out: those are runs already.
 
 Read-only and text-free: of each line it reads only the timestamp, the session id, the `cwd`, the message id and the
 usage numbers. It never returns or stores message text.
@@ -20,8 +23,6 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-
-from commonroom import usage
 
 # Assistant messages of one session less than this apart are one span of activity; a longer quiet is a pause.
 GAP = 15 * 60
@@ -50,15 +51,15 @@ def _within(path: str, roots) -> str | None:
     return best
 
 
-def _transcripts(projects_dir: Path, folders: tuple, since: float):
-    """Transcript files in the folders whose name starts with one of `folders` (lower-cased encodings), modified at or
-    after `since`: each session's own file and its subagents'."""
+def _transcripts(projects_dir: Path, since: float):
+    """Transcript files modified at or after `since`, in every folder: each session's own file and its subagents'.
+    A file not modified since then holds no line from then, so it is never opened."""
     try:
         entries = sorted(projects_dir.iterdir())
     except OSError:
         return
     for folder in entries:
-        if not folder.is_dir() or not folder.name.lower().startswith(folders):
+        if not folder.is_dir():
             continue
         for path in sorted([*folder.glob("*.jsonl"), *folder.glob("*/subagents/*.jsonl")]):
             try:
@@ -102,24 +103,24 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
     `projects` maps a project's key to its folder. `exclude_dirs` are folders where room workers ran and
     `exclude_sessions` their session ids: their lines are left out. Each span is {"project", "session_id",
     "started_at", "ended_at", "messages", "tokens"}: one session's (and its subagents') assistant messages in one
-    project, each less than `gap` seconds after the one before. Oldest first. With no project, nothing is read."""
+    project, each less than `gap` seconds after the one before. The project is None for the owner's sessions in no
+    registered project's folder. Oldest first. With no project, nothing is read."""
     if not projects:
         return []
     roots = {path_key(folder): key for key, folder in projects.items()}
     workers = [path_key(folder) for folder in exclude_dirs]
     skip = set(exclude_sessions)
-    folders = tuple(usage.session_folder(folder).lower() for folder in projects.values())
-    owners: dict = {}
+    owners: dict = {}          # cwd -> (a room worker's?, project key or None)
     found: dict = {}
-    for path in _transcripts(projects_dir or default_dir(), folders, start):
+    for path in _transcripts(projects_dir or default_dir(), start):
         for at, session, cwd, message_id, tokens in _messages(path):
             if not start <= at <= end or session in skip:
                 continue
             if cwd not in owners:
                 real = path_key(cwd)
-                owners[cwd] = None if _within(real, workers) else roots.get(_within(real, roots))
-            project = owners[cwd]
-            if project is None:
+                owners[cwd] = (_within(real, workers) is not None, roots.get(_within(real, roots)))
+            worker, project = owners[cwd]
+            if worker:
                 continue
             times, calls = found.setdefault((project, session), ([], {}))
             times.append(at)
@@ -127,7 +128,7 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
             first_at, most = calls.get(call, (at, 0))
             calls[call] = (min(first_at, at), max(most, tokens))
     result = []
-    for (project, session), (times, calls) in sorted(found.items()):
+    for (project, session), (times, calls) in sorted(found.items(), key=lambda item: (item[0][0] or "", item[0][1])):
         times.sort()
         runs, first, last = [], times[0], times[0]
         for at in times[1:]:
@@ -140,5 +141,5 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
             inside = [tokens for at, tokens in calls.values() if first <= at <= last]
             result.append({"project": project, "session_id": session, "started_at": max(start, first - LEAD),
                            "ended_at": last, "messages": len(inside), "tokens": sum(inside)})
-    result.sort(key=lambda s: (s["started_at"], s["project"], s["session_id"]))
+    result.sort(key=lambda s: (s["started_at"], s["project"] or "", s["session_id"]))
     return result

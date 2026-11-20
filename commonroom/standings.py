@@ -107,9 +107,10 @@ def ledger_names(reg: Registry) -> dict[str, str | None]:
 
 
 def own_runs(ledger, reg: Registry, win: Window, now: float, transcripts: Path | None = None) -> list[dict]:
-    """The owner's own sessions in each registered project's folder from the window's start to `now`, as runs with no
-    cost whose project is (registry key, OWN). Sessions of room workers (a folder or session id of a run in the ledger)
-    are left out: they are runs already. Only for a provider whose sessions can be read, and only with projects."""
+    """The owner's own sessions from the window's start to `now`, as runs with no cost whose project is (registry key,
+    OWN), or (None, OWN) in no registered project's folder: those share a meter step by time like any run, and their
+    part stays in the owner's use. Sessions of room workers (a folder or session id of a run in the ledger) are left
+    out: they are runs already. Only for a provider whose sessions can be read, and only with projects."""
     if win.provider not in SESSION_PROVIDERS or not reg.projects:
         return []
     start = win.resets_at - pie.WEEK
