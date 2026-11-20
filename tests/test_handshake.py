@@ -227,6 +227,66 @@ class Digest(Room):
         self.assertEqual(out, '{\n "window_hours": 3\n}\n')
 
 
+class Reply(Room):
+    """commonroom#260: the digest says how to reply, a worktree finds its project, README is never overwritten,
+    every command takes the project as an argument or --project, and a note refreshes the digest."""
+
+    def git(self, cwd, *argv):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *argv], cwd=cwd, check=True,
+                       capture_output=True)
+
+    def test_the_digest_says_how_to_reply_and_where_the_readme_is(self):
+        self.register()
+        out = self.room("digest", "alpha")[1]
+        self.assertIn('room note alpha "text"', out)
+        self.assertIn(f"`inbox/` in {self.folder('alpha')}", out)
+        self.assertIn("`README.md`", out)
+
+    def test_attach_from_a_git_worktree_finds_the_registered_project(self):
+        self.register()
+        self.git(self.alpha, "init", "-q")
+        self.git(self.alpha, "add", "-A")
+        self.git(self.alpha, "commit", "-qm", "x")
+        wt = self.tmp / "wt" / "alpha-branch"
+        self.git(self.alpha, "worktree", "add", "-q", str(wt), "-b", "feature")
+        code, out, err = self.room("attach", cwd=wt)
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.startswith(f"alpha: {self.folder('alpha')}"))
+        self.assertEqual(self.room("attach", cwd=self.tmp)[0], 1)   # still refused outside any project
+
+    def test_a_hand_edited_readme_survives_attach_byte_for_byte(self):
+        self.register()
+        self.room("attach", cwd=self.alpha)
+        readme = self.folder("alpha") / "README.md"
+        mine = b"My own words.\r\nTwo lines.\r\n"
+        readme.write_bytes(mine)
+        code, out, _ = self.room("attach", cwd=self.alpha)
+        self.assertEqual(code, 0)
+        self.assertEqual(readme.read_bytes(), mine)
+        self.assertIn("README.md was already there and is left as it is.", out)
+        self.assertNotIn("left as it is", self.room("attach", "beta")[1])
+
+    def test_every_command_takes_the_project_as_an_argument_or_with_project(self):
+        self.register()
+        for argv in (("attach", "alpha"), ("attach", "--project", "alpha"), ("digest", "alpha"),
+                     ("digest", "--project", "alpha"), ("notes", "alpha"), ("notes", "--project", "alpha")):
+            self.assertEqual(self.room(*argv)[0], 0, argv)
+        self.assertEqual(self.room("note", "alpha", "one")[0], 0)
+        self.assertEqual(self.room("note", "one", "--project", "alpha")[0], 0)
+        self.assertEqual(self.room("note", "alpha", "two", "--project", "alpha")[0], 0)
+        self.assertEqual(len(handshake.read_notes(self.folder("alpha"))), 3)
+        self.assertEqual(self.room("digest", "alpha", "--project", "beta")[0], 1)
+        self.assertEqual(self.room("note", "alpha", "beta", "text")[0], 1)
+
+    def test_a_note_refreshes_the_projects_digest(self):
+        self.register()
+        self.room("attach", "alpha")
+        digest = self.folder("alpha") / "digest.md"
+        self.assertIn("None yet.", digest.read_text(encoding="utf-8"))
+        self.room("note", "alpha", "please write the charter", "--from", "beta")
+        self.assertIn("please write the charter", digest.read_text(encoding="utf-8"))
+
+
 class SharedKey(Room):
     LIVE = registry.HEADER + ('\n[projects.alpha]\npath = "D:\\\\Dev\\\\alpha"\nshare = 55\nwork = "open"\nwhen = "paced"\n'
                               'strict = false\n')
@@ -276,7 +336,11 @@ class NoModel(Room):
         self.register()
         def refuse(*args, **kwargs):
             raise AssertionError(f"reached outside the room: {args[:1]}")
-        with mock.patch.object(subprocess, "run", refuse), mock.patch.object(subprocess, "Popen", refuse), \
+        def only_git_rev_parse(argv, *args, **kwargs):   # finding a worktree's main repository is the one call allowed
+            if list(argv[:2]) != ["git", "rev-parse"]:
+                refuse(argv)
+            return subprocess.CompletedProcess(argv, 128, "", "")   # as if not in a repo
+        with mock.patch.object(subprocess, "run", only_git_rev_parse), mock.patch.object(subprocess, "Popen", refuse), \
                 mock.patch.object(subprocess, "check_output", refuse), mock.patch.object(board, "gh", refuse), \
                 mock.patch.object(board, "issues", refuse):
             for argv in (["attach"], ["note", "hi", "--project", "beta"], ["notes"], ["digest"]):
