@@ -7,7 +7,7 @@ Every agent working on this repo reads this first: Claude Code (through `CLAUDE.
 - The room improves itself through this repo (commonroom#31). Its own dispatcher builds, reviews and merges issues in the milestone named in `room.toml` `[goal]`, as a guest on the host project's allowance (`[share]`): the project the heartbeat runs for.
 - The owner is Kieran (GitHub `kgaydhani`). The director (Claude Opus) owns the roadmap, reviews and merges.
 - Read [docs/owner-statements.md](docs/owner-statements.md) first: what the owner wants and why, in his words. The axioms and the design answer to it, and where they differ from it, it wins.
-- **Read [docs/axioms.md](docs/axioms.md).** A change that conflicts with an axiom needs the owner, so stop and ask. [docs/decisions.csv](docs/decisions.csv) ties each axiom to its test.
+- **Read [docs/axioms.md](docs/axioms.md).** A change that conflicts with an axiom is not made: find another way to the same outcome, and say on the issue what the conflict was. Only the owner changes an axiom, and nothing else waits on him. [docs/decisions.csv](docs/decisions.csv) ties each axiom to its test.
 
 ## The live room is running. Don't touch it.
 - **`D:/Dev/commonroom` is the live checkout.** The heartbeat, every dispatcher and the dashboard run from it. Never edit, commit, check out, reset or stash in it. Read it if you need to.
