@@ -2,3 +2,5 @@
 tests/golden_prompts/*.txt -text
 # The prompt templates stay LF in every checkout, whatever core.autocrlf says (commonroom#216).
 commonroom/ways/prompts/*.md text eol=lf
+# So does the ways-of-working table (commonroom#217).
+commonroom/ways/policy.toml text eol=lf

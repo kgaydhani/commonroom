@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from commonroom import board, config as config_mod, gate, guard, metrics, usage
+from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, usage
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
@@ -417,7 +417,8 @@ def digest(cfg: dict, hours: float) -> dict:
             result["merged_prs"] = board.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "15",
                                              "--json", "number,title,mergedAt"]) or []
             # What housekeeping would release now (commonroom#63), so the auditor sees a claim nobody holds.
-            result["stale_claims"] = stale_claims(issues, result["open_prs"], running, now)
+            result["stale_claims"] = stale_claims(issues, result["open_prs"], running, now,
+                                                  stale_minutes=policy_mod.overrides(cfg).get("stale_claim_minutes"))
         except Exception as exc:
             result["board_error"] = str(exc)[:300]
     return result
