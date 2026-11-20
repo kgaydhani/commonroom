@@ -97,6 +97,19 @@ class Ledger:
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
+    @classmethod
+    def reader(cls, path: Path | str | None = None, timeout: float = 1.0) -> "Ledger | None":
+        """The ledger opened read-only: no schema is run and nothing is written (the session hook, commonroom#262).
+        None when there is no ledger yet."""
+        path = Path(path) if path else default_path()
+        if not path.is_file():
+            return None
+        self = cls.__new__(cls)
+        self.path = path
+        self.db = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=timeout)
+        self.db.row_factory = sqlite3.Row
+        return self
+
     def close(self):
         self.db.close()
 

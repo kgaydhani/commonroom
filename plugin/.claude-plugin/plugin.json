@@ -1,0 +1,5 @@
+{
+  "name": "commonroom",
+  "description": "Common Room beside Claude Code: at session start, in a registered project's folder, adds a pointer to the project's room folder (its digest, unread notes and how to reply). It only adds context. Load it in place (--plugin-dir, or a marketplace added from a local path), because the hook runs the room.py one folder up.",
+  "version": "0.1.0"
+}

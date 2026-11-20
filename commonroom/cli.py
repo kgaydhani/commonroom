@@ -14,7 +14,7 @@ from commonroom import board, config as config_mod, gate, guard, metrics, policy
 from commonroom import standings
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
-from commonroom import handshake
+from commonroom import handshake, hook
 from commonroom.ledger import Ledger
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
@@ -734,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("reddit", help="read-only Reddit research through public archives (small reads only)"); p.add_argument("query"); p.add_argument("--sub", help="subreddit (required: Arctic Shift needs one)"); p.add_argument("--comments", action="store_true"); p.add_argument("--limit", type=int, default=25); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_reddit)
     p = sub.add_parser("peek", help="readable tail of the latest worker log"); p.add_argument("-n", "--lines", type=int, default=40); p.add_argument("--back", type=int, default=0); p.set_defaults(func=cmd_peek)
     sub.add_parser("ingest", help="record desktop usage-tool JSON from stdin").set_defaults(func=cmd_ingest)
+    p = sub.add_parser("hook", help="Claude Code hook: session-start adds a pointer to the project's room folder (hook JSON on stdin)"); p.add_argument("event", nargs="?"); p.set_defaults(func=hook.cmd_hook)
     sub.add_parser("guard-command", help="PreToolUse hook: block filter-based process kills (hook JSON on stdin)").set_defaults(func=cmd_guard_command)
     sub.add_parser("check", help="run the project's [checks] test under a per-project lock").set_defaults(func=cmd_check)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)

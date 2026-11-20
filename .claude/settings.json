@@ -3,6 +3,20 @@
     "type": "command",
     "command": "python D:/Dev/commonroom/room.py tap"
   },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/room.py", "hook", "session-start"],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "deny": [
       "Bash(git push --force*)",

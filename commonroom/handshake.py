@@ -28,7 +28,7 @@ from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
-README, CHARTER, DIGEST = (read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest"))
+README, CHARTER, DIGEST, REPLY = (read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply"))
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
@@ -217,13 +217,32 @@ def ledger_name(p: registry.Project) -> str:
     return (room_toml(p).get("project") or {}).get("name") or p.name
 
 
+def _body(text: str) -> str:
+    """A charter's text without its `# ` title line."""
+    lines = text.strip().split("\n")
+    return "\n".join(lines[1:] if text.lstrip().startswith("# ") else lines).strip()
+
+
+def charter_written(where: Path, name: str) -> bool:
+    """True when `charter.md` holds more than the headings the room created it with."""
+    try:
+        text = (where / "charter.md").read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _body(text) not in ("", _body(fill_way(CHARTER, project=name)))
+
+
+def reply_line(p: registry.Project) -> str:
+    """How to reply to the project's folder, from `reply.md`: shared by the digest and the session hook."""
+    return fill_way(REPLY, project=p.name, folder=str(folder_of(p)))
+
+
 def _charter(where: Path, p: registry.Project) -> str:
     try:
         text = (where / "charter.md").read_text(encoding="utf-8-sig").replace("\r\n", "\n")
     except FileNotFoundError:
         return "There is no `charter.md` in this folder."
-    def body(t): return "\n".join(t.strip().split("\n")[1:] if t.lstrip().startswith("# ") else t.strip().split("\n")).strip()
-    if body(text) == body(fill_way(CHARTER, project=p.name)):
+    if _body(text) == _body(fill_way(CHARTER, project=p.name)):
         cfg = room_toml(p)
         mission, goal = (cfg.get("project") or {}).get("mission"), (cfg.get("goal") or {}).get("milestone")
         lines = ["Not written yet: `charter.md` holds only its headings."]
@@ -233,7 +252,7 @@ def _charter(where: Path, p: registry.Project) -> str:
         if goal:
             lines += ["", f"Its current goal is the milestone \"{goal}\"."]
         return "\n".join(lines)
-    return re.sub(r"(?m)^(#+ )", r"#\1", body(text)) or "Not written yet: `charter.md` is empty."
+    return re.sub(r"(?m)^(#+ )", r"#\1", _body(text)) or "Not written yet: `charter.md` is empty."
 
 
 def _share(reg: registry.Registry, p: registry.Project) -> str:
@@ -291,7 +310,7 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
-    return fill_way(DIGEST, project=p.name, folder=str(where), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
+    return fill_way(DIGEST, project=p.name, reply=reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
 
