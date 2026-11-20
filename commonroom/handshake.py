@@ -33,6 +33,7 @@ WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
+READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
 ADD = "`room projects add <name> <folder> --share <percent>`"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": WEEK}
 PARTS = ("README.md", "charter.md", "digest.md", "inbox")
@@ -330,6 +331,30 @@ def refresh(reg: registry.Registry, p: registry.Project, now: float | None = Non
     return text
 
 
+def last_read(ledger: Ledger | None, p: registry.Project) -> float:
+    """When the project itself last read its inbox: its own `room attach` (as itself, by name or from its folder) or a
+    full `room notes` from its folder. An attach as someone else, or by another project, never counts."""
+    if ledger is None:
+        return 0.0
+    mine = p.name.lower()
+    seen = [at for who, at in ledger.marks(p.name, ATTACHED) if who.lower() == mine]
+    return max(seen + [ledger.marked(p.name, READ + p.name) or 0.0])
+
+
+def unread(notes: list[dict], p: registry.Project, ledger: Ledger | None) -> list[dict]:
+    """The notes in the project's inbox newer than its own last read, not written by the project itself."""
+    seen = int(last_read(ledger, p))   # a note is dated to the second: one in the read's own second counts as unread
+    return [n for n in notes if n["at"] >= seen and (n["from"] or "").lower() != p.name.lower()]
+
+
+def _here(reg: registry.Registry) -> registry.Project | None:
+    """The project whose folder the current directory is in, or None."""
+    try:
+        return find(reg)
+    except HandshakeError:
+        return None
+
+
 def _user() -> str:
     try:
         return getpass.getuser() or "someone"
@@ -359,7 +384,8 @@ def _run(command):
 @_run
 def cmd_attach(args) -> int:
     reg, p = _start(args)
-    who = _one_line(args.who or _user())
+    here = None if args.who else _here(reg)
+    who = _one_line(args.who or (here.name if here is not None and here.name == p.name else _user()))
     where = folder_of(p)
     kept = (where / "README.md").exists()
     text = refresh(reg, p, who=who)
@@ -400,6 +426,13 @@ def cmd_note(args) -> int:
 def cmd_notes(args) -> int:
     reg, p = _start(args)
     notes = read_notes(folder_of(p))
+    here = _here(reg)
+    if not args.since and here is not None and here.name == p.name:   # the project reading its own inbox, all of it
+        ledger = Ledger()
+        try:
+            ledger.mark(p.name, READ + p.name)
+        finally:
+            ledger.close()
     if args.since:
         since = parse_since(args.since, time.time())
         notes = [n for n in notes if n["at"] >= since]
