@@ -10,11 +10,11 @@ It is for people who already use a coding agent every day and still work one con
 
 ## The human part
 
-The vendors will always know better how a model should think and work, and a single session may well do a given job better than any arrangement of agents. So the room never tries to improve what a model does. It takes over the things the owner does by hand today:
+The vendors will always know better how a model should think and work, and a single session may well do a given job better than any arrangement of agents. So the room improves the human side and never the model. It does not pass the owner's words through untouched either: it carries his intent, which means working out what he wants and why, which of his words are decisions and which are guesses at a method, and what is still unclear enough to ask about. And it takes over the things he does by hand today:
 
 | What the owner does by hand | What the room does instead |
 |---|---|
-| Says "don't stop until it's ready", when nothing defines ready | Holds a charter that says what ready means, and keeps work going until the ledger is empty |
+| Says "don't stop until it's ready", when nothing defines ready | Holds a charter that says what ready means, and keeps work going within the project's share until nothing in the ledger is left to do |
 | Waits for the 5-hour window to reset, then prompts again | Rests a provider until its reset time and carries on with no prompt |
 | Re-explains context that built up over weeks | Keeps the charter and every recorded decision, and puts them in front of each new session |
 | Gets the literal instruction back, not what he meant | Asks first what outcome he wants and what matters to him, and keeps his answer beside whatever he typed later |
@@ -65,7 +65,7 @@ The code is split by how often each part has a reason to change. Today it is not
 |---|---|---|
 | **Core** | Rarely, and only with the owner's or director's stamp | The store, the pie and gate arithmetic, the steward's loop, the contracts between modules. It knows no vendor, no project and no instruction text. |
 | **Adapters** | When the outside world changes | One per vendor (launch, resume, read usage, parse events), one per ledger backend (GitHub, local), one per workspace kind (git worktree), and the surfaces (command line, plugin, web page). |
-| **Ways of working** | Constantly | Files, not code: the handover templates, the routing table, thresholds, cadences and triggers. They say what a task is, where things are, what done means and how to report. They never say how to think or how to do the work (axiom A9). |
+| **Ways of working** | Constantly | Files, not code: the handover templates, the routing table, thresholds, cadences and triggers. They say what a task is, where things are, what done means, how to report, and how to read the owner. They never say how to think or how to do the work (axiom A9). |
 
 The owner's wiring questions map onto modules like this:
 
@@ -99,6 +99,7 @@ Common Room is already its own project: its dispatcher has merged 66 of its own 
 - Trials test coordination: when a session is resumed or replaced, what code checks before a model is called, which vendor gets which job, whether a reviewer may fix a small finding itself or must send it back. They never test wording meant to make a model work better. That is the vendors' field.
 - The first candidates are the ones with the largest expected effect: the reviewer fixing small findings, resuming a session for review changes, and running the tests in code before any reviewer starts.
 - Scouts propose trials. They do not propose rules.
+- There is a measure for the human side too: how often the owner has to correct, redirect or repeat himself, recorded when a desk logs it. Fewer is better.
 - The room's own text can only shrink or be argued for: a test holds the text the room adds to a run under a token budget.
 
 **A core change is the one thing that can break the room building it.** It needs a stamp, the contract tests, and a dry-run beat against a copy of the ledger before the live checkout moves. If the first beat after an update fails its health check, the room rolls back, as v1 did.
@@ -120,7 +121,18 @@ This is the part between the owner's chat and the workers. In v2 one long model 
 
 **Planner.** It runs when the owner gives a direction, the ready queue runs low, an item is blocked, or a goal is met, and once a day at most otherwise. It never keeps a session between runs. Routine triggers use a cheaper model. Anthropic's own harness study ran the planner once per build at 0.4% of the cost, and their compiler project used no orchestrating agent at all, only lock files.
 
-**Desk.** A session that attaches reads the digest first. Its one duty is to write the owner's decisions to the ledger before the conversation moves on. With the owner present it also writes the briefs, since it holds the richest context. If the owner changes the subject, nothing is lost, because the desk held nothing.
+**Desk.** A session that attaches reads the digest first. Its one duty is to write what the owner said to the ledger before the conversation moves on, each statement with its kind:
+
+| Kind | What it is | How agents treat it |
+|---|---|---|
+| Outcome | What he wants, and why | The target |
+| Bound | Must, never, or needs his approval | A limit that is not crossed |
+| Decision | A choice he has made | Final. `decided:` already means this in v2 |
+| Suggestion | His guess at how to get there | Evidence of what he wants. It is weighed, researched, and may be replaced by something better, with the reason given |
+
+When the kind is unclear and it would change what gets built, the desk asks one question. It does not ask what research can answer. Reading the owner this way is the one subject the room's own text may instruct on.
+
+ With the owner present it also writes the briefs, since it holds the richest context. If the owner changes the subject, nothing is lost, because the desk held nothing.
 
 **Change of direction.** The desk records a direction entry. From then on every open item is "unreconciled" until it is marked keep, park or cancel with a reason. The steward holds unreconciled items and wakes the planner to finish the pass if the desk did not. The invariant is checkable in code: no open item is older than the latest direction without a verdict.
 
@@ -139,7 +151,7 @@ Five operations, the same for every vendor and every agent, all through the `roo
 | **attach** | A session joins a project: it is registered, it reads the charter and the digest, and its usage is booked |
 | **note** | Anyone, or any agent, leaves something for the project. Notes are new entries, so two writers never collide |
 | **hand** | One agent gives a piece of work to another agent or vendor, with a brief, and gets the result back through the ledger. An agent on one vendor asking another vendor for an image, or for a review, is a hand |
-| **share** | The same thing across two people's rooms: the ledger is shared, the allowance never is |
+| **share** | The same thing between two people: the project's ledger and its shared folder are common to both, and the allowance never is |
 | **digest** | The current state of a project, built in code, for whoever arrives next |
 
 Agents never talk to each other directly. That keeps one record of who asked for what, and it works the same whether the other agent is on this machine, another vendor or another person's computer.
@@ -175,7 +187,7 @@ The room treats each as a path on disk. It never calls a storage service and nev
 
 **Look before building.** A new capability is not built until a scout item has answered "does this already exist, free and usable here?". Code checks it: a build item of that kind needs a closed scout item linked to it, or the owner's waiver. The finding stays in the ledger, so the question is not researched twice.
 
-**A cap on looking.** Scouting and planning together stay under a set share of the project's spend. In v1, 44% of all model turns were planning.
+**A cap on looking.** Scouting and planning together stay under a set share of the project's spend. In v1, 84 of 193 model turns (44%) were planning ([postmortem-v1.md](postmortem-v1.md)).
 
 ## Attaching a session
 
@@ -184,7 +196,7 @@ Claude Code and Codex now have nearly the same hooks, both read `AGENTS.md`, and
 - A session-start hook registers the session with the room and adds one short paragraph. In a project folder it points at the digest. Elsewhere it says when to offer attaching: work that must outlive the conversation.
 - The session's own model makes the offer, so there is no extra model call.
 - On yes, the session runs `room attach`, says which files it loaded, and asks about the pie, with "not sure yet" as an answer.
-- Everything else is the `room` command (`decide`, `note`, `items`, `claim`, `digest`, `pie`), which any agent with a shell can use.
+- Everything else is the `room` command (`decide`, `note`, `hand`, `share`, `items`, `claim`, `digest`, `pie`), which any agent with a shell can use.
 
 Usage is read from the status line where the owner has set one, from worker streams, from Codex's app-server, and from a small optional mod. The hidden-terminal `/usage` reader becomes a fallback that is off by default.
 
@@ -201,8 +213,8 @@ Usage is read from the status line where the owner has set one, from worker stre
 
 - Context doubles within hours and then stays near half a million tokens, whatever is asked.
 - The owner returned to a session after more than an hour away 328 times. Each return rewrote between 100k and 490k tokens, because the prompt cache had expired. Those returns are 65% of all cache writes.
-- At API price ratios, about 90% of interactive cost is carrying and re-reading context: 60% cache reads, 30% cache writes, 9% output. How subscription limits weight cached tokens is not published, so these ratios are a proxy.
-- Workers start small (a median of 15k tokens), but that starting context is carried through every call and makes up 41% of a run's input.
+- At API price ratios, about 90% of interactive cost is carrying and re-reading context (60% cache reads and 30% cache writes). Output is 9%. How subscription limits weight cached tokens is not published, so these ratios are a proxy.
+- Workers start small, but the starting context is carried through every call. Across the 350 worker sessions on the same machine, read the same way, the median starting context is 15k tokens and it makes up 41% of a run's input.
 
 **What the research says.** The evidence that a long session gets worse by itself is thin: failed runs are longer mostly because hard tasks are longer. The evidence on cost is solid, and so is the evidence on compaction: one study found 91%, 62% and 46% of constraints kept after one, two and three rounds, and file paths are what summaries lose first. Both vendors advise one unit of work per session. Every fixed threshold in circulation (40% of the window, 300k tokens) is anecdote.
 
@@ -229,7 +241,7 @@ A context-size threshold alone is not used as a trigger. It is shown as a cost.
 A local web page, as now, with these parts:
 
 - **Header:** the pie, with each project's fuzzy meter for today and this week.
-- **A tab per active project:** working now, landed recently, waiting on you, and the trail.
+- **A tab per active project:** working now, or resting until a stated reset time; landed recently; waiting on you; and the trail.
 - **The trail:** each owner message, the decisions and items it became, the runs those caused, and what landed. This is how the owner sees their words being turned into work. It needs only the origin recorded on each item.
 - **A message box with two destinations.** "To the project" writes a note to the ledger and always works. "To my open session" passes the text to a live attached session through the optional mod, on Claude only.
 - **Settings:** the same plain file, editable by sliders, by hand, or by a small cheap-model session whose only tools are the `room config` commands. It shows the change before applying it.
@@ -238,7 +250,7 @@ A true two-way mirror of a live Claude session is not offered. The docs give no 
 
 ## Sharing between people
 
-Each person runs their own room on their own machine with their own login. Subscriptions never cross machines: the vendors' terms forbid it. A shared project shares its ledger for code, and its shared folder for everything else. The simplest case needs no room on the partner's machine at all: their agent reads the digest from the shared folder at session start, and anything it wants to pass on goes into the inbox folder as a note. A partner who also runs a room can hold the project at a share of zero in `fixed` mode, so it does this in code on a timer at no model cost.
+Each person runs their own room on their own machine with their own login. Subscriptions never cross machines: the vendors' terms forbid it. A shared project shares its ledger for code, and its shared folder for everything else. The simplest case needs no room on the partner's machine at all: their agent reads the digest from the shared folder at session start, and anything it wants to pass on goes into the inbox folder as a note. A partner who also runs a room can hold the project at a share of zero in `fixed` mode: their room then fetches the digest and files their notes in code on a timer, at no model cost. The owner's room stays the only writer of the digest.
 
 ## Risks
 
