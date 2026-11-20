@@ -1,7 +1,7 @@
 """Where each registered project stands against its share of one provider's weekly allowance, read from the ledger
 and the registry (commonroom#238).
 
-Read-only: it shows standings and gates nothing. Every function is given what it reads (the ledger, the registry, the
+Read-only: it computes standings, and `dispatch.pie_holds` gates new model work on them (commonroom#240). Every function is given what it reads (the ledger, the registry, the
 provider and `now`): no clock, no global. The arithmetic is `commonroom.pie`'s; this module only picks its inputs. Every
 spend figure is an ESTIMATE, because the meter is plan-wide (see `pie.estimate_spend`).
 

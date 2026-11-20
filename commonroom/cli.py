@@ -12,7 +12,7 @@ from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom import standings
-from commonroom.dispatch import READER_COOLDOWN, Dispatcher, runnable_roles, stale_claims, verdicts
+from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
 from commonroom.ledger import Ledger
@@ -80,9 +80,16 @@ def cmd_tap(args) -> int:
     return 0
 
 
+def _verdicts(ledger, cfg: dict, now: float) -> dict:
+    """The gate's verdicts with the pie's holds on top (commonroom#240), so its reason shows when it is what holds.
+    Read-only, as `verdicts` is for views."""
+    v = verdicts(ledger, cfg, now)
+    return with_pie(v, pie_holds(ledger, cfg, v, now) or {})
+
+
 def cmd_usage(args) -> int:
     ledger, cfg, now = Ledger(), config_mod.load(), time.time()
-    v = verdicts(ledger, cfg, now)
+    v = _verdicts(ledger, cfg, now)
     out = {}
     for provider in PROVIDERS:
         readings = ledger.latest_usage(provider)
@@ -158,7 +165,7 @@ def cmd_status(args) -> int:
             print(f"Ready for agents: {len(ready)} (cap {cfg['board']['ready_cap']})")
         except Exception as exc:
             print(f"Board unavailable: {exc}")
-    for provider, v in verdicts(ledger, cfg, now).items():
+    for provider, v in _verdicts(ledger, cfg, now).items():
         print(f"{provider}: {'GO' if v.allowed else 'HOLD'} - {v.reason}")
     runs = ledger.recent_runs(project.get("name"), limit=5)
     if runs:

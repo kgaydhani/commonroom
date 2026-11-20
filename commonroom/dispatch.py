@@ -24,7 +24,8 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
-from commonroom import carry as carry_mod, policy as policy_mod
+from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
+from commonroom import standings as standings_mod
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
 from commonroom.lock import acquire_lock, suite_lock
@@ -1026,6 +1027,64 @@ def share_verdict(ledger: Ledger, cfg: dict, provider: str, now: float) -> gate.
                                f"{hours:g}h, cap {float(share['max']):.0%}); {host} goes first")
 
 
+PIE_IDLE_MINUTES = POLICY["pie_idle_minutes"]   # room-wide only (commonroom#240)
+
+
+def pie_active(ledger: Ledger, names: dict[str, str | None], provider: str, now: float,
+               idle_minutes: float | None = None) -> set[str]:
+    """The registered projects (by registry key) active on `provider`: a model run on it now, or one that ended in the
+    last `idle_minutes` (default the room's `pie_idle_minutes`). From the ledger alone. An open run whose dispatcher
+    died is not active."""
+    idle = PIE_IDLE_MINUTES if idle_minutes is None else idle_minutes
+    keys = {name: key for key, name in names.items()}
+    return {keys[r["project"]] for r in ledger.runs_during(provider, now - idle * 60, now)
+            if r["model"] is not None and r["project"] in keys and not (r["ended_at"] is None and orphaned(r, now))}
+
+
+def pie_holds(ledger: Ledger, cfg: dict, result: dict[str, gate.Verdict], now: float,
+              transcripts: Path | None = None) -> dict[str, str] | None:
+    """The pie's holds on new model work for this project (commonroom#240): {provider: reason} for each provider the
+    gate allowed and the pie holds. None when the registry (`projects.toml` beside the ledger) lists no project: then
+    nothing changes, `[share]` included. The registry is read on every call, so the owner's edit takes effect at the
+    next pass; the standings are computed once per allowed provider per call. A registry that can't be read, a project
+    it doesn't list, or standings that can't be computed hold: an unknown share is not free allowance (axiom A5)."""
+    try:
+        reg = registry_mod.load(Path(ledger.path).parent / registry_mod.FILENAME)
+    except (registry_mod.RegistryError, OSError) as exc:
+        return {p: f"{p}: the project registry can't be read, so no new model work starts: {exc}"
+                for p, v in result.items() if v.allowed}
+    if not reg.projects:
+        return None
+    root = cfg.get("_root")
+    key = next((k for k, p in reg.projects.items() if root and sessions.path_key(p.path) == sessions.path_key(root)), None)
+    if key is None:
+        return {p: f"{p}: this project's folder ({root or 'unknown'}) is not in the project registry, so its model work "
+                   f"waits; add it with `room projects add`" for p, v in result.items() if v.allowed}
+    holds = {}
+    for provider, v in result.items():
+        if not v.allowed:
+            continue
+        try:
+            report = standings_mod.standings(ledger, reg, provider, now, transcripts)
+            active = pie_active(ledger, standings_mod.ledger_names(reg), provider, now) if report else set()
+        except Exception as exc:   # an estimate that can't be made holds; it never lets work through
+            holds[provider] = f"{provider}: the pie's standings can't be computed, so no new model work starts: {exc}"
+            continue
+        if report is None:
+            holds[provider] = (f"{provider}: the pie has no current weekly reading, so {key}'s standing is unknown and "
+                               f"no new model work starts")
+            continue
+        ok, why = pie_mod.may_start(report.rows, active, key)
+        if not ok:
+            holds[provider] = f"{provider}: the pie holds new work: {why}"
+    return holds
+
+
+def with_pie(result: dict[str, gate.Verdict], holds: dict[str, str]) -> dict[str, gate.Verdict]:
+    """`result` with each of the pie's holds applied. A pie hold holds new starts only: it never stops a running worker."""
+    return {p: gate.Verdict(False, holds[p], v.detail) if v.allowed and p in holds else v for p, v in result.items()}
+
+
 PROGRESS_MIN_WORK = POLICY["progress_min_work_seconds"]
 
 
@@ -1155,8 +1214,12 @@ class Dispatcher:
         return [self.worktree_base()] + ([legacy] if not self.cfg["project"].get("worktrees") else [])
 
     def allowed(self, now: float) -> dict[str, gate.Verdict]:
-        """The shared budget gate and breakers, then this project's share of the plan if it is a guest."""
+        """The shared budget gate and breakers, then the pie (commonroom#240). With no project in the registry, this
+        project's `[share]` of the plan if it is a guest instead: a registered project is nobody's guest."""
         result = verdicts(self.ledger, self.cfg, now, trip=True)
+        holds = pie_holds(self.ledger, self.cfg, result, now, self.claude_projects)
+        if holds is not None:
+            return with_pie(result, holds)
         for provider, v in result.items():
             held = share_verdict(self.ledger, self.cfg, provider, now) if v.allowed else None
             if held:

@@ -2,8 +2,8 @@
 it is (commonroom#225).
 
 Pure functions over plain data. No I/O, no clock, no ledger: every input is passed in, so each result can be checked by
-hand. Only `commonroom.standings` calls it, and nothing is gated on it yet. Percentages are percent of one provider's
-weekly window.
+hand. `commonroom.standings` picks its inputs, and a project's dispatcher asks `may_start` before it starts model work
+(commonroom#240). Percentages are percent of one provider's weekly window.
 """
 from __future__ import annotations
 
@@ -179,3 +179,28 @@ def whose_turn(stands: list[Standing], ready: set) -> tuple[str | None, str]:
                                 f"on share lent by {', '.join(l.name for l in lenders)}, which have nothing ready")
     return None, ("every project with work is over its line, and no non-strict project under its line has unused share "
                   "to lend while the projects' spend is under the sum of their lines")
+
+
+def may_start(stands: list[Standing], active, name: str) -> tuple[bool, str]:
+    """May project `name` start model work now, and one sentence saying why (commonroom#240).
+
+    `active` names the projects with a model run on this provider now or lately; `name` counts too, since it asks.
+    1. A share of zero never starts.
+    2. A `paced` project under its line may start: projects under their lines don't wait for each other (each has its
+       own dispatcher, and the plan-wide gate still limits them together).
+    3. Anything else (over its line, or `spare`) may start only when `whose_turn`, among the active projects and
+       itself, names it: so lending and `spare` follow that rule."""
+    me = next((s for s in stands if s.name == name), None)
+    if me is None:
+        return False, f"{name} has no row in the pie"
+    if me.share <= 0:
+        return False, f"{name} has a share of zero, which is off"
+    if me.when == "paced" and me.headroom > 0:
+        return True, (f"{name} is under its line: {me.spent:.1f}% spent of {me.allowed:.1f}% allowed, "
+                      f"{me.headroom:.1f} points in hand on a share of {me.share:g}")
+    turn, why = whose_turn(stands, set(active) | {name})
+    if turn == name:
+        return True, why
+    where = (f"is over its line ({me.spent:.1f}% spent of {me.allowed:.1f}%)" if me.headroom <= 0
+             else f"is spare and runs only in allowance nobody else wants ({me.spent:.1f}% spent of {me.allowed:.1f}%)")
+    return False, f"{name} {where}: " + (f"it is {turn}'s turn, because {why}" if turn else why)
