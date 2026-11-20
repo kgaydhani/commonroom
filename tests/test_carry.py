@@ -1,11 +1,13 @@
 """commonroom#226: an approval carries across a clean merge of main once the room has run the tests on the new head.
 Real git and a real (fake) test command; a fake board."""
+import copy
 import subprocess
 import unittest
 from pathlib import Path
 
 from commonroom import carry, dispatch, metrics
 from commonroom.lock import claim_lock, release_lock, suite_lock
+from test_dispatch import owned
 from test_self_serve import Base, MergeBoard, project_cfg
 
 PASS = "python -c \"import os, sys; print('Ran 3 tests in 0.1s'); print(); print('OK'); sys.exit(0 if os.path.exists('docs.md') and os.path.exists('f.txt') else 1)\""
@@ -17,10 +19,18 @@ BRANCH = "i222-docs"
 class Board(MergeBoard):
     def __init__(self, *a):
         super().__init__(*a)
-        self.posted = []
+        self.posted, self.stored = [], []
 
     def comment(self, n, body):
+        body = f"{dispatch.MARK} {body}"   # as GitHubBoard.comment does
         self.posted.append((n, body))
+        self.stored.append({"createdAt": "2099-01-01T00:00:00Z", "body": body})
+
+    def pr_detail(self, n):
+        """What a fresh read of the PR returns: the comments the board recorded, not the dispatcher's in-memory copy."""
+        d = copy.deepcopy(self.details[n])
+        d["comments"] = d["comments"] + copy.deepcopy(self.stored)
+        return owned(d, pr=True)
 
 
 class Carry(Base):
@@ -115,7 +125,7 @@ class Carry(Base):
                 (n, body), = board.posted
                 self.assertTrue(body.startswith(f"[room] TESTS: {result} {head} {command}: "), body)
                 self.assertNotIn("CARRIES:", body)
-                self.assertTrue(d.needs_review(board.details[222]))    # a model reviews it, as before
+                self.assertTrue(d.needs_review(board.pr_detail(222)))    # a model reviews it, as before
                 d.housekeeping()                                       # and the room doesn't run it again
                 self.assertEqual(len(board.posted), 1)
 
@@ -179,9 +189,34 @@ class Carry(Base):
         self.assertEqual((board.merged, board.posted, self.carry_runs()), ([], [], []))
         self.assertTrue(d.needs_review(board.details[222]))
 
+    def test_a_failed_run_read_back_from_the_posted_comment_is_not_run_again(self):
+        head = self.merge_main(main_file="FAIL.md")
+        board = self.board(head, command=FAIL)
+        d = self.dispatcher(self.cfg(FAIL), board)
+        d.housekeeping()
+        fresh = self.dispatcher(self.cfg(FAIL), board)               # the next pass reads the board's comments back
+        detail = board.pr_detail(222)
+        self.assertFalse(fresh.carry_pending(detail))
+        self.assertTrue(fresh.needs_review(detail))
+        fresh.housekeeping()
+        self.assertEqual(len(board.posted), 1)
+        self.assertEqual(len(self.carry_runs()), 1)
+
+    def test_a_passing_run_read_back_is_mergeable_with_no_second_run(self):
+        head = self.merge_main()
+        board = self.board(head)
+        d = self.dispatcher(self.cfg(), board)
+        d.board.comment(222, carry.comment("PASS", head, PASS, "Ran 3 tests in 0.1s OK", "2026-11-20T13:00:00Z", self.tested))
+        fresh = self.dispatcher(self.cfg(), board)
+        self.assertTrue(fresh.tested(board.pr_detail(222)))
+        self.assertFalse(fresh.carry_pending(board.pr_detail(222)))
+        fresh.housekeeping()
+        self.assertEqual(board.merged, [222])
+        self.assertEqual((len(board.posted), len(self.carry_runs())), (1, 0))
+
     def test_the_comment_counts_only_from_a_trusted_author_after_the_head_it_names(self):
         head = self.merge_main()
-        good = carry.comment("PASS", head, PASS, "Ran 3 tests OK", "2026-11-20T13:00:00Z", self.tested)
+        good = "[room] " + carry.comment("PASS", head, PASS, "Ran 3 tests OK", "2026-11-20T13:00:00Z", self.tested)
         cases = {"trusted, after the head": ({"createdAt": "2026-11-20T15:00:00Z", "body": good}, True),
                  "a stranger": ({"createdAt": "2026-11-20T15:00:00Z", "body": good, "author": {"login": "mallory"}}, False),
                  "before the last commit": ({"createdAt": "2026-11-20T13:30:00Z", "body": good}, False),
@@ -207,10 +242,12 @@ class Format(unittest.TestCase):
 
     def test_the_comment_parses_back(self):
         body = carry.comment("PASS", "b" * 40, "python -m unittest", "Ran 1 test OK", "2026-11-20T13:00:00Z", "a" * 40)
-        self.assertEqual(carry.parse(body), {"result": "PASS", "head": "b" * 40, "line": "python -m unittest: Ran 1 test OK",
+        self.assertEqual(carry.parse("[room] " + body), {"result": "PASS", "head": "b" * 40, "line": "python -m unittest: Ran 1 test OK",
                                              "approval_at": "2026-11-20T13:00:00Z", "tested": "a" * 40})
+        self.assertEqual(carry.parse("[room] [room] " + body)["result"], "PASS")   # doubled, as #252's were posted
+        self.assertEqual(carry.parse("[room] " + body)["head"], "b" * 40)
         self.assertIsNone(carry.parse("[agent:builder] quoting it: " + body))
-        self.assertEqual(carry.parse(carry.comment("FAIL", "b" * 40, "x", "exit 1", "t", "a" * 40))["approval_at"], "")
+        self.assertEqual(carry.parse("[room] " + carry.comment("FAIL", "b" * 40, "x", "exit 1", "t", "a" * 40))["approval_at"], "")
         self.assertEqual(carry.summary("....\n----\nRan 524 tests in 80.163s\n\nOK\n"), "Ran 524 tests in 80.163s OK")
 
 
