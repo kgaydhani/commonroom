@@ -104,37 +104,46 @@ def parse(text: str) -> Registry:
     return reg
 
 
-def problems(reg: Registry) -> list[str]:
-    """Every rule the registry breaks, each naming the project and the key. Empty means it is valid."""
-    found = []
+def checks(reg: Registry) -> list[tuple[str | None, str]]:
+    """Every rule the registry breaks, as (project, message). The project is None for a rule of the whole registry
+    (shares over 100, a duplicate name, [budget]). Each message names the project and the key."""
+    found: list[tuple[str | None, str]] = []
     reserve = reg.budget.get("reserve_5h")
     if reserve is not None and not (is_number(reserve) and 0 <= reserve <= 100):
-        found.append(f"[budget]: 'reserve_5h' must be a number from 0 to 100, not {reserve!r}")
+        found.append((None, f"[budget]: 'reserve_5h' must be a number from 0 to 100, not {reserve!r}"))
     seen: dict[str, str] = {}
     for name, p in reg.projects.items():
+        def bad(message, whole=False):
+            found.append((None if whole else name, f"project {name!r}: {message}"))
+
         if not NAME.fullmatch(name):
-            found.append(f"project {name!r}: the name may hold only letters, digits, '-' and '_'")
+            bad("the name may hold only letters, digits, '-' and '_'")
         if name.lower() in seen:
-            found.append(f"project {name!r}: the name is already used by {seen[name.lower()]!r}")
+            bad(f"the name is already used by {seen[name.lower()]!r}", whole=True)
         seen.setdefault(name.lower(), name)
         if not isinstance(p.path, str) or not p.path:
-            found.append(f"project {name!r}: 'path' must be a folder, not {p.path!r}")
+            bad(f"'path' must be a folder, not {p.path!r}")
         elif not Path(p.path).is_dir():
-            found.append(f"project {name!r}: 'path' {p.path} does not exist")
+            bad(f"'path' {p.path} does not exist")
         elif not (Path(p.path) / "room.toml").is_file():
-            found.append(f"project {name!r}: 'path' {p.path} holds no room.toml")
+            bad(f"'path' {p.path} holds no room.toml")
         if not (is_number(p.share) and 0 <= p.share <= 100):
-            found.append(f"project {name!r}: 'share' must be a number from 0 to 100, not {p.share!r}")
+            bad(f"'share' must be a number from 0 to 100, not {p.share!r}")
         if p.work not in WORK:
-            found.append(f"project {name!r}: 'work' must be {' or '.join(map(repr, WORK))}, not {p.work!r}")
+            bad(f"'work' must be {' or '.join(map(repr, WORK))}, not {p.work!r}")
         if p.when not in WHEN:
-            found.append(f"project {name!r}: 'when' must be {' or '.join(map(repr, WHEN))}, not {p.when!r}")
+            bad(f"'when' must be {' or '.join(map(repr, WHEN))}, not {p.when!r}")
         if not isinstance(p.strict, bool):
-            found.append(f"project {name!r}: 'strict' must be true or false, not {p.strict!r}")
+            bad(f"'strict' must be true or false, not {p.strict!r}")
     total = sum(p.share for p in reg.projects.values() if is_number(p.share))
     if total > 100:
-        found.append(f"shares sum to {fmt_number(total)}, more than 100")
+        found.append((None, f"shares sum to {fmt_number(total)}, more than 100"))
     return found
+
+
+def problems(reg: Registry) -> list[str]:
+    """Every rule the registry breaks, each naming the project and the key. Empty means it is valid."""
+    return [message for _, message in checks(reg)]
 
 
 def load(path: Path | str | None = None, check: bool = True) -> Registry:
@@ -190,11 +199,17 @@ def dumps(reg: Registry) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def save(reg: Registry, path: Path | str | None = None) -> Path:
-    """Write the registry atomically (a temporary file, then a replace), LF line endings. A registry that breaks a
-    rule raises RegistryError and the file is left as it was."""
-    if found := problems(reg):
-        raise RegistryError("; ".join(found))
+def save(reg: Registry, path: Path | str | None = None, changing: str | None = None) -> list[str]:
+    """Write the registry atomically (a temporary file, then a replace), LF line endings, and return the warnings.
+
+    Without `changing`, any broken rule raises RegistryError. With `changing` (the project a command adds, sets or
+    removes), only that project's problems and whole-registry rules raise; other projects' problems come back as
+    warnings and the file is still written, so one project's missing folder doesn't block a change to another. When
+    it raises, the file is left as it was."""
+    found = checks(reg)
+    blocking = [m for project, m in found if changing is None or project is None or project == changing]
+    if blocking:
+        raise RegistryError("; ".join(blocking))
     path = Path(path) if path else default_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=FILENAME + ".", suffix=".tmp", dir=path.parent)
@@ -205,4 +220,4 @@ def save(reg: Registry, path: Path | str | None = None) -> Path:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
-    return path
+    return [m for _, m in found]

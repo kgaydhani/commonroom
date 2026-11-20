@@ -91,9 +91,15 @@ described above (commonroom#225).
   (`paced` or `spare`) and `strict`. The owner's own slice is `100 - sum(shares)`, derived. A missing file is an empty
   registry. `room projects` lists it; `add`, `set` and `remove` change it, and refuse a change that breaks a rule.
 - **Arithmetic** (`commonroom/pie.py`, pure): an estimate of each project's weekly spend from plan-wide readings and
-  run times; each project's line, `share × elapsed + share% of weekly_slack`; and whose turn it is: the `paced` project
-  with work furthest under its line for its share, else one over its line on share lent by a non-strict project with
-  nothing ready, else a `spare` project. A share of zero never runs.
+  run times (growth counts only above the week's running high, because the meter flaps by a point; a fall of more than
+  `RESET_DROP` is an early reset; each step is shared by the runs' expected cost inside the gap); each project's line,
+  `share × elapsed + share% of weekly_slack`; and whose turn it is: the `paced` project with work furthest under its
+  line for its share, else one over its line on share lent by a non-strict project with nothing ready while the
+  projects' total spend is under their lines (strict projects' unused share held back), else a `spare` project. A
+  share of zero never runs. The owner's own use is the gate's business, not the pie's.
+- **Registry warnings.** `add`, `set` and `remove` refuse only for the project being changed and for rules of the
+  whole registry. Another project's problem, such as a missing folder, is printed as a warning and the change is
+  saved.
 
 ## Roles (defaults)
 | Role | Default | Notes |

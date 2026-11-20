@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 WEEK = 7 * 86400
+# The weekly meter flaps by a point (two readers interleave 16, 17, 16, 17). A fall of more than this inside one period
+# is not flapping but an early reset of the window (52, then 3), so the running high starts again from that reading.
+RESET_DROP = 5
 
 
 def elapsed_fraction(now: float, resets_at: float) -> float:
@@ -21,50 +24,74 @@ def _period(sample: dict) -> int:
     return round((sample.get("resets_at") or 0) / 3600)
 
 
+def _active(runs: list[dict], lo: float, hi: float, until: float) -> list[tuple[dict, float]]:
+    """(run, seconds it overlaps the gap lo..hi) for each run inside the gap. A run still open counts up to `until`.
+    A gap of no length (the two readings carry one timestamp) is an instant: each run spanning it counts one second."""
+    found = []
+    for run in runs:
+        start = run["started_at"]
+        end = run["ended_at"] if run["ended_at"] is not None else until
+        if hi > lo:
+            seconds = min(end, hi) - max(start, lo)
+        else:
+            seconds = 1.0 if start <= hi <= end else 0.0
+        if seconds > 0:
+            found.append((run, seconds))
+    return found
+
+
 def _weights(active: list[tuple[dict, float]]) -> list[float]:
-    """Each active run's part of one gap's growth. `active` holds (run, seconds of the run inside the gap)."""
-    rates = []
-    for run, _ in active:
-        cost, end = run.get("cost_usd"), run.get("ended_at")
-        if cost is None or end is None or end <= run["started_at"]:
+    """Each active run's part of one gap's growth: its expected cost inside the gap (cost rate x seconds of overlap)
+    when every active run has a cost, otherwise its seconds of overlap."""
+    costs = []
+    for run, seconds in active:
+        cost, start, end = run.get("cost_usd"), run["started_at"], run.get("ended_at")
+        if cost is None or end is None or end <= start:
             break
-        rates.append(cost / (end - run["started_at"]))
+        costs.append(cost / (end - start) * seconds)
     else:
-        if sum(rates) > 0:
-            return rates                                   # every run has a cost: by cost rate
-    seconds = [overlap for _, overlap in active]
-    if sum(seconds) > 0:
-        return seconds                                     # a cost is missing: by minutes inside the gap
-    return [1.0] * len(active)                             # a gap of no length: evenly
+        if sum(costs) > 0:
+            return costs
+    return [seconds for _, seconds in active]
 
 
-def estimate_spend(samples: list[dict], runs: list[dict]) -> dict:
+def estimate_spend(samples: list[dict], runs: list[dict], until: float) -> dict:
     """An ESTIMATE of how much of the weekly window each project spent. The meter is plan-wide, so this is inferred.
 
-    `samples` are one provider's weekly readings oldest first, shaped as `Ledger.usage_history` returns them
-    (`first_seen`, `observed_at`, `used_pct`, `resets_at`). `runs` are every project's runs on that provider in the
-    same span (`project`, `started_at`, `ended_at` or None while running, `cost_usd` or None).
+    `samples` are one provider's weekly readings, shaped as `Ledger.usage_history` returns them (`first_seen`,
+    `observed_at`, `used_pct`, `resets_at`); they are put in order by `first_seen`, then `observed_at`, then highest
+    reading first, so readings that share a timestamp come out the same whatever order they arrive in. `runs` are every
+    project's runs on that provider in the same span (`project`, `started_at`, `ended_at` or None, `cost_usd` or None).
+    A run with no end counts as running up to `until` (normally now). The caller must leave out runs whose dispatcher
+    died, or they count as active until `until`.
 
-    The reading moved somewhere between the last time the old value was seen (`observed_at`) and the first time the
-    new one was (`first_seen`). That growth, clamped at zero, is shared among the runs active in that gap: by cost rate
-    (`cost_usd` over the run's length) when every active run has a cost, otherwise by each run's minutes inside the
-    gap. Growth with no run active is nobody's: it is the owner's own use. Two samples either side of a weekly reset
-    belong to different periods, so a reset never counts as spend. Returns {project: percent}, projects that spent
-    nothing left out.
+    Growth counts only above the highest reading so far in the weekly period, so a meter that flaps (16, 17, 16, 17,
+    18) counts 2, not 3. A fall of more than RESET_DROP points is an early reset of the window, and the high starts
+    again from there. A reset between periods never counts. Each counted step happened between the last time the
+    previous reading was seen (`observed_at`) and the first time the new one was (`first_seen`), and is shared among
+    the runs active in that gap by their expected cost in it (cost rate x seconds of overlap) when every one has a cost,
+    otherwise by seconds of overlap. Growth with no run active is nobody's: it is the owner's own use. So the projects
+    together never get more than the period grew. Returns {project: percent}, projects that spent nothing left out.
     """
     spent: dict = {}
-    ordered = sorted(runs, key=lambda r: (str(r["project"]), r["started_at"]))
-    for prev, cur in zip(samples, samples[1:]):
-        if _period(prev) != _period(cur):
+    ordered_runs = sorted(runs, key=lambda r: (str(r["project"]), r["started_at"]))
+    ordered = sorted(samples, key=lambda s: (s["first_seen"], s["observed_at"], -s["used_pct"]))
+    high: dict = {}
+    last: dict = {}
+    for cur in ordered:
+        key, used = _period(cur), cur["used_pct"]
+        prev = last.get(key)
+        last[key] = cur
+        if prev is None or used < high[key] - RESET_DROP:
+            high[key] = used                       # a new period, or an early reset inside one
             continue
-        growth = max(0.0, cur["used_pct"] - prev["used_pct"])
-        lo, hi = prev["observed_at"], cur["first_seen"]
-        active = []
-        for run in ordered:
-            end = run["ended_at"] if run["ended_at"] is not None else float("inf")
-            if run["started_at"] <= hi and end >= lo:
-                active.append((run, max(0.0, min(end, hi) - max(run["started_at"], lo))))
-        if not growth or not active:
+        if used <= high[key]:
+            continue                               # flapping below the high: nothing new
+        growth, high[key] = used - high[key], used
+        hi = cur["first_seen"]
+        lo = min(prev["observed_at"], hi)
+        active = _active(ordered_runs, lo, hi, until)
+        if not active:
             continue
         weights = _weights(active)
         total = sum(weights)
@@ -110,27 +137,29 @@ def _first(group: list[Standing]) -> Standing:
     return min(group, key=lambda s: (-s.behind, s.name))
 
 
-def _lenders(stands: list[Standing], ready: set, plan_used: float, borrower: str) -> list[Standing]:
+def _lenders(stands: list[Standing], ready: set, borrower: str) -> list[Standing]:
     """Projects lending their unused share to `borrower`: non-strict, under their line, with nothing ready. They lend
-    only while the plan is under the sum of all the lines with strict projects' unused share held back."""
+    only while the projects' spend in total is under the sum of their lines with strict projects' unused share held
+    back. The owner's own use doesn't enter: his slice and the plan-wide limit are the gate's business."""
     held = sum(max(0.0, s.headroom) for s in stands if s.strict)
-    if plan_used >= sum(s.allowed for s in stands) - held:
+    if sum(s.spent for s in stands) >= sum(s.allowed for s in stands) - held:
         return []
     return [s for s in stands if s.name != borrower and not s.strict and s.share > 0 and s.headroom > 0
             and s.name not in ready]
 
 
-def whose_turn(stands: list[Standing], ready: set, plan_used: float) -> tuple[str | None, str]:
+def whose_turn(stands: list[Standing], ready: set) -> tuple[str | None, str]:
     """Which project goes next, and one sentence saying why (or None and why nobody may run).
 
-    `ready` names the projects with work ready; `plan_used` is the plan-wide weekly reading. The rule, in order:
+    `ready` names the projects with work ready. The rule, in order:
     1. A share of zero never runs.
     2. Among `paced` projects with work and headroom above zero, the one furthest behind for its size
        (headroom / share) goes.
     3. Otherwise a `paced` project with work that is over its line may run on lent share: another non-strict project
-       is under its line with nothing ready, and the plan is under the sum of the lines (strict unused share held back).
+       is under its line with nothing ready, and the projects' spend in total is under the sum of their lines with
+       strict projects' unused share held back.
     4. `spare` projects run only when no `paced` project could: on their own headroom, else on lent share.
-    Ties go to the name that sorts first.
+    Ties go to the name that sorts first. The owner's slice and the plan-wide limits are the gate's, not this rule's.
     """
     willing = [s for s in stands if s.name in ready and s.share > 0]
     if not willing:
@@ -143,9 +172,9 @@ def whose_turn(stands: list[Standing], ready: set, plan_used: float) -> tuple[st
             return s.name, (f"{s.name} ({when}) is furthest under its line: {s.spent:.1f}% spent of {s.allowed:.1f}% "
                             f"allowed, {s.headroom:.1f} points in hand on a share of {s.share:g}")
         for s in sorted(group, key=lambda s: (-s.behind, s.name)):
-            lenders = _lenders(stands, ready, plan_used, s.name)
+            lenders = _lenders(stands, ready, s.name)
             if lenders:
                 return s.name, (f"{s.name} ({when}) is over its line ({s.spent:.1f}% spent of {s.allowed:.1f}%) and runs "
                                 f"on share lent by {', '.join(l.name for l in lenders)}, which have nothing ready")
     return None, ("every project with work is over its line, and no non-strict project under its line has unused share "
-                  "to lend while the plan is under the sum of the lines")
+                  "to lend while the projects' spend is under the sum of their lines")

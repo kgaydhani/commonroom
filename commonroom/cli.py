@@ -605,10 +605,12 @@ def cmd_projects(args) -> int:
             if getattr(args, key) is not None:
                 setattr(p, key, getattr(args, key))
     try:
-        registry.save(reg, path)
+        warnings = registry.save(reg, path, changing=name)
     except registry.RegistryError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 1
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
     print(f"{args.action} {name}: saved {path}; owner's own slice is {registry.fmt_number(reg.owner_share())}")
     return 0
 

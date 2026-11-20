@@ -151,6 +151,33 @@ class ProjectsCommand(Home):
                 self.assertIn(reason, out)
                 self.assertEqual(self.file.read_bytes(), before)
 
+    def test_one_projects_missing_folder_does_not_block_a_change_to_another(self):
+        alpha, beta = self.project_dir("alpha"), self.project_dir("beta")
+        self.room("add", "alpha", alpha, "--share", "30")
+        self.room("add", "beta", beta, "--share", "30")
+        (Path(beta) / "room.toml").unlink()
+        Path(beta).rmdir()
+        code, out = self.room("set", "alpha", "--share", "40")
+        self.assertEqual(code, 0)
+        self.assertIn(f"warning: project 'beta': 'path' {beta} does not exist", out)
+        self.assertEqual(registry.load(check=False).projects["alpha"].share, 40)
+        gamma = self.project_dir("gamma")
+        self.assertEqual(self.room("add", "gamma", gamma, "--share", "10")[0], 0)
+        # The broken project itself, and a whole-registry rule, are still refused.
+        before = self.file.read_bytes()
+        code, out = self.room("set", "beta", "--share", "5")
+        self.assertEqual((code, self.file.read_bytes()), (1, before))
+        self.assertIn("refused: project 'beta': 'path'", out)
+        code, out = self.room("set", "gamma", "--share", "50")
+        self.assertEqual((code, self.file.read_bytes()), (1, before))
+        self.assertIn("shares sum to 120", out)
+        # A bare list still names every problem and fails; removing the broken project fixes it.
+        code, out = self.room()
+        self.assertEqual(code, 1)
+        self.assertIn("problem: project 'beta'", out)
+        self.assertEqual(self.room("remove", "beta")[0], 0)
+        self.assertEqual(self.room()[0], 0)
+
     def test_bare_list_with_no_file(self):
         code, out = self.room()
         self.assertEqual(code, 0)
