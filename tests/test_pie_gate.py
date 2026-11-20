@@ -185,6 +185,8 @@ class Gate(Room):
 
     def test_standings_are_computed_once_per_allowed_provider_per_pass(self):
         self.projects(alpha=40, beta=20)
+        # The gate's owner reserve (commonroom#241) makes its own estimate once per meter reading: let it, first.
+        self.d.allowed(self.now)
         with mock.patch.object(dispatch.standings_mod, "standings", wraps=standings.standings) as calls:
             result = self.d.allowed(self.now)
         self.assertEqual(sorted(c.args[2] for c in calls.call_args_list), sorted(p for p, v in result.items() if v.allowed))
