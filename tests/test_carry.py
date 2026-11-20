@@ -1,11 +1,13 @@
 """commonroom#226: an approval carries across a clean merge of main once the room has run the tests on the new head.
 Real git and a real (fake) test command; a fake board."""
+import copy
 import subprocess
 import unittest
 from pathlib import Path
 
 from commonroom import carry, dispatch, metrics
 from commonroom.lock import claim_lock, release_lock, suite_lock
+from test_dispatch import owned
 from test_self_serve import Base, MergeBoard, project_cfg
 
 PASS = "python -c \"import os, sys; print('Ran 3 tests in 0.1s'); print(); print('OK'); sys.exit(0 if os.path.exists('docs.md') and os.path.exists('f.txt') else 1)\""
@@ -17,12 +19,18 @@ BRANCH = "i222-docs"
 class Board(MergeBoard):
     def __init__(self, *a):
         super().__init__(*a)
-        self.posted = []
+        self.posted, self.stored = [], []
 
     def comment(self, n, body):
         body = f"{dispatch.MARK} {body}"   # as GitHubBoard.comment does
         self.posted.append((n, body))
-        self.details[n].setdefault("comments", []).append({"createdAt": "2099-01-01T00:00:00Z", "body": body})
+        self.stored.append({"createdAt": "2099-01-01T00:00:00Z", "body": body})
+
+    def pr_detail(self, n):
+        """What a fresh read of the PR returns: the comments the board recorded, not the dispatcher's in-memory copy."""
+        d = copy.deepcopy(self.details[n])
+        d["comments"] = d["comments"] + copy.deepcopy(self.stored)
+        return owned(d, pr=True)
 
 
 class Carry(Base):
@@ -117,7 +125,7 @@ class Carry(Base):
                 (n, body), = board.posted
                 self.assertTrue(body.startswith(f"[room] TESTS: {result} {head} {command}: "), body)
                 self.assertNotIn("CARRIES:", body)
-                self.assertTrue(d.needs_review(board.details[222]))    # a model reviews it, as before
+                self.assertTrue(d.needs_review(board.pr_detail(222)))    # a model reviews it, as before
                 d.housekeeping()                                       # and the room doesn't run it again
                 self.assertEqual(len(board.posted), 1)
 
@@ -187,8 +195,7 @@ class Carry(Base):
         d = self.dispatcher(self.cfg(FAIL), board)
         d.housekeeping()
         fresh = self.dispatcher(self.cfg(FAIL), board)               # the next pass reads the board's comments back
-        detail = board.details[222]
-        detail["comments"] = [c for c in detail["comments"]]
+        detail = board.pr_detail(222)
         self.assertFalse(fresh.carry_pending(detail))
         self.assertTrue(fresh.needs_review(detail))
         fresh.housekeeping()
@@ -201,8 +208,8 @@ class Carry(Base):
         d = self.dispatcher(self.cfg(), board)
         d.board.comment(222, carry.comment("PASS", head, PASS, "Ran 3 tests in 0.1s OK", "2026-11-20T13:00:00Z", self.tested))
         fresh = self.dispatcher(self.cfg(), board)
-        self.assertTrue(fresh.tested(board.details[222]))
-        self.assertFalse(fresh.carry_pending(board.details[222]))
+        self.assertTrue(fresh.tested(board.pr_detail(222)))
+        self.assertFalse(fresh.carry_pending(board.pr_detail(222)))
         fresh.housekeeping()
         self.assertEqual(board.merged, [222])
         self.assertEqual((len(board.posted), len(self.carry_runs())), (1, 0))
