@@ -12,9 +12,13 @@ POLICY_FILE = Path(__file__).resolve().parent / "ways" / "policy.toml"
 NAMES = ("review_rounds", "incomplete_rounds", "ci_bounces", "ci_reruns", "ci_backoff_minutes",
          "scout_interleave_seconds", "director_cooldown_seconds", "owner_cooldown_seconds", "stale_claim_minutes",
          "room_error_backoff_seconds", "room_error_escalate", "resume_window_seconds", "progress_min_work_seconds",
-         "notify_max", "run_timeout_seconds")
-# Read inside GitHubBoard.rerun_ci, which no project's value reaches yet (commonroom#228).
-GLOBAL_ONLY = frozenset({"ci_reruns", "ci_backoff_minutes"})
+         "notify_max", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens")
+# Name -> why no project may set it.
+GLOBAL_ONLY = {"ci_reruns": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it (commonroom#228)",
+               "ci_backoff_minutes": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it "
+                                     "(commonroom#228)",
+               "prompt_max_tokens": "because it limits the room's own text (axiom A9)",
+               "templates_max_tokens": "because it limits the room's own text (axiom A9)"}
 
 
 def check(name: str, value, where: str) -> int:
@@ -46,7 +50,7 @@ def overrides(cfg: dict) -> dict[str, int]:
         if name not in DEFAULTS:
             raise ValueError(f"room.toml [policy] has unknown name {name!r}; known: {', '.join(NAMES)}")
         if name in GLOBAL_ONLY:
-            raise ValueError(f"room.toml [policy] {name} is room-wide only for now (commonroom#228)")
+            raise ValueError(f"room.toml [policy] {name} is room-wide only {GLOBAL_ONLY[name]}")
         check(name, value, "room.toml [policy]")
     return dict(table)
 
