@@ -9,7 +9,7 @@ from unittest import mock
 
 from commonroom import config, dispatch, gate, owner_reserve, policy, registry, standings, usage
 from commonroom.registry import Project, Registry
-from tests.test_dispatch import cfg_with
+from tests.test_dispatch import FakeBoard, cfg_with
 from tests.test_standings import H, Room
 
 
@@ -160,6 +160,26 @@ class Gate(Room):
             registry.save(Registry({k: p for k, p in registry.load().projects.items() if k == "alpha"}))
             self.verdict()
             self.assertEqual(claude(), 3)                           # a registry edit counts at once
+
+    def test_with_the_plan_wide_pace_off_the_pie_holds_a_project_far_over_its_line_on_day_one(self):
+        # The pie's gate (commonroom#240) is what paces a registered project once the plan-wide pace is off: no gap.
+        self.registry()
+        self.resets = self.now + 6 * 86400                          # one day of the week gone
+        self.add_run("alpha-site", self.now - 20 * H, self.now - 2 * H)
+        self.reading(self.now - 20 * H, 0)
+        self.reading(self.now - 2 * H, 40)                          # all 40 points alpha's; its line is about 6.7
+        self.reading(self.now - 60, 40)
+        self.five_hour()
+        d = dispatch.Dispatcher(self.cfg(), self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        d.claude_projects = self.transcripts
+        gate_alone = self.verdict()
+        self.assertTrue(gate_alone.allowed, gate_alone.reason)     # reserve 15 of the 60 left; no plan-wide pace
+        unregistered = dispatch.verdicts(self.ledger, cfg_with(self.root), self.now)["claude"]
+        self.assertIn("ahead of weekly pace (40% used", unregistered.reason)   # what held it before
+        v = d.allowed(self.now)["claude"]
+        self.assertFalse(v.allowed)
+        self.assertTrue(v.reason.startswith("claude: the pie holds new work: alpha is over its line (40.0% spent of "
+                                            "6.7%)"), v.reason)
 
 
 class Guest(Room):

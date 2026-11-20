@@ -47,12 +47,18 @@ notify_max = 5
 # Seconds (60 minutes) the room lets one run go; the headless note tells the worker the same number.
 run_timeout_seconds = { value = 3600, min = 300, max = 14400 }
 
-# The owner's own use (axiom A5) ------------------------------------------------------------------------------------
+# The pie ------------------------------------------------------------------------------------------------------------
+
+# Minutes: a project with a model run on a provider now, or one that ended this recently, is active there. A project
+# over its line, or `spare`, starts only when the pie names it among the active projects and itself, so its share is
+# lent only while the others are idle (commonroom#240). Today's `[share] idle_minutes`. Room-wide only: every
+# project's dispatcher must judge "active" alike.
+pie_idle_minutes = 60
 
 # Points of the week: the least a project in the pie's registry keeps back for the owner on each provider. Its weekly
 # reserve is the part of the owner's slice (what the shares leave) he hasn't used, and never less than this, so the
-# projects can't run the week out once his slice is used (commonroom#241). About a heavy day of his own use. Room-wide
-# only: every project keeps back the same.
+# projects can't run the week out once his slice is used (axiom A5, commonroom#241). About a heavy day of his own use.
+# Room-wide only: every project keeps back the same.
 owner_floor_weekly = { value = 5, min = 1, max = 50 }
 
 # The room's own text (axiom A9) -------------------------------------------------------------------------------------
@@ -61,5 +67,5 @@ owner_floor_weekly = { value = 5, min = 1, max = 50 }
 
 # The most tokens one rendered prompt may have: the room hands over the task and leaves the method to the model.
 prompt_max_tokens = 700
-# The most tokens all of commonroom/ways/prompts/ may have together, so new text replaces old instead of piling up.
-templates_max_tokens = 2500
+# The most tokens commonroom/ways/prompts/ and handshake/ may have together, so new text replaces old instead of piling up.
+templates_max_tokens = 2530

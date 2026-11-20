@@ -28,11 +28,12 @@ from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
-README, CHARTER, DIGEST = (read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest"))
+README, CHARTER, DIGEST, REPLY = (read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply"))
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
+READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
 ADD = "`room projects add <name> <folder> --share <percent>`"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": WEEK}
 PARTS = ("README.md", "charter.md", "digest.md", "inbox")
@@ -217,13 +218,32 @@ def ledger_name(p: registry.Project) -> str:
     return (room_toml(p).get("project") or {}).get("name") or p.name
 
 
+def _body(text: str) -> str:
+    """A charter's text without its `# ` title line."""
+    lines = text.strip().split("\n")
+    return "\n".join(lines[1:] if text.lstrip().startswith("# ") else lines).strip()
+
+
+def charter_written(where: Path, name: str) -> bool:
+    """True when `charter.md` holds more than the headings the room created it with."""
+    try:
+        text = (where / "charter.md").read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return _body(text) not in ("", _body(fill_way(CHARTER, project=name)))
+
+
+def reply_line(p: registry.Project) -> str:
+    """How to reply to the project's folder, from `reply.md`: shared by the digest and the session hook."""
+    return fill_way(REPLY, project=p.name, folder=str(folder_of(p)))
+
+
 def _charter(where: Path, p: registry.Project) -> str:
     try:
         text = (where / "charter.md").read_text(encoding="utf-8-sig").replace("\r\n", "\n")
     except FileNotFoundError:
         return "There is no `charter.md` in this folder."
-    def body(t): return "\n".join(t.strip().split("\n")[1:] if t.lstrip().startswith("# ") else t.strip().split("\n")).strip()
-    if body(text) == body(fill_way(CHARTER, project=p.name)):
+    if _body(text) == _body(fill_way(CHARTER, project=p.name)):
         cfg = room_toml(p)
         mission, goal = (cfg.get("project") or {}).get("mission"), (cfg.get("goal") or {}).get("milestone")
         lines = ["Not written yet: `charter.md` holds only its headings."]
@@ -233,7 +253,7 @@ def _charter(where: Path, p: registry.Project) -> str:
         if goal:
             lines += ["", f"Its current goal is the milestone \"{goal}\"."]
         return "\n".join(lines)
-    return re.sub(r"(?m)^(#+ )", r"#\1", body(text)) or "Not written yet: `charter.md` is empty."
+    return re.sub(r"(?m)^(#+ )", r"#\1", _body(text)) or "Not written yet: `charter.md` is empty."
 
 
 def _share(reg: registry.Registry, p: registry.Project) -> str:
@@ -291,7 +311,7 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
-    return fill_way(DIGEST, project=p.name, folder=str(where), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
+    return fill_way(DIGEST, project=p.name, reply=reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
 
@@ -309,6 +329,30 @@ def refresh(reg: registry.Registry, p: registry.Project, now: float | None = Non
         ledger.close()
     _write(where / "digest.md", text)
     return text
+
+
+def last_read(ledger: Ledger | None, p: registry.Project) -> float:
+    """When the project itself last read its inbox: its own `room attach` (as itself, by name or from its folder) or a
+    full `room notes` from its folder. An attach as someone else, or by another project, never counts."""
+    if ledger is None:
+        return 0.0
+    mine = p.name.lower()
+    seen = [at for who, at in ledger.marks(p.name, ATTACHED) if who.lower() == mine]
+    return max(seen + [ledger.marked(p.name, READ + p.name) or 0.0])
+
+
+def unread(notes: list[dict], p: registry.Project, ledger: Ledger | None) -> list[dict]:
+    """The notes in the project's inbox newer than its own last read, not written by the project itself."""
+    seen = int(last_read(ledger, p))   # a note is dated to the second: one in the read's own second counts as unread
+    return [n for n in notes if n["at"] >= seen and (n["from"] or "").lower() != p.name.lower()]
+
+
+def _here(reg: registry.Registry) -> registry.Project | None:
+    """The project whose folder the current directory is in, or None."""
+    try:
+        return find(reg)
+    except HandshakeError:
+        return None
 
 
 def _user() -> str:
@@ -340,7 +384,8 @@ def _run(command):
 @_run
 def cmd_attach(args) -> int:
     reg, p = _start(args)
-    who = _one_line(args.who or _user())
+    here = None if args.who else _here(reg)
+    who = _one_line(args.who or (here.name if here is not None and here.name == p.name else _user()))
     where = folder_of(p)
     kept = (where / "README.md").exists()
     text = refresh(reg, p, who=who)
@@ -381,6 +426,13 @@ def cmd_note(args) -> int:
 def cmd_notes(args) -> int:
     reg, p = _start(args)
     notes = read_notes(folder_of(p))
+    here = _here(reg)
+    if not args.since and here is not None and here.name == p.name:   # the project reading its own inbox, all of it
+        ledger = Ledger()
+        try:
+            ledger.mark(p.name, READ + p.name)
+        finally:
+            ledger.close()
     if args.since:
         since = parse_since(args.since, time.time())
         notes = [n for n in notes if n["at"] >= since]

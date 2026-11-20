@@ -239,8 +239,9 @@ class PieCommand(Room):
         self.assertNotIn("STALE", self.room()[1])
 
 
-class NothingIsGated(Room):
-    def test_dispatcher_allowed_is_the_same_with_and_without_a_registry(self):
+class NoProjectsNoGate(Room):
+    def test_dispatcher_allowed_is_the_same_with_no_registry_and_an_empty_one(self):
+        # Since commonroom#240 a registry with projects gates (tests/test_pie_gate.py); with none, nothing changes.
         self.week()
         for provider in ("claude", "codex"):
             self.ledger.record_usage([usage.observation(provider, "five_hour", 5, self.now + H, "test"),
@@ -251,9 +252,8 @@ class NothingIsGated(Room):
             return {p: (v.allowed, v.reason) for p, v in d.allowed(self.now).items()}
 
         without = verdicts()
-        self.register(alpha=1, beta=1)                     # both far over their lines on the pie
-        report = standings.standings(self.ledger, registry.load(), "claude", self.now)
-        self.assertTrue(all(s.headroom < 0 for s in report.rows))
+        registry.save(Registry())                          # the file now exists, with no project in it
+        self.assertTrue((self.home / registry.FILENAME).is_file())
         self.assertEqual(verdicts(), without)
         self.assertTrue(without["claude"][0], without)
         self.assertIsInstance(d.allowed(self.now)["claude"], gate.Verdict)

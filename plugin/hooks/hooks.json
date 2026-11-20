@@ -1,0 +1,17 @@
+{
+  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

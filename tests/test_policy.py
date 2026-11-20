@@ -33,7 +33,8 @@ PINNED = {
 
 
 # Values added to the table since the move, with the value each was added at.
-NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 2500,   # commonroom#231
+NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 2530,   # commonroom#231; 2530: #262
+       "pie_idle_minutes": 60,                                    # commonroom#240: today's [share] idle_minutes
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
 
 
@@ -152,6 +153,8 @@ class ProjectOverride(unittest.TestCase):
         for name in ("prompt_max_tokens", "templates_max_tokens"):
             with self.assertRaisesRegex(ValueError, f"{name} is room-wide only because it limits the room's own text"):
                 self.dispatcher("a", {name: 5000})
+        with self.assertRaisesRegex(ValueError, "pie_idle_minutes is room-wide only because every project's dispatcher"):
+            self.dispatcher("a", {"pie_idle_minutes": 30})
         with self.assertRaisesRegex(ValueError, "owner_floor_weekly is room-wide only because it keeps the owner's"):
             self.dispatcher("a", {"owner_floor_weekly": 1})
         with self.assertRaisesRegex(ValueError, "review_rounds must be a whole number"):
