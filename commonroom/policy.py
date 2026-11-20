@@ -2,7 +2,9 @@
 
 A running dispatcher keeps the values it loaded while the room pulls new files under it, and a missing file or name
 fails the import naming it. A project overrides a value under `[policy]` in its room.toml; `overrides` checks the
-names and returns only what the project set, so an unset name keeps the room's value."""
+names and returns only what the project set, so an unset name keeps the room's value. A value with a floor or ceiling
+is written `name = { value = 2, min = 1 }` in the table; a project's value, and the room's own, must sit inside it
+(commonroom#230)."""
 from __future__ import annotations
 
 import tomllib
@@ -18,18 +20,23 @@ GLOBAL_ONLY = {"ci_reruns": "for now: GitHubBoard.rerun_ci reads it, and no proj
                "ci_backoff_minutes": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it "
                                      "(commonroom#228)",
                "prompt_max_tokens": "because it limits the room's own text (axiom A9)",
-               "templates_max_tokens": "because it limits the room's own text (axiom A9)"}
+               "templates_max_tokens": "because it limits the room's own text (axiom A9)",
+               "progress_min_work_seconds": "because it is part of the progress breaker's timing, which is the "
+                                            "director's call (commonroom#230)"}
 
 
-def check(name: str, value, where: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise ValueError(f"{where}: {name} must be a whole number of at least 0, not {value!r}")
+def check(name: str, value, where: str, low: int = 0, high: int | None = None) -> int:
+    if (isinstance(value, bool) or not isinstance(value, int) or value < low
+            or (high is not None and value > high)):
+        span = f"of at least {low}" if high is None else f"between {low} and {high}"
+        raise ValueError(f"{where}: {name} must be a whole number {span}, not {value!r}")
     return value
 
 
-def load_policy(path: Path) -> dict[str, int]:
-    """Every value in the table at `path`. A missing file raises FileNotFoundError naming it; a missing, unknown or
-    non-integer name raises ValueError naming it."""
+def read_table(path: Path) -> tuple[dict[str, int], dict[str, tuple[int, int | None]]]:
+    """Every value in the table at `path`, and each name's (floor, ceiling): (0, None) when it sets neither. A missing
+    file raises FileNotFoundError naming it; a missing, unknown or non-integer name, or a value outside its own
+    bounds, raises ValueError naming it."""
     with open(path, "rb") as handle:
         table = tomllib.load(handle)
     missing = [n for n in NAMES if n not in table]
@@ -37,12 +44,26 @@ def load_policy(path: Path) -> dict[str, int]:
     if missing or unknown:
         raise ValueError(f"{path}: " + "; ".join(([f"missing {', '.join(missing)}"] if missing else [])
                                                  + ([f"unknown {', '.join(unknown)}"] if unknown else [])))
-    return {n: check(n, table[n], str(path)) for n in NAMES}
+    values, bounds = {}, {}
+    for n in NAMES:
+        entry = table[n] if isinstance(table[n], dict) else {"value": table[n]}
+        stray = sorted(set(entry) - {"value", "min", "max"})
+        if stray or "value" not in entry:
+            raise ValueError(f"{path}: {n} takes value, min and max" + (f", not {', '.join(stray)}" if stray else ""))
+        low = check(f"{n} min", entry.get("min", 0), str(path))
+        high = None if "max" not in entry else check(f"{n} max", entry["max"], str(path), low)
+        values[n], bounds[n] = check(n, entry["value"], str(path), low, high), (low, high)
+    return values, bounds
+
+
+def load_policy(path: Path) -> dict[str, int]:
+    """Every value in the table at `path` (see `read_table`)."""
+    return read_table(path)[0]
 
 
 def overrides(cfg: dict) -> dict[str, int]:
-    """The values a project's room.toml `[policy]` sets, checked: an unknown name, or one only the room sets, raises
-    ValueError naming it. Empty when the project sets none."""
+    """The values a project's room.toml `[policy]` sets, checked: an unknown name, one only the room sets, or a value
+    outside the table's floor and ceiling raises ValueError naming it. Empty when the project sets none."""
     table = cfg.get("policy") or {}
     if not isinstance(table, dict):
         raise ValueError("room.toml [policy] must be a table")
@@ -51,8 +72,8 @@ def overrides(cfg: dict) -> dict[str, int]:
             raise ValueError(f"room.toml [policy] has unknown name {name!r}; known: {', '.join(NAMES)}")
         if name in GLOBAL_ONLY:
             raise ValueError(f"room.toml [policy] {name} is room-wide only {GLOBAL_ONLY[name]}")
-        check(name, value, "room.toml [policy]")
+        check(name, value, "room.toml [policy]", *BOUNDS[name])
     return dict(table)
 
 
-DEFAULTS = load_policy(POLICY_FILE)
+DEFAULTS, BOUNDS = read_table(POLICY_FILE)
