@@ -2003,7 +2003,7 @@ class Dispatcher:
             return "the director's stamp can't be carried to this head"
         key = (tested, head_sha(detail).lower())
         if key not in self.clean_merges:
-            self.clean_merges[key] = self.cleanly_merges_main(detail.get("headRefName") or "", later)
+            self.clean_merges[key] = self.cleanly_merges_main(detail.get("headRefName") or "", tested, key[1])
         return "" if self.clean_merges[key] else "a commit since the tested one is not a clean merge of main"
 
     def carry_pending(self, detail: dict) -> bool:
@@ -2011,14 +2011,21 @@ class Dispatcher:
         return (self.carry and not self.tested(detail) and self.room_result(detail) is None
                 and self.carry_reason(detail) == "")
 
-    def cleanly_merges_main(self, branch: str, oids: list[str]) -> bool:
-        if not self.root or not branch:
+    def cleanly_merges_main(self, branch: str, tested: str, head: str) -> bool:
+        """Walking first parents back from `head` reaches `tested`, and every commit on the way is a clean merge of
+        main. The walk follows the branch's own history, not GitHub's date-ordered commit list, so a commit dated
+        before the tested one but added after it can't slip through. Any doubt: no."""
+        if not self.root or not branch or not tested or not head:
             return False
         try:
             git(["fetch", "--quiet", "origin", "main", branch], self.root)
+            chain = git(["rev-list", "--first-parent", head], self.root).split()
         except RuntimeError:
             return False
-        return all(merges_main_only(self.root, oid, clean=True) for oid in oids)
+        chain = [c.lower() for c in chain]
+        if tested not in chain or chain.index(tested) == 0:
+            return False
+        return all(merges_main_only(self.root, oid, clean=True) for oid in chain[:chain.index(tested)])
 
     def carry_approval(self, pr: dict, detail: dict, issue_no: int | None) -> list[str]:
         """Run the tests on the PR head in code and say on the PR whether the approval carries. The run is a ledger row

@@ -8,7 +8,7 @@ import re
 DAY = 86400
 WINDOWS = {"7d": 7 * DAY, "30d": 30 * DAY}
 LOOKBACK = 37 * DAY          # rows to load: the longest window plus a week, so its PRs' builders are found
-ROOM_ROLES = ("merge", "update")         # rows the room writes itself: no model ran
+ROOM_ROLES = ("merge", "update", "carry")   # rows the room writes itself: no model ran (carry: commonroom#226)
 NOT_WORK = ("running", "room-error")     # unfinished, or failed before any model work
 PR_REF = re.compile(r"PR #(\d+)")
 

@@ -4,7 +4,7 @@ import subprocess
 import unittest
 from pathlib import Path
 
-from commonroom import carry, dispatch
+from commonroom import carry, dispatch, metrics
 from commonroom.lock import claim_lock, release_lock, suite_lock
 from test_self_serve import Base, MergeBoard, project_cfg
 
@@ -137,6 +137,25 @@ class Carry(Base):
                 d.housekeeping()
                 self.assertEqual((board.merged, board.posted, self.carry_runs()), ([], [], []))
                 self.assertFalse(d.carry_pending(board.details[222]))
+
+    def test_a_commit_listed_before_the_tested_one_but_added_after_it_carries_nothing(self):
+        # GitHub lists a PR's commits by date. A cherry-pick keeps its old date, so it can sit before the tested commit
+        # in that list though it was added after it. The walk follows first parents from the head, not the list.
+        self.git("checkout", "-q", BRANCH)
+        self.write("g.txt", "unreviewed\n")
+        late = self.commit("cherry-picked fix")
+        self.git("checkout", "-q", "main")
+        head = self.merge_main()
+        board = self.board(head)
+        board.details[222]["commits"].insert(0, {"oid": late, "committedDate": "2026-11-20T11:00:00Z"})
+        d = self.dispatcher(self.cfg(), board)
+        self.assertFalse(d.carry_pending(board.details[222]))
+        d.housekeeping()
+        self.assertEqual((board.merged, board.posted, self.carry_runs()), ([], [], []))
+
+    def test_a_carry_run_is_not_counted_as_a_model_run(self):
+        rows = [{"role": "carry", "status": "done", "started_at": 5.0}, {"role": "reviewer", "status": "done", "started_at": 5.0}]
+        self.assertEqual([r["role"] for r in metrics.model_runs(rows, 0, 10)], ["reviewer"])
 
     def test_a_director_path_whose_stamp_cannot_be_carried_carries_nothing(self):
         board = self.board(self.merge_main(), files=["room.toml"])
