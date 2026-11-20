@@ -6,7 +6,8 @@ Every agent working on this repo reads this first: Claude Code (through `CLAUDE.
 - Common Room is the Python orchestrator that runs the owner's AI studio: the ledger, usage gate, breakers, dispatcher, workers and dashboard. It is a product of its own: each project plugs in with a `room.toml` and `.claude/agents/` in its own repo, and the heartbeat runs one project as the host at a time. How it works: [docs/design.md](docs/design.md). Why v1 failed: [docs/postmortem-v1.md](docs/postmortem-v1.md).
 - The room improves itself through this repo (commonroom#31). Its own dispatcher builds, reviews and merges issues in the milestone named in `room.toml` `[goal]`, as a guest on the host project's allowance (`[share]`): the project the heartbeat runs for.
 - The owner is Kieran (GitHub `kgaydhani`). The director (Claude Opus) owns the roadmap, reviews and merges.
-- **Read [docs/axioms.md](docs/axioms.md).** A change that conflicts with an axiom needs the owner, so stop and ask. [docs/decisions.csv](docs/decisions.csv) ties each axiom to its test.
+- Read [docs/owner-statements.md](docs/owner-statements.md) first: what the owner wants and why, in his words. The axioms and the design answer to it, and where they differ from it, it wins.
+- **Read [docs/axioms.md](docs/axioms.md).** A change that conflicts with an axiom is not made: find another way to the same outcome, and say on the issue what the conflict was. Only the owner changes an axiom, and nothing else waits on him. [docs/decisions.csv](docs/decisions.csv) ties each axiom to its test.
 
 ## The live room is running. Don't touch it.
 - **`D:/Dev/commonroom` is the live checkout.** The heartbeat, every dispatcher and the dashboard run from it. Never edit, commit, check out, reset or stash in it. Read it if you need to.
