@@ -14,6 +14,7 @@ from __future__ import annotations
 import getpass
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -68,6 +69,19 @@ def load_registry() -> registry.Registry:
     return reg
 
 
+def main_repo(cwd) -> Path | None:
+    """The main repository when `cwd` is in a git worktree (or any checkout), else None: no git, or not a repo."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=str(cwd), capture_output=True, text=True,
+                             timeout=10, check=False).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not out:
+        return None
+    common = Path(out) if os.path.isabs(out) else Path(cwd) / out
+    return common.resolve().parent if common.name == ".git" else None
+
+
 def find(reg: registry.Registry, name: str | None = None, cwd: Path | None = None) -> registry.Project:
     """The project named, or else the one whose folder (or room folder) holds `cwd`, the deepest if several do."""
     names = ", ".join(sorted(reg.projects))
@@ -77,8 +91,12 @@ def find(reg: registry.Registry, name: str | None = None, cwd: Path | None = Non
             raise HandshakeError(f"no project named {name!r} is registered (registered: {names}).")
         return match
     cwd = Path.cwd() if cwd is None else cwd
+    here = [cwd]
+    if (root := main_repo(cwd)) is not None:   # a worktree belongs to the project its main repository is registered as
+        here.append(root)
     found = [(len(os.path.abspath(where)), p) for p in reg.projects.values()
-             for where in (p.path, folder_of(p)) if isinstance(where, (str, Path)) and str(where) and _inside(cwd, where)]
+             for where in (p.path, folder_of(p)) if isinstance(where, (str, Path)) and str(where)
+             and any(_inside(at, where) for at in here)]
     if not found:
         raise HandshakeError(f"{cwd} is in no registered project's folder (registered: {names}). Name a project, "
                              f"or register this folder with {ADD}.")
@@ -98,21 +116,15 @@ def _write(path: Path, text: str):
 
 
 def prepare(p: registry.Project) -> Path:
-    """Make the folder and its parts where missing. The README follows its template; the charter is only ever created."""
+    """Make the folder and its parts where missing. The README and the charter are only ever created, never rewritten."""
     where = folder_of(p)
     (where / "inbox").mkdir(parents=True, exist_ok=True)
-    readme = fill_way(README, project=p.name) + "\n"
-    try:
-        same = (where / "README.md").read_text(encoding="utf-8") == readme
-    except (OSError, UnicodeDecodeError):
-        same = False
-    if not same:
-        _write(where / "README.md", readme)
-    try:
-        with open(where / "charter.md", "x", encoding="utf-8", newline="\n") as handle:
-            handle.write(fill_way(CHARTER, project=p.name) + "\n")
-    except FileExistsError:
-        pass
+    for name, way in (("README.md", README), ("charter.md", CHARTER)):
+        try:
+            with open(where / name, "x", encoding="utf-8", newline="\n") as handle:
+                handle.write(fill_way(way, project=p.name) + "\n")
+        except FileExistsError:
+            pass
     return where
 
 
@@ -279,7 +291,7 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
-    return fill_way(DIGEST, project=p.name, built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
+    return fill_way(DIGEST, project=p.name, folder=str(where), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
 
@@ -307,8 +319,12 @@ def _user() -> str:
 
 
 def _start(args) -> tuple[registry.Registry, registry.Project]:
+    """The project named as an argument (`room digest alpha`) or with `--project` (the same name twice is fine)."""
+    given = {n for n in (getattr(args, "name", None), getattr(args, "project", None)) if n}
+    if len(given) > 1:
+        raise HandshakeError(f"refused: two different projects named ({', '.join(sorted(given))}). Name one.")
     reg = load_registry()
-    return reg, find(reg, getattr(args, "project", None))
+    return reg, find(reg, next(iter(given), None))
 
 
 def _run(command):
@@ -325,19 +341,26 @@ def _run(command):
 def cmd_attach(args) -> int:
     reg, p = _start(args)
     who = _one_line(args.who or _user())
-    text = refresh(reg, p, who=who)
     where = folder_of(p)
+    kept = (where / "README.md").exists()
+    text = refresh(reg, p, who=who)
     names = sorted((e.name for e in where.iterdir() if not e.name.startswith(".")),
                    key=lambda n: (PARTS.index(n) if n in PARTS else len(PARTS), n.lower()))
     held = [n + ("/" if (where / n).is_dir() else "") for n in names]
     print(f"{p.name}: {where}\nHolds {', '.join(held)} ({len(read_notes(where))} notes in inbox/).")
+    if kept:
+        print("README.md was already there and is left as it is.")
     print(f"Attached as {who}.\n\n{text}", end="")
     return 0
 
 
 @_run
 def cmd_note(args) -> int:
-    text = sys.stdin.read() if args.text == "-" else args.text
+    *named, text = args.words    # `note TEXT` or `note PROJECT TEXT`
+    if len(named) > 1:
+        raise HandshakeError("refused: give the note's text as one argument, in quotes.")
+    args.name = named[0] if named else None
+    text = sys.stdin.read() if text == "-" else text
     if not text.strip():
         raise HandshakeError("refused: the note is empty.")
     reg, p = _start(args)
