@@ -71,7 +71,8 @@ def usage_verdict(provider: str, readings: dict[str, dict], policy: dict, now: f
         weekly_allowed = (100 - reserve_w) * _fraction(now, week["resets_at"], "seven_day") + policy.get("weekly_slack", 0)
         burst_allowed = (100 - reserve_5) * min(1.0, _fraction(now, session["resets_at"], "five_hour") + policy.get("front_load", 0))
         detail.update(weekly_pace=round(weekly_allowed, 1), five_hour_cap=round(burst_allowed, 1))
-        if week["used_pct"] > weekly_allowed:
+        # A project in the pie's registry is paced by its own line instead (commonroom#241): `weekly_pace_check` false.
+        if policy.get("weekly_pace_check", True) and week["used_pct"] > weekly_allowed:
             return Verdict(False, f"{provider}: ahead of weekly pace ({week['used_pct']:.0f}% used, pace allows {weekly_allowed:.0f}%)", detail)
         if session["used_pct"] > burst_allowed:
             return Verdict(False, f"{provider}: 5-hour burn cap ({session['used_pct']:.0f}% used, {burst_allowed:.0f}% allowed so far this window)", detail)

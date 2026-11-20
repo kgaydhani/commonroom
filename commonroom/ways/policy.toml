@@ -4,8 +4,8 @@
 # An unknown name, or one marked "room-wide only", is an error naming it when that project's dispatcher starts.
 # `name = { value = ..., min = ..., max = ... }` sets a floor and ceiling: a project's value outside them is an error
 # naming it at start, and so is the room's own (commonroom#230). Without them a value is any whole number from 0.
-# Budget and gate settings are not here: they stay in room.toml `[budget]`, `[breakers]`, `[parallel]`, `[owner]`
-# and `[share]`, and in gate.py.
+# Budget and gate settings are not here, except the owner's floor below: they stay in room.toml `[budget]`,
+# `[breakers]`, `[parallel]`, `[owner]` and `[share]`, in the registry's `[budget]`, and in gate.py.
 
 # Review and CI ------------------------------------------------------------------------------------------------------
 
@@ -46,6 +46,14 @@ progress_min_work_seconds = 21600
 notify_max = 5
 # Seconds (60 minutes) the room lets one run go; the headless note tells the worker the same number.
 run_timeout_seconds = { value = 3600, min = 300, max = 14400 }
+
+# The owner's own use (axiom A5) ------------------------------------------------------------------------------------
+
+# Points of the week: the least a project in the pie's registry keeps back for the owner on each provider. Its weekly
+# reserve is the part of the owner's slice (what the shares leave) he hasn't used, and never less than this, so the
+# projects can't run the week out once his slice is used (commonroom#241). About a heavy day of his own use. Room-wide
+# only: every project keeps back the same.
+owner_floor_weekly = { value = 5, min = 1, max = 50 }
 
 # The room's own text (axiom A9) -------------------------------------------------------------------------------------
 # Tokens count as characters divided by four, rounded up; tests/test_prompt_budget.py holds the text to them. Both are

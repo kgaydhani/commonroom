@@ -27,6 +27,7 @@ from commonroom import board as board_mod, config as config_mod, gate, notify as
 from commonroom import carry as carry_mod, policy as policy_mod
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
+from commonroom import owner_reserve
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -936,6 +937,9 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
     """Only the dispatcher records breaker trips (`trip=True`). Views (status, dashboard) are read-only, so a
     long-running view on old code can never re-trip a breaker the current code would not."""
     now = time.time() if now is None else now
+    # A project in the pie's registry keeps back the owner's unused slice, on its own settings (commonroom#241).
+    owner_gate = owner_reserve.for_project(ledger, cfg)   # None: today's gate, unchanged
+    cfg = owner_gate.cfg if owner_gate else cfg
     project = cfg["project"].get("name")
     n = cfg["breakers"]["no_output_runs"]
     result = {}
@@ -956,8 +960,12 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
             continue
         if tripped and trip:
             ledger.trip(project, f"{tripped['kind']}:{provider}", tripped["detail"], now=now)
-        v = gate.usage_verdict(provider, ledger.latest_usage(provider), config_mod.budget(cfg, provider), now,
-                               cfg["freshness_seconds"])
+        policy = config_mod.budget(cfg, provider)
+        if owner_gate:
+            policy, made_from = owner_gate.policy(ledger, provider, policy, now)
+        v = gate.usage_verdict(provider, ledger.latest_usage(provider), policy, now, cfg["freshness_seconds"])
+        if owner_gate:
+            v.detail["owner_reserve"] = made_from
         cool = ledger.cooldown(provider, now)
         if v.allowed and cool:
             v = gate.Verdict(False, f"{provider}: {cool['reason']}; resting until "

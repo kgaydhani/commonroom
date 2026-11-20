@@ -14,7 +14,7 @@ POLICY_FILE = Path(__file__).resolve().parent / "ways" / "policy.toml"
 NAMES = ("review_rounds", "incomplete_rounds", "ci_bounces", "ci_reruns", "ci_backoff_minutes",
          "scout_interleave_seconds", "director_cooldown_seconds", "owner_cooldown_seconds", "stale_claim_minutes",
          "room_error_backoff_seconds", "room_error_escalate", "resume_window_seconds", "progress_min_work_seconds",
-         "notify_max", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens")
+         "notify_max", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens", "owner_floor_weekly")
 # Name -> why no project may set it.
 GLOBAL_ONLY = {"ci_reruns": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it (commonroom#228)",
                "ci_backoff_minutes": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it "
@@ -22,7 +22,9 @@ GLOBAL_ONLY = {"ci_reruns": "for now: GitHubBoard.rerun_ci reads it, and no proj
                "prompt_max_tokens": "because it limits the room's own text (axiom A9)",
                "templates_max_tokens": "because it limits the room's own text (axiom A9)",
                "progress_min_work_seconds": "because it is part of the progress breaker's timing, which is the "
-                                            "director's call (commonroom#230)"}
+                                            "director's call (commonroom#230)",
+               "owner_floor_weekly": "because it keeps the owner's own use first against every project alike "
+                                     "(axiom A5, commonroom#241)"}
 
 
 def check(name: str, value, where: str, low: int = 0, high: int | None = None) -> int:
