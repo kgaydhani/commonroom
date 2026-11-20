@@ -1,0 +1,16 @@
+ ▐▛███▛█   Claude Code v2.1.322
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   C:\work\project
+
+⚠ Allow rule "Edit(*)" lets Edit run without asking only in the working directories. "Edit" alone allows every path. Older versions of Claude Code treat
+  "Edit(*)" as "Edit", and this version will too if Anthropic turns this change off.
+⚠ Allow rule "Write(*)" lets Write run without asking only in the working directories. "Write" alone allows every path. Older versions of Claude Code treat
+  "Write(*)" as "Write", and this version will too if Anthropic turns this change off.
+⚠ Allow rule "Read(*)" adds nothing to Read's default, which already runs without asking in the working directories. "Read" alone allows every path. Older
+  versions of Claude Code treat "Read(*)" as "Read", and this version will too if Anthropic turns this change off.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "how do I log an error?"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 5.5                                                                                                                          Not logged in · Run /login
+  ⏵⏵ don't ask on (shift+tab to cycle) · ← for agents                                                                                       ◐ medium · /effort

@@ -33,6 +33,9 @@ ci = false
 # `[agent:director] REVIEW: APPROVE` after the last commit (commonroom#49). A glob can't pick out just the budget parts
 # of config.py, so the whole file is in.
 director_paths = ["commonroom/gate.py", "commonroom/config.py", "room.toml", "commonroom/ways/policy.toml"]
+# An approval survives clean merges of main once the room has run the tests on the merged head itself, so a merge of
+# main costs no reviewer run (commonroom#226). Runs are bounded by [checks] max_minutes, 10 when unset.
+carry_tested_approval = true
 
 [roles]
 # All Claude: one Claude dispatcher serves this project. Codex's sandbox notes come from [prompts] codex, unset here.
