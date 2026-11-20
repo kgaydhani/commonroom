@@ -503,7 +503,8 @@ class DirectorPaths(Base):
 
     def test_commonrooms_room_toml_names_the_budget_and_safety_files(self):
         cfg = config.load(REPO / "room.toml", follow_host=False)
-        self.assertEqual(cfg["merge"]["director_paths"], self.PATHS)
+        # The ways-of-working table holds safety floors and room-wide defaults (commonroom#230).
+        self.assertEqual(cfg["merge"]["director_paths"], self.PATHS + ["commonroom/ways/policy.toml"])
 
 
 def labelled(*names, **kw):

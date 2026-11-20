@@ -58,6 +58,7 @@ class PinnedValues(unittest.TestCase):
                  "run_timeout_seconds": ("RUN_TIMEOUT", 3600)}
         with open(REPO / "commonroom" / "ways" / "policy.toml", "rb") as f:
             raw = tomllib.load(f)
+        raw = {k: v["value"] if isinstance(v, dict) else v for k, v in raw.items()}   # bounded: { value = .., min = .. }
         self.assertEqual(set(raw), set(table) | set(NEW))
         self.assertEqual(set(policy.NAMES), set(table) | set(NEW))
         self.assertEqual(dispatch.POLICY_CONSTANTS, {k: c for k, (c, _) in table.items()})
@@ -98,6 +99,22 @@ class Loading(unittest.TestCase):
                 policy.load_policy(self.write(tmp, self.full(notify_max='"5"')))
             self.assertEqual(policy.load_policy(self.write(tmp, self.full())), policy.DEFAULTS)
 
+    def test_a_bound_entry_is_checked_and_the_rooms_value_sits_inside_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for entry, error in (("{ value = 0, min = 1 }", "notify_max must be a whole number of at least 1, not 0"),
+                                 ("{ value = 9, min = 1, max = 8 }", "notify_max must be a whole number between 1 and 8"),
+                                 ("{ value = 5, min = 6, max = 5 }", "notify_max max must be a whole number of at least 6"),
+                                 ("{ value = 5, mni = 1 }", "notify_max takes value, min and max, not mni"),
+                                 ("{ min = 1 }", "notify_max takes value, min and max")):
+                with self.subTest(entry=entry), self.assertRaisesRegex(ValueError, error):
+                    policy.load_policy(self.write(tmp, self.full(notify_max=entry)))
+            values, bounds = policy.read_table(self.write(tmp, self.full(notify_max="{ value = 5, min = 1, max = 9 }")))
+        self.assertEqual((values, bounds["notify_max"], bounds["ci_reruns"]), (policy.DEFAULTS, (1, 9), (0, None)))
+        # The shipped table can't contradict itself: each room value sits inside its own floor and ceiling.
+        for name, value in policy.DEFAULTS.items():
+            low, high = policy.BOUNDS[name]
+            self.assertTrue(low <= value and (high is None or value <= high), name)
+
     def test_the_table_ships_with_the_package_and_checks_out_lf(self):
         with open(REPO / "pyproject.toml", "rb") as f:
             globs = tomllib.load(f)["tool"]["setuptools"]["package-data"]["commonroom"]
@@ -136,6 +153,37 @@ class ProjectOverride(unittest.TestCase):
                 self.dispatcher("a", {name: 5000})
         with self.assertRaisesRegex(ValueError, "review_rounds must be a whole number"):
             self.dispatcher("a", {"review_rounds": True})
+
+    def test_an_override_outside_its_floor_or_ceiling_fails_at_start_naming_it(self):
+        for name, value, span in (("review_rounds", 0, "of at least 1"), ("incomplete_rounds", 0, "of at least 1"),
+                                  ("ci_bounces", 0, "of at least 1"), ("room_error_escalate", 0, "of at least 1"),
+                                  ("room_error_backoff_seconds", 59, "of at least 60"),
+                                  ("run_timeout_seconds", 299, "between 300 and 14400"),
+                                  ("run_timeout_seconds", 14401, "between 300 and 14400"),
+                                  ("run_timeout_seconds", 0, "between 300 and 14400")):
+            with self.subTest(name=name, value=value):
+                with self.assertRaisesRegex(ValueError, f"room.toml \\[policy\\]: {name} must be a whole number "
+                                                        f"{span}, not {value}"):
+                    self.dispatcher("a", {name: value})
+
+    def test_every_in_range_value_still_works(self):
+        for name in dispatch.POLICY_CONSTANTS:
+            if name in policy.GLOBAL_ONLY:
+                continue
+            low, high = policy.BOUNDS[name]
+            for value in (low, policy.DEFAULTS[name], high if high is not None else 10 ** 6):
+                with self.subTest(name=name, value=value):
+                    self.assertEqual(self.dispatcher("a", {name: value}).policy(name), value)
+
+    def test_the_progress_breakers_timing_is_room_wide_only(self):
+        for value in (0, 21600, 86400):
+            with self.assertRaisesRegex(ValueError, "progress_min_work_seconds is room-wide only because it is part "
+                                                    "of the progress breaker's timing"):
+                self.dispatcher("a", {"progress_min_work_seconds": value})
+        # The room's value still reaches check_progress, with or without other overrides.
+        for d in (self.dispatcher("a"), self.dispatcher("b", {"review_rounds": 4})):
+            self.assertEqual(d.policy("progress_min_work_seconds"), dispatch.PROGRESS_MIN_WORK)
+        self.assertEqual(dispatch.PROGRESS_MIN_WORK, 6 * 3600)
 
     def test_an_override_is_that_projects_only(self):
         a = self.dispatcher("a", {"review_rounds": 4, "run_timeout_seconds": 1800, "room_error_backoff_seconds": 3600})
