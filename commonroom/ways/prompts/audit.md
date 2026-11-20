@@ -1,0 +1,2 @@
+Common Room audit for {{repo}}. {{reason}}.
+Start with `python "{{room_py}}" digest --hours {{hours}}`, run from this directory: it lists runs, merges, failures, spend, the board and usage. Follow your auditor instructions. Write the owner's status report to `{{report}}`, exactly that path even if you move to another working copy; the room publishes it to the dashboard. Prefix every comment with `[agent:auditor]`. Any repo file change goes through a branch and PR. End with one line: `ACTIONS: [...]`, a JSON list of short strings naming each concrete change you made.

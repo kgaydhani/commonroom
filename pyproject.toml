@@ -17,3 +17,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["commonroom*"]
+
+# What the room tells workers (commonroom#216): dispatch.py reads these at import.
+[tool.setuptools.package-data]
+commonroom = ["ways/prompts/*.md"]

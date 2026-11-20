@@ -1,0 +1,1 @@
+A PR already exists for this branch (#{{pr}}). Read its review comments with `gh pr view {{pr}} --repo {{repo}} --comments`, address every point{{raised}}, and {{push}}. {{conflicts}} If its CI is red (`gh pr checks {{pr}} --repo {{repo}}`), read the failing log (`gh run view <run id> --repo {{repo}} --log-failed`) and fix that first.

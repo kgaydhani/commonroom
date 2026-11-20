@@ -1,0 +1,2 @@
+Implement GitHub issue #{{n}} in {{repo}}. You are already on branch `{{branch}}` in a fresh worktree based on origin/main. Follow your builder instructions and AGENTS.md. Push with `git push -u origin {{branch}}`. Prefix any issue or PR comment you write with `[agent:builder]`.{{suite_note}}{{open_pr}}
+Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.

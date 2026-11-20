@@ -1,0 +1,1 @@
+Review PR #{{pr}} in {{repo}} (it implements issue #{{issue}}). The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment with `gh pr comment {{pr}} --repo {{repo}} --body ...` that starts with `[agent:reviewer] REVIEW: APPROVE` or `[agent:reviewer] REVIEW: CHANGES`.{{no_ci}}{{codex_note}}
