@@ -50,6 +50,10 @@ class Transcripts(unittest.TestCase):
         for folder in (self.alpha, self.beta):
             folder.mkdir(parents=True)
         self.projects = {"alpha": str(self.alpha), "beta": str(self.beta)}
+        self.home = self.root / "home"                          # the cache lives here, never in the live room home
+        env = mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
 
     def write(self, started_in, session: str, lines: list, subagent: str | None = None, raw: list = ()) -> Path:
         """A transcript in the folder Claude Code would use for a session started in `started_in`."""
@@ -187,6 +191,97 @@ class Transcripts(unittest.TestCase):
         cwd = str(self.alpha).upper()
         self.write(str(self.alpha).lower(), "s1", [assistant(T0, "s1", cwd, "m1")])
         self.assertEqual([s["project"] for s in self.spans()], ["alpha"])
+
+
+class Incremental(Transcripts):
+    """The reader reads only the bytes added since its last call, and answers as a full read would (commonroom#267)."""
+
+    def full(self, **kwargs):
+        return sessions.spans(self.projects, T0 - 86400, T0 + 86400, projects_dir=self.dir,
+                              cache=self.root / "none" / "c.json", **kwargs)
+
+    def calls(self, cwd, session, first, count, prefix="m"):
+        return [assistant(T0 + (first + i) * 60, session, cwd, f"{prefix}{first + i}") for i in range(count)]
+
+    def test_a_second_call_with_no_new_lines_reads_nothing(self):
+        cwd = str(self.alpha)
+        self.write(cwd, "s1", self.calls(cwd, "s1", 0, 5))
+        first = self.spans()
+        self.assertGreater(sessions.stats["bytes"], 0)
+        self.assertEqual(self.spans(), first)
+        self.assertEqual(sessions.stats["bytes"], 0)
+
+    def test_an_appended_transcript_reads_only_the_new_lines_and_matches_a_full_read(self):
+        cwd = str(self.alpha)
+        path = self.write(cwd, "s1", self.calls(cwd, "s1", 0, 5))
+        self.spans()
+        size = path.stat().st_size
+        self.write(cwd, "s1", self.calls(cwd, "s1", 5, 3))
+        found = self.spans()
+        self.assertEqual(sessions.stats["bytes"], path.stat().st_size - size)
+        self.assertEqual(found, self.full())
+        self.assertEqual(found[0]["messages"], 8)
+
+    def test_a_shrunk_or_replaced_file_is_read_again_from_the_start(self):
+        cwd = str(self.alpha)
+        path = self.write(cwd, "s1", self.calls(cwd, "s1", 0, 6))
+        self.spans()
+        path.unlink()
+        self.write(cwd, "s1", self.calls(cwd, "s1", 0, 2, "x"))
+        found = self.spans()
+        self.assertEqual(sessions.stats["bytes"], path.stat().st_size)
+        self.assertEqual(found[0]["messages"], 2)
+        self.assertEqual(found, self.full())
+
+    def test_a_file_whose_mtime_went_back_is_read_again(self):
+        cwd = str(self.alpha)
+        path = self.write(cwd, "s1", self.calls(cwd, "s1", 0, 3))
+        self.spans()
+        self.write(cwd, "s1", self.calls(cwd, "s1", 3, 1))
+        os.utime(path, (T0, T0))
+        self.spans()
+        self.assertEqual(sessions.stats["bytes"], path.stat().st_size)
+
+    def test_a_partial_last_line_is_not_counted_until_it_is_complete(self):
+        cwd = str(self.alpha)
+        whole = json.dumps(assistant(T0 + 60, "s1", cwd, "m1"))
+        path = self.write(cwd, "s1", [assistant(T0, "s1", cwd, "m0")])
+        with open(path, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(whole[:40])
+        self.assertEqual(self.spans()[0]["messages"], 1)
+        with open(path, "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(whole[40:] + "\n")
+        found = self.spans()
+        self.assertEqual(found[0]["messages"], 2)
+        self.assertEqual(found, self.full())
+
+    def test_a_corrupt_cache_gives_a_full_read_and_is_rebuilt(self):
+        cwd = str(self.alpha)
+        self.write(cwd, "s1", self.calls(cwd, "s1", 0, 4))
+        expected = self.spans()
+        cache = sessions.cache_file()
+        for junk in ("{not json", '{"v":1,"files":{"x":{"size":"a"}}}', '{"v":99,"files":{}}', "[]"):
+            cache.write_text(junk, encoding="utf-8")
+            self.assertEqual(self.spans(), expected)
+            self.assertGreater(sessions.stats["bytes"], 0)
+            self.assertEqual(self.spans(), expected)
+            self.assertEqual(sessions.stats["bytes"], 0)
+
+    def test_the_cache_holds_no_message_text(self):
+        cwd = str(self.alpha)
+        self.write(cwd, "s1", [assistant(T0, "s1", cwd, "m0"), user(T0 + 1, "s1", cwd)])
+        self.spans()
+        text = sessions.cache_file().read_text(encoding="utf-8")
+        self.assertNotIn("private", text)
+        self.assertNotIn(SECRET, text)
+
+    def test_an_unwritable_cache_still_answers(self):
+        cwd = str(self.alpha)
+        self.write(cwd, "s1", [assistant(T0, "s1", cwd, "m0")])
+        blocker = self.root / "file"
+        blocker.write_text("x")
+        self.assertEqual(len(sessions.spans(self.projects, T0 - 9, T0 + 9, projects_dir=self.dir,
+                                            cache=blocker / "sub" / "c.json")), 1)
 
 
 class OwnSessionsInTheStandings(test_standings.Room):

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -69,42 +70,135 @@ def _transcripts(projects_dir: Path, since: float):
                 continue
 
 
-def _messages(path: Path):
-    """(timestamp, session id, cwd, message id, tokens) of each assistant line that reports usage. A malformed line,
-    or one missing any of these, is skipped. Read line by line, in bytes, so a large transcript is never held whole."""
+def _parse(raw: bytes):
+    """(timestamp, session id, cwd, message id, tokens) of one transcript line, or None when it is not an assistant line
+    that reports usage, is malformed, or lacks any of these."""
+    if not _ASSISTANT.search(raw):
+        return None
+    try:
+        line = json.loads(raw)
+        if line.get("type") != "assistant":
+            return None
+        message = line["message"]
+        counts = message["usage"]
+        tokens = sum(int(counts.get(key) or 0) for key in TOKEN_KEYS)
+        at = datetime.fromisoformat(line["timestamp"]).timestamp()
+        session, cwd = line["sessionId"], line["cwd"]
+        if not (isinstance(session, str) and isinstance(cwd, str) and session and cwd):
+            return None
+        mid = message.get("id")
+        return at, session, cwd, mid if isinstance(mid, str) else None, tokens
+    except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
+        return None
+
+
+def _read_from(path: Path, offset: int):
+    """(messages, new offset, bytes read) of the complete lines of `path` from byte `offset`. A last line with no
+    newline yet is still being written: it is not consumed, and the offset stays before it. Read line by line, in
+    bytes, so a large transcript is never held whole."""
+    found, read = [], 0
     try:
         handle = open(path, "rb")
     except OSError:
-        return
+        return found, offset, read
     with handle:
+        handle.seek(offset)
         for raw in handle:
-            if not _ASSISTANT.search(raw):
-                continue
+            read += len(raw)
+            if not raw.endswith(b"\n"):
+                break
+            offset += len(raw)
+            parsed = _parse(raw)
+            if parsed is not None:
+                found.append(parsed)
+    return found, offset, read
+
+
+# --- the cache: per transcript, how far it was read and the parsed calls so far (never any text) ---------------------
+CACHE_VERSION = 1
+# Bytes read from transcripts by the last `spans` call; for timing and tests.
+stats = {"bytes": 0, "files": 0}
+
+
+def cache_file() -> Path:
+    return Path(os.environ.get("COMMONROOM_HOME") or Path.home() / ".commonroom") / "sessions-cache.json"
+
+
+def _valid(entry) -> bool:
+    """Whether a cached file entry has the shape this reader wrote. Anything else means the cache is not trusted."""
+    try:
+        return (isinstance(entry["size"], int) and isinstance(entry["mtime"], float) and isinstance(entry["offset"], int)
+                and all(isinstance(m, list) and len(m) == 5 and isinstance(m[0], float) and isinstance(m[1], str)
+                        and isinstance(m[2], str) and (m[3] is None or isinstance(m[3], str)) and isinstance(m[4], int)
+                        for m in entry["calls"]))
+    except (KeyError, TypeError):
+        return False
+
+
+def _load_cache(path: Path) -> dict:
+    """path key -> {"size", "mtime", "offset", "calls": [[at, session, cwd, message id, tokens], ...]}. A missing or
+    corrupt cache is an empty one: the reader then reads in full and rebuilds it."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        files = data["files"]
+        if data["v"] != CACHE_VERSION or not isinstance(files, dict) or not all(_valid(e) for e in files.values()):
+            return {}
+        return files
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+
+
+def _save_cache(path: Path, files: dict) -> None:
+    """Write beside, then replace atomically: two processes updating at once leave one whole file or the other."""
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as out:
+            json.dump({"v": CACHE_VERSION, "files": files}, out, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError:
+        if tmp:
             try:
-                line = json.loads(raw)
-                if line.get("type") != "assistant":
-                    continue
-                message = line["message"]
-                counts = message["usage"]
-                tokens = sum(int(counts.get(key) or 0) for key in TOKEN_KEYS)
-                at = datetime.fromisoformat(line["timestamp"]).timestamp()
-                session, cwd = line["sessionId"], line["cwd"]
-                if not (isinstance(session, str) and isinstance(cwd, str) and session and cwd):
-                    continue
-                yield at, session, cwd, message.get("id"), tokens
-            except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
-                continue
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _messages(path: Path, files: dict, key: str) -> list:
+    """The file's parsed calls, read only from where the cache left off. `files` is updated in place."""
+    try:
+        st = path.stat()
+    except OSError:
+        return []
+    entry = files.get(key)
+    if entry and (st.st_size < entry["offset"] or st.st_mtime < entry["mtime"]):
+        entry = None                                        # shrank, or replaced by something older: read it again
+    base = entry["calls"] if entry else []
+    offset = entry["offset"] if entry else 0
+    if entry and st.st_size == entry["size"] and st.st_mtime == entry["mtime"]:
+        calls = base
+    else:
+        new, offset, read = _read_from(path, offset)
+        stats["bytes"] += read
+        stats["files"] += 1
+        calls = base + [list(m) for m in new]
+    files[key] = {"size": st.st_size, "mtime": st.st_mtime, "offset": offset, "calls": calls}
+    return calls
 
 
 def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_sessions=(),
-          projects_dir: Path | None = None, gap: float = GAP) -> list[dict]:
+          projects_dir: Path | None = None, gap: float = GAP, cache: Path | None = None) -> list[dict]:
     """The owner's own sessions between `start` and `end`, as spans of activity per project.
 
     `projects` maps a project's key to its folder. `exclude_dirs` are folders where room workers ran and
     `exclude_sessions` their session ids: their lines are left out. Each span is {"project", "session_id",
     "started_at", "ended_at", "messages", "tokens"}: one session's (and its subagents') assistant messages in one
     project, each less than `gap` seconds after the one before. The project is None for the owner's sessions in no
-    registered project's folder. Oldest first. With no project, nothing is read."""
+    registered project's folder. Oldest first. With no project, nothing is read.
+
+    Only the bytes added to each transcript since the last call are read: what was parsed so far is kept in `cache`
+    (default: sessions-cache.json in the room home). The answer is the same as a full read."""
     if not projects:
         return []
     roots = {path_key(folder): key for key, folder in projects.items()}
@@ -112,8 +206,15 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
     skip = set(exclude_sessions)
     owners: dict = {}          # cwd -> (a room worker's?, project key or None)
     found: dict = {}
+    cache = cache or cache_file()
+    before = _load_cache(cache)
+    files: dict = {}
+    stats.update(bytes=0, files=0)
     for path in _transcripts(projects_dir or default_dir(), start):
-        for at, session, cwd, message_id, tokens in _messages(path):
+        key = path_key(path)
+        if key in before:
+            files[key] = before[key]
+        for at, session, cwd, message_id, tokens in _messages(path, files, key):
             if not start <= at <= end or session in skip:
                 continue
             if cwd not in owners:
@@ -127,6 +228,8 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
             call = message_id if message_id is not None else len(calls)   # one call is written once per content block
             first_at, most = calls.get(call, (at, 0))
             calls[call] = (min(first_at, at), max(most, tokens))
+    if files != before:
+        _save_cache(cache, files)
     result = []
     for (project, session), (times, calls) in sorted(found.items(), key=lambda item: (item[0][0] or "", item[0][1])):
         times.sort()
