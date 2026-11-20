@@ -4,8 +4,9 @@ It is a plain file the owner can read and edit, `<room home>/projects.toml`, whe
 holds the ledger (`COMMONROOM_HOME`, or `~/.commonroom`). A missing file is an empty registry. The owner's own slice
 is whatever the shares leave, `100 - sum(shares)`: it is derived, never stored.
 
-Only `room projects` and `room pie` (`commonroom.standings`) read it, and nothing is gated on it yet, so it changes no
-project's behaviour. The arithmetic over it is in `commonroom.pie`. The handshake (`commonroom.handshake`) reads it to
+`room projects` and `room pie` (`commonroom.standings`) read it, and so does each dispatcher on every pass: with any
+project in it, a project starts model work only as the pie allows (`dispatch.pie_holds`, commonroom#240); a missing or
+empty file changes nothing. The arithmetic over it is in `commonroom.pie`. The handshake (`commonroom.handshake`) reads it to
 find each project's room folder: the optional `shared` key, or `<room home>/projects/<name>`.
 """
 from __future__ import annotations
