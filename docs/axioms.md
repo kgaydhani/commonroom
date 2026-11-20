@@ -1,6 +1,6 @@
 # Axioms (proposed, 20 Nov 2026: the owner has not yet confirmed them)
 
-These follow the pattern of gamemirage's `design/axioms.md`. They are the owner's values, drafted here from his words for him to correct. Agents do not change them. Where this list and his words differ, his words win. Each has a check that code can run, so any session can verify the room is on track without trusting another session's account. They would live in `docs/axioms.md`, with a decisions ledger whose every row names its axiom and its test.
+These follow the pattern of gamemirage's `design/axioms.md`. They are the owner's values, drafted here from his words for him to correct. Agents do not change them. Where this list and his words differ, his words win. Each has a check that code can run, so any session can verify the room is on track without trusting another session's account. The decisions ledger, [decisions.csv](decisions.csv), has a row for each, naming its test or saying what is missing.
 
 | | Axiom | From | Check |
 |---|---|---|---|
@@ -13,3 +13,5 @@ These follow the pattern of gamemirage's `design/axioms.md`. They are the owner'
 | A6 | **Code decides what runs. Models do the work.** | v2 design | A test fails if the dispatch path calls a model. |
 | A7 | **Ways of working change on evidence, without touching the wiring.** | Owner, 20 Nov | A change to a ways-of-working file needs no code change, and names the trial that supports it. |
 | A8 | **Each subscription runs only on its owner's machine.** | Vendors' terms | No code path accepts another person's credentials. |
+| A9 | **Handshake only.** The room does the human part: it connects people, agents and projects, and keeps track. It never tries to improve what a model does. What it adds to a model's context says what the task is, where things are, what done means and how to report. It never says how to think or how to do the work. | Owner, 20 Nov | A token budget on the text the room itself adds to a run, measured from its template files. |
+| A10 | **Lightweight.** The room is a connector and a token saver. Coordination stays a small share of what a project spends, and a room-run project is compared with one session doing the same work. | Owner, 20 Nov | The metrics report coordination's share of spend against a cap. |

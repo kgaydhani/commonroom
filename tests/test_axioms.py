@@ -111,7 +111,7 @@ class DecisionsLedger(unittest.TestCase):
     def test_every_axiom_has_a_row(self):
         text = (ROOT / AXIOMS).read_text(encoding="utf-8")
         axioms = {m[1] for m in re.finditer(r"^\|\s*([A-Z]\d+)\s*\|", text, re.M)}
-        self.assertEqual(axioms, {f"A{i}" for i in range(9)})
+        self.assertGreaterEqual(axioms, {f"A{i}" for i in range(11)})   # axioms are added, never dropped
         rows, _ = validate()
         covered = {row["axiom"] for row in rows if row["id"] == f"AX-{row['axiom']}"}
         self.assertEqual(axioms - covered, set())
