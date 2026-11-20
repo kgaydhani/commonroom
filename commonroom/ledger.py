@@ -90,7 +90,8 @@ class Ledger:
         columns = {r[1] for r in self.db.execute("PRAGMA table_info(runs)")}
         for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT"),
                            ("five_hour_start", "REAL"), ("unverified", "TEXT NOT NULL DEFAULT '[]'"),
-                           ("actions_checked", "INTEGER")):
+                           ("actions_checked", "INTEGER"), ("cache_read_tokens", "INTEGER"),
+                           ("cache_write_tokens", "INTEGER")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
@@ -204,6 +205,29 @@ class Ledger:
         rows = self.db.execute("SELECT * FROM runs WHERE project IS ? AND task IS NULL AND role=? AND id IS NOT ? "
                                "ORDER BY started_at DESC LIMIT ?", (project, role, exclude, limit)).fetchall()
         return [dict(r) for r in rows]
+
+    def record_cache_tokens(self, worktree, cache_read: int | None, cache_write: int | None,
+                            now: float | None = None) -> bool:
+        """The cached part of a running run's input (commonroom#211): `input_tokens` stays the total, and the uncached
+        part is what's left. Found by its working copy (the newest running run there), so the worker can record it
+        before the dispatcher closes the run; `finish_run` leaves these columns alone. Older rows keep NULL (n/a)."""
+        now = time.time() if now is None else now
+        with self.db:
+            # Only the newest running row there: an orphan left by a dead dispatcher must not get this run's split.
+            return self.db.execute("UPDATE runs SET cache_read_tokens=?, cache_write_tokens=? WHERE id=(SELECT id FROM runs "
+                                   "WHERE worktree=? AND status='running' AND started_at>? ORDER BY started_at DESC LIMIT 1)",
+                                   (cache_read, cache_write, _path_key(worktree), now - 7200)).rowcount > 0
+
+    def runs_since(self, project: str | None, since: float) -> list[dict]:
+        """Every run of a project started since `since`, oldest first, outputs decoded (no row limit)."""
+        rows = self.db.execute("SELECT * FROM runs WHERE project IS ? AND started_at>=? ORDER BY started_at",
+                               (project, since)).fetchall()
+        result = []
+        for r in rows:
+            row = dict(r)
+            row["outputs"] = json.loads(row["outputs"] or "[]")
+            result.append(row)
+        return result
 
     def record_claims(self, run_id: str, checked: int, unverified: list[str]):
         """How many of a run's ACTIONS claims were checked against GitHub, and the ones that didn't check out."""
