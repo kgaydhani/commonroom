@@ -4,8 +4,8 @@ It is a plain file the owner can read and edit, `<room home>/projects.toml`, whe
 holds the ledger (`COMMONROOM_HOME`, or `~/.commonroom`). A missing file is an empty registry. The owner's own slice
 is whatever the shares leave, `100 - sum(shares)`: it is derived, never stored.
 
-Nothing in the room reads the registry yet, so it changes no project's behaviour. The arithmetic over it is in
-`commonroom.pie`.
+Only `room projects` and `room pie` (`commonroom.standings`) read it, and nothing is gated on it yet, so it changes no
+project's behaviour. The arithmetic over it is in `commonroom.pie`.
 """
 from __future__ import annotations
 

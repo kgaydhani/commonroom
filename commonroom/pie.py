@@ -2,7 +2,8 @@
 it is (commonroom#225).
 
 Pure functions over plain data. No I/O, no clock, no ledger: every input is passed in, so each result can be checked by
-hand. Nothing in the room calls this module yet. Percentages are percent of one provider's weekly window.
+hand. Only `commonroom.standings` calls it, and nothing is gated on it yet. Percentages are percent of one provider's
+weekly window.
 """
 from __future__ import annotations
 

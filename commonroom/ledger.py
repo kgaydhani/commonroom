@@ -247,6 +247,13 @@ class Ledger:
     def running_runs(self, project: str | None) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM runs WHERE project IS ? AND status='running'", (project,))]
 
+    def runs_during(self, provider: str, start: float, end: float) -> list[dict]:
+        """Every project's runs on `provider` that overlap start..end: started by `end`, and open or ended after
+        `start`. Oldest first; outputs left encoded."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT * FROM runs WHERE provider=? AND started_at<=? AND (ended_at IS NULL OR ended_at>?) ORDER BY started_at",
+            (provider, end, start))]
+
     def close_orphan(self, run_id: str, note: str, now: float | None = None) -> bool:
         """Close a run whose dispatcher died. True only for the one caller that closed it."""
         with self.db:
