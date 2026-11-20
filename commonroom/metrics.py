@@ -110,13 +110,22 @@ def window(rows: list[dict], since: float, until: float, models: dict[int, str] 
     }
 
 
+def readable(value: float) -> str:
+    """A number for a person: 26.5M, 135k, 2.5 or 2 (the dashboard's style)."""
+    if abs(value) >= 1e6:
+        return f"{value / 1e6:.1f}M"
+    if abs(value) >= 1e4:
+        return f"{value / 1e3:.0f}k"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
 def over_target(figures: dict, targets: dict) -> list[str]:
     """`<metric> <value> > <target>` for each target the window's figures exceed; n/a never counts as over."""
     flags = []
     for key, target in (targets or {}).items():
         value = figures.get(key)
         if target is not None and value is not None and value > target:
-            flags.append(f"{key} {value:g} > {target:g}")
+            flags.append(f"{key} {readable(value)} > {readable(target)}")
     return flags
 
 

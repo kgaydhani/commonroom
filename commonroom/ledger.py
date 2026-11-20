@@ -209,12 +209,13 @@ class Ledger:
     def record_cache_tokens(self, worktree, cache_read: int | None, cache_write: int | None,
                             now: float | None = None) -> bool:
         """The cached part of a running run's input (commonroom#211): `input_tokens` stays the total, and the uncached
-        part is what's left. Found by its working copy, which is one live run's alone, so the worker can record it
+        part is what's left. Found by its working copy (the newest running run there), so the worker can record it
         before the dispatcher closes the run; `finish_run` leaves these columns alone. Older rows keep NULL (n/a)."""
         now = time.time() if now is None else now
         with self.db:
-            return self.db.execute("UPDATE runs SET cache_read_tokens=?, cache_write_tokens=? WHERE worktree=? "
-                                   "AND status='running' AND started_at>?",
+            # Only the newest running row there: an orphan left by a dead dispatcher must not get this run's split.
+            return self.db.execute("UPDATE runs SET cache_read_tokens=?, cache_write_tokens=? WHERE id=(SELECT id FROM runs "
+                                   "WHERE worktree=? AND status='running' AND started_at>? ORDER BY started_at DESC LIMIT 1)",
                                    (cache_read, cache_write, _path_key(worktree), now - 7200)).rowcount > 0
 
     def runs_since(self, project: str | None, since: float) -> list[dict]:

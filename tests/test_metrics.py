@@ -114,6 +114,12 @@ class Metrics(unittest.TestCase):
         report = metrics.report(self.rows, NOW, {"review_runs_per_merge": 1.5, "input_tokens_per_merge": 4_000_000})
         self.assertEqual(report["over_target"], ["7d: review_runs_per_merge 2 > 1.5"])
         self.assertEqual(metrics.report(self.rows, NOW, config.DEFAULTS["targets"])["over_target"], [])
+        tokens = metrics.report(self.rows, NOW, {"input_tokens_per_merge": 1_000_000})["over_target"]
+        self.assertEqual(tokens, ["7d: input_tokens_per_merge 2.0M > 1.0M", "30d: input_tokens_per_merge 2.0M > 1.0M"])
+
+    def test_numbers_read_for_a_person(self):
+        self.assertEqual([metrics.readable(v) for v in (26_511_400, 4_000_000, 135_000, 2, 1.33, 2.5, 0)],
+                         ["26.5M", "4.0M", "135k", "2", "1.33", "2.5", "0"])
 
     def test_landings_are_the_merge_rows(self):
         self.assertEqual([r["task"] for r in metrics.landings(self.rows, NOW - 7 * metrics.DAY, NOW)], ["#1", "#2"])
@@ -170,9 +176,9 @@ class CacheSplit(unittest.TestCase):
         row = self.ledger.runs_since("t", 0)[0]
         self.assertEqual((row["input_tokens"], row["cache_read_tokens"], row["cache_write_tokens"]), (5, None, None))
 
-    def test_a_claude_worker_records_its_split_on_the_open_run_and_finish_keeps_it(self):
-        wt = self.root / "i1-x"
-        wt.mkdir()
+    def claude_worker(self, wt, ledger=None):
+        """Run a fake Claude worker in `wt` that reports a result with a cache split."""
+        wt.mkdir(exist_ok=True)
         self.addCleanup(shutil.rmtree, workers.worker_tmp(wt), True)
         script = self.root / "claude.py"
         usage = {"input_tokens": 7, "cache_read_input_tokens": 900, "cache_creation_input_tokens": 93, "output_tokens": 4}
@@ -180,15 +186,19 @@ class CacheSplit(unittest.TestCase):
             {"type": "result", "usage": usage, "result": "done", "is_error": False}) + "), flush=True)\n", encoding="utf8")
         orig = workers.claude_command
         workers.claude_command = lambda *a, **k: [sys.executable, str(script)]
+        try:
+            return workers.run_worker("claude", workers.Role("builder", None, [], "x"), "y", wt, ledger or self.ledger,
+                                      self.root / "logs")
+        finally:
+            workers.claude_command = orig
+
+    def test_a_claude_worker_records_its_split_on_the_open_run_and_finish_keeps_it(self):
+        wt = self.root / "i1-x"
         rid = self.ledger.start_run("t", "#1", "builder", "claude", "opus")
         other = self.ledger.start_run("t", "#2", "builder", "claude", "opus")
         self.ledger.set_worktree(rid, wt)
         self.ledger.set_worktree(other, self.root / "elsewhere")
-        try:
-            result = workers.run_worker("claude", workers.Role("builder", None, [], "x"), "y", wt, self.ledger,
-                                        self.root / "logs")
-        finally:
-            workers.claude_command = orig
+        result = self.claude_worker(wt)
         self.assertTrue(result.ok, result.errors)
         self.assertEqual((result.input_tokens, result.cache_read_tokens, result.cache_write_tokens), (1000, 900, 93))
         # What dispatch.run_job does next: close the run with the total. The split stays on the row.
@@ -197,6 +207,34 @@ class CacheSplit(unittest.TestCase):
         self.assertEqual((rows[rid]["input_tokens"], rows[rid]["cache_read_tokens"], rows[rid]["cache_write_tokens"]),
                          (1000, 900, 93))
         self.assertIsNone(rows[other]["cache_read_tokens"])       # another run's row is untouched
+
+    def test_a_failing_split_write_never_changes_the_runs_result(self):
+        ledger = self.ledger
+
+        class Locked:
+            def __getattr__(self, name):
+                return getattr(ledger, name)
+
+            def record_cache_tokens(self, *a, **k):
+                raise sqlite3.OperationalError("database is locked")
+        rid = self.ledger.start_run("t", "#1", "builder", "claude", "opus")
+        self.ledger.set_worktree(rid, self.root / "i1-x")
+        result = self.claude_worker(self.root / "i1-x", Locked())
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual(result.errors, [])
+        self.assertEqual((result.final_text, result.input_tokens, result.cache_read_tokens, result.cache_write_tokens),
+                         ("done", 1000, 900, 93))
+
+    def test_only_the_newest_running_row_on_the_path_gets_the_split(self):
+        wt = self.root / "i1-x"
+        orphan = self.ledger.start_run("t", "#1", "builder", "claude", "opus", now=NOW - 3000)   # a dead dispatcher's
+        current = self.ledger.start_run("t", "#1", "builder", "claude", "opus", now=NOW - 60)
+        for rid in (orphan, current):
+            self.ledger.set_worktree(rid, wt)
+        self.assertTrue(self.ledger.record_cache_tokens(wt, 900, 93, now=NOW))
+        rows = {r["id"]: r for r in self.ledger.runs_since("t", 0)}
+        self.assertEqual((rows[current]["cache_read_tokens"], rows[current]["cache_write_tokens"]), (900, 93))
+        self.assertEqual((rows[orphan]["cache_read_tokens"], rows[orphan]["cache_write_tokens"]), (None, None))
 
     def test_a_codex_run_records_no_split(self):
         rid = self.ledger.start_run("t", "#1", "builder", "codex", "gpt-5")

@@ -192,7 +192,11 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
         result = _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeout, stop_check)
         if result.cache_read_tokens is not None or result.cache_write_tokens is not None:
             # The run is still open here, so the split lands on its row without the dispatcher passing it (commonroom#211).
-            ledger.record_cache_tokens(cwd, result.cache_read_tokens, result.cache_write_tokens)
+            # It is only reported: a ledger hiccup here (e.g. database is locked) must never change the run's outcome.
+            try:
+                ledger.record_cache_tokens(cwd, result.cache_read_tokens, result.cache_write_tokens)
+            except Exception:
+                pass
         return result
     finally:
         tree.end()   # every process the run started ends with it (commonroom#50)
