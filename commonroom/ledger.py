@@ -333,6 +333,21 @@ class Ledger:
         now = time.time() if now is None else now
         return dict(row) if row and row["until"] > now else None
 
+    # Meter-reader cooldown, shared by every process (commonroom#235). The hidden terminal that reads /usage costs a
+    # little allowance each launch, so after a try only one process may try again per `cooldown` seconds, whatever
+    # process it is. The claim is the mark; a successful reading clears it. A crashed prober frees it after `cooldown`.
+    def reader_claim(self, provider: str, now: float, cooldown: float) -> bool:
+        """True if this process may launch the reader for `provider` now. Atomic: one claimant wins."""
+        with self.db:
+            cur = self.db.execute("INSERT INTO marks (project, key, at) VALUES ('', ?, ?) "
+                                  "ON CONFLICT(project, key) DO UPDATE SET at=excluded.at WHERE ? - marks.at >= ?",
+                                  (f"reader_cooldown:{provider}", now, now, cooldown))
+            return cur.rowcount == 1
+
+    def reader_clear(self, provider: str):
+        with self.db:
+            self.db.execute("DELETE FROM marks WHERE project='' AND key=?", (f"reader_cooldown:{provider}",))
+
     # Marks: when the room last did a once-only thing for a project (notified the owner of #N, opened a scheduled
     # issue), so it isn't done twice (commonroom#151).
     def mark(self, project: str | None, key: str, at: float | None = None):
