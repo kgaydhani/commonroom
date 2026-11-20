@@ -50,6 +50,14 @@ class Hook(unittest.TestCase):
         registry.save(reg)
         return reg
 
+    def room(self, argv, cwd):
+        """Run `room <argv>` from `cwd`, printing nothing; returns the exit code."""
+        before = os.getcwd()
+        os.chdir(cwd)
+        self.addCleanup(os.chdir, before)
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return cli.main(list(argv))
+
     def note(self, text, sender, at=None):
         p = handshake.find(registry.load(), "alpha")
         return handshake.write_note(handshake.prepare(p), text, sender, now=at)
@@ -108,7 +116,7 @@ class Points(Hook):
         self.register()
         self.note("Old news.", "director", at=time.time() - 3600)
         ledger = Ledger()
-        ledger.mark("alpha", handshake.ATTACHED + "desk", at=time.time() - 60)
+        ledger.mark("alpha", handshake.ATTACHED + "alpha", at=time.time() - 60)
         ledger.close()
         text = self.added(self.alpha)
         self.assertEqual(text, f"Common Room keeps alpha's state in `{self.folder() / 'digest.md'}`.")
@@ -116,6 +124,41 @@ class Points(Hook):
             "{{project}}", "alpha").replace("{{digest}}", str(self.folder() / "digest.md")))
         self.note("New since.", "beta")
         self.assertIn("Unread notes in its `inbox/`: 1, from beta.", self.added(self.alpha))
+
+    def test_another_readers_attach_never_marks_this_projects_notes_read(self):
+        self.register()
+        self.note("For alpha.", "director", at=time.time() - 3600)
+        ledger = Ledger()
+        for who in ("director", "beta", "desk"):
+            ledger.mark("alpha", handshake.ATTACHED + who, at=time.time() - 60)
+        ledger.close()
+        self.assertIn("Unread notes in its `inbox/`: 1, from director.", self.added(self.alpha))
+
+    def test_a_sender_does_not_see_its_own_notes_as_unread(self):
+        self.register()
+        self.note("Mine.", "alpha")
+        self.note("Also mine.", "Alpha")
+        self.assertNotIn("Unread", self.added(self.alpha))
+
+    def test_attach_from_the_projects_folder_reads_but_as_director_does_not(self):
+        self.register()
+        self.note("For alpha.", "director", at=time.time() - 3600)
+        for argv, cwd in ((["attach", "alpha", "--as", "director"], self.elsewhere), (["attach", "alpha"], self.elsewhere)):
+            self.assertEqual(self.room(argv, cwd), 0)
+            self.assertIn("1, from director", self.added(self.alpha))
+        self.assertEqual(self.room(["attach"], self.alpha), 0)
+        self.assertNotIn("Unread notes in its `inbox/`: 1", self.added(self.alpha))
+        self.note("Again.", "director")
+        self.assertIn("1, from director", self.added(self.alpha))
+        with mock.patch("time.time", return_value=time.time() + 10):   # notes are dated to the second
+            self.assertEqual(self.room(["notes"], self.alpha), 0)
+        self.assertNotIn("Unread notes in its `inbox/`: 1", self.added(self.alpha))
+
+    def test_the_hook_paragraph_alone_does_not_mark_anything_read(self):
+        self.register()
+        self.note("For alpha.", "director")
+        self.added(self.alpha)
+        self.assertIn("1, from director", self.added(self.alpha))
 
     def test_a_written_charter_with_no_notes_gives_the_paragraph(self):
         self.register()

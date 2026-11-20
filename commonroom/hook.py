@@ -56,13 +56,12 @@ def context(data: dict, now: float | None = None) -> str:
             p = handshake.find(reg, cwd=Path(cwd))
         except handshake.HandshakeError:
             return ""
-        marks = ledger.marks(p.name, handshake.ATTACHED) if ledger is not None else []
+        unread = handshake.unread(handshake.read_notes(handshake.folder_of(p)), p, ledger)
     finally:
         if ledger is not None:
             ledger.close()
     where = handshake.folder_of(p)
-    seen = max((at for _, at in marks), default=0.0)   # `room attach` shows every note, so later ones are unread
-    unread = [n for n in handshake.read_notes(where) if n["at"] > seen]
+    # `unread` is by this project: only its own attach or `room notes` reads, never another's (#269)
     count = f"{len(unread)}, from {_senders(unread)}" if unread else "0"
     text = fill_way(SESSION_START, project=p.name, digest=str(where / "digest.md"), notes=count,
                     reply=handshake.reply_line(p))
