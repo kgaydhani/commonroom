@@ -15,7 +15,7 @@ from commonroom import policy
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "golden_prompts"
 TEMPLATES = ROOT / "commonroom" / "ways" / "prompts"
-HANDSHAKE = ROOT / "commonroom" / "ways" / "handshake"   # the room folder's README, charter and digest (commonroom#253)
+HANDSHAKE = ROOT / "commonroom" / "ways" / "handshake"   # the room folder's files (commonroom#253) and the session hook's (#262)
 
 
 def tokens(text: str) -> int:
@@ -48,15 +48,17 @@ class Budget(unittest.TestCase):
         self.assertEqual(problems, [], "; ".join(problems))
 
     def test_the_handshake_templates_count_toward_the_same_budget(self):
-        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "charter.md", "digest.md"])
+        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "charter.md", "digest.md", "reply.md",
+                                                                     "session-start.md"])
         with tempfile.TemporaryDirectory() as tmp:
             handshake = Path(tmp) / "handshake"
             shutil.copytree(HANDSHAKE, handshake)
             used = tokens("".join(read(p) for f in (TEMPLATES, handshake) for p in sorted(f.iterdir()) if p.is_file()))
-            with open(handshake / "README.md", "a", encoding="utf-8") as f:
-                f.write("x" * 4 * (2501 - used))
-            self.assertEqual(over_budget(FIXTURES, TEMPLATES, 700, 2500, also=(handshake,)),
-                             ["prompts/ + handshake/ is 2501 tokens, over the 2500-token budget for all templates"])
+            limit = policy.DEFAULTS["templates_max_tokens"]
+            with open(handshake / "session-start.md", "a", encoding="utf-8") as f:   # the session hook's text counts too
+                f.write("x" * 4 * (limit + 1 - used))
+            self.assertEqual(over_budget(FIXTURES, TEMPLATES, 700, limit, also=(handshake,)),
+                             [f"prompts/ + handshake/ is {limit + 1} tokens, over the {limit}-token budget for all templates"])
 
     def test_padding_past_the_budget_fails_naming_the_file_and_its_size(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,7 +78,7 @@ class Budget(unittest.TestCase):
         self.assertEqual([tokens("x" * n) for n in (0, 1, 4, 5, 2800, 2801)], [0, 1, 1, 2, 700, 701])
 
     def test_the_budgets_are_room_wide_only(self):
-        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 2500))
+        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 2530))
         for name in ("prompt_max_tokens", "templates_max_tokens"):
             with self.subTest(name=name):
                 self.assertIn(name, policy.GLOBAL_ONLY)
