@@ -14,7 +14,7 @@ from commonroom import board, config as config_mod, gate, guard, metrics, policy
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
-from commonroom.lock import acquire_lock, claim_lock, release_lock
+from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
 PROVIDERS = ("claude", "codex")
 
@@ -531,7 +531,7 @@ def cmd_check(args) -> int:
         return 2
     wait = float((cfg.get("checks") or {}).get("lock_wait_minutes", 5)) * 60
     poll = float((cfg.get("checks") or {}).get("lock_poll_seconds", 3))
-    lock = ledger_mod.default_path().parent / "locks" / f"{_project_name(cfg) or 'default'}-suite.lock"
+    lock = suite_lock(ledger_mod.default_path().parent, _project_name(cfg))
     deadline, told = time.time() + wait, None
     # A sandbox that can read the room home but not write it (Codex) fails on any claim, the first or a retry after
     # the holder lets go: run unlocked then, as the test command alone would.
