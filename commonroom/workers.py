@@ -35,7 +35,9 @@ class WorkerResult:
     ok: bool
     session_id: str | None = None
     final_text: str = ""
-    input_tokens: int | None = None
+    input_tokens: int | None = None     # all input, cached or not
+    cache_read_tokens: int | None = None    # the part read from the prompt cache (Claude only; None if not reported)
+    cache_write_tokens: int | None = None   # the part written to the prompt cache (Claude only)
     output_tokens: int | None = None
     cost_usd: float | None = None
     errors: list[str] = field(default_factory=list)
@@ -187,7 +189,11 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
     process = tree.start(cmd, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
     try:
-        return _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeout, stop_check)
+        result = _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeout, stop_check)
+        if result.cache_read_tokens is not None or result.cache_write_tokens is not None:
+            # The run is still open here, so the split lands on its row without the dispatcher passing it (commonroom#211).
+            ledger.record_cache_tokens(cwd, result.cache_read_tokens, result.cache_write_tokens)
+        return result
     finally:
         tree.end()   # every process the run started ends with it (commonroom#50)
 
@@ -254,6 +260,8 @@ def _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeo
                 if event.get("type") == "result":
                     u = event.get("usage") or {}
                     result.input_tokens = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+                    result.cache_read_tokens = u.get("cache_read_input_tokens") or 0
+                    result.cache_write_tokens = u.get("cache_creation_input_tokens") or 0
                     result.output_tokens = u.get("output_tokens")
                     result.cost_usd = event.get("total_cost_usd")
                     result.final_text = event.get("result") or last_text

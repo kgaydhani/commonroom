@@ -62,6 +62,8 @@ DEFAULTS = {
     # `commands`: argv lists `room tick` runs in the project folder on every heartbeat; "{python}" is the room's
     # interpreter (commonroom#151). Empty: nothing runs.
     "heartbeat": {},
+    # Per-merge targets the dashboard and digest measure against (commonroom#211). Only reported: nothing is gated on them.
+    "targets": {"review_runs_per_merge": 2, "input_tokens_per_merge": 4000000},
 }
 
 # The heartbeat names the project it was started for here, so a guest rides on whichever project is the host now
