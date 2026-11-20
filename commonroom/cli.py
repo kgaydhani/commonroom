@@ -12,7 +12,7 @@ from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom import standings
-from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
+from commonroom.dispatch import READER_COOLDOWN, Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
 from commonroom.ledger import Ledger
@@ -117,9 +117,14 @@ def cmd_probe(args) -> int:
     ledger, failures = Ledger(), 0
     targets = PROVIDERS if args.provider == "all" else (args.provider,)
     for provider in targets:
+        # The same cooldown as the dispatchers' refresh, so a failing reader is launched once per 30 minutes in all.
+        if not ledger.reader_claim(provider, time.time(), READER_COOLDOWN):
+            print(f"{provider}: skipped - a reader ran within the last {READER_COOLDOWN // 60} minutes")
+            continue
         try:
             observations = usage.codex_limits() if provider == "codex" else usage.claude_screen_limits()
             ledger.record_usage(observations)
+            ledger.reader_clear(provider)
             print(f"{provider}: " + ", ".join(f"{o['window']} {o['used_pct']:.0f}%" for o in observations))
         except Exception as exc:
             failures += 1
@@ -630,6 +635,7 @@ def _pie_json(report: standings.Report | None, now: float) -> dict | None:
             "projects_total_est": report.projects_total, "unregistered_est": report.unregistered,
             "owner_share": report.owner_share, "owner_use_est": report.owner_use,
             "projects": [{"name": s.name, "share": s.share, "when": s.when, "strict": s.strict, "spent_est": s.spent,
+                          "room_est": report.room(s.name), "own_sessions_est": report.own.get(s.name, 0.0),
                           "line": s.allowed, "headroom_est": s.headroom} for s in report.rows]}
 
 
@@ -654,7 +660,8 @@ def cmd_pie(args) -> int:
     if args.json:
         print(json.dumps({"registry": str(path), "providers": {p: _pie_json(r, now) for p, r in reports.items()}}, indent=2))
         return 0
-    print("est. = an estimate: the meter is plan-wide, so each project's part is inferred from its runs")
+    print("est. = an estimate: the meter is plan-wide, so each project's part is inferred from its room runs and the "
+          "owner's own Claude sessions in its folder")
     for provider, report in reports.items():
         if report is None:
             print(f"{provider}: no current weekly reading")
@@ -668,10 +675,11 @@ def cmd_pie(args) -> int:
         others = "".join(f"; {name} (not registered) est. {pct:.1f}%" for name, pct in sorted(report.unregistered.items()))
         print(f"  projects est. {report.projects_total:.1f}%{others}; owner's slice "
               f"{registry.fmt_number(report.owner_share)}, his own use est. {report.owner_use:.1f}%")
-        print(f"  {'project':<16} {'share':>5}  {'when':<6} {'spent est.':>10} {'line':>6} {'headroom est.':>13}")
+        print(f"  {'project':<16} {'share':>5}  {'when':<6} {'spent est.':>10} {'room':>6} {'own sessions':>12} "
+              f"{'line':>6} {'headroom est.':>13}")
         for s in report.rows:
-            print(f"  {s.name:<16} {registry.fmt_number(s.share):>5}  {s.when:<6} {s.spent:>10.1f} {s.allowed:>6.1f} "
-                  f"{s.headroom:>+13.1f}")
+            print(f"  {s.name:<16} {registry.fmt_number(s.share):>5}  {s.when:<6} {s.spent:>10.1f} "
+                  f"{report.room(s.name):>6.1f} {report.own.get(s.name, 0.0):>12.1f} {s.allowed:>6.1f} {s.headroom:>+13.1f}")
     return 0
 
 
