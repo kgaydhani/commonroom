@@ -126,21 +126,21 @@ This is the part between the owner's chat and the workers. In v2 one long model 
 | Kind | What it is | How agents treat it |
 |---|---|---|
 | Outcome | What he wants, and why | The target |
-| Bound | Must, never, or needs his approval | A limit that is not crossed |
+| Bound | Must, never, or needs his approval | A limit that is not crossed. Where a bound is unclear, the desk proposes something at its edge and records his answer |
 | Decision | A choice he has made | Final. `decided:` already means this in v2 |
 | Suggestion | His guess at how to get there | Evidence of what he wants. It is weighed, researched, and may be replaced by something better, with the reason given |
 
 When the kind is unclear and it would change what gets built, the desk asks one question. It does not ask what research can answer. Reading the owner this way is the one subject the room's own text may instruct on.
 
- With the owner present it also writes the briefs, since it holds the richest context. If the owner changes the subject, nothing is lost, because the desk held nothing.
+With the owner present it also writes the briefs, since it holds the richest context. If the owner changes the subject, nothing is lost, because the desk held nothing.
 
 **Change of direction.** The desk records a direction entry. From then on every open item is "unreconciled" until it is marked keep, park or cancel with a reason. The steward holds unreconciled items and wakes the planner to finish the pass if the desk did not. The invariant is checkable in code: no open item is older than the latest direction without a verdict.
 
 **How much the owner decides** is one setting per project: the planner's new items need the owner's approval never, for each plan, or for each item. That covers the person who plans everything first and the person who wants it to build and report back. An owner who wants to do some of the work claims an item, and the room leaves it alone.
 
-**Workers.** A brief is a handover and nothing more: the objective and why, observable checks for done, boundaries, files to read, where to report. It never prescribes how. What a role is in the room is wiring: which vendor and model, which tools, what it receives and where its result goes. How that role does its work comes from the project's own agent files or a vendor's skill, which the owner chooses. Workers start fresh by default. A session is resumed only to answer review findings while its cache is warm. Reviewers always start clean.
+**Workers.** A brief is a handover and nothing more: the objective and why, the owner's decisions and suggestions that bear on it, observable checks for done, boundaries, files to read, where to report. It never prescribes how. What a role is in the room is wiring: which vendor and model, which tools, what it receives and where its result goes. How that role does its work comes from the project's own agent files or a vendor's skill, which the owner chooses. Workers start fresh by default. A session is resumed only to answer review findings while its cache is warm. Reviewers always start clean.
 
-**Where earlier requests now sit.** The owner asked on 13 Nov for sessions that push back by default and double-check research, and for research roles that know how to research. Those are method. They belong in the owner's own instruction files or a vendor's skill, pointed at by a role and chosen by the owner. The room never imposes them.
+**Where earlier requests now sit.** The owner asked on 13 Nov for sessions that push back by default and double-check research, and for research roles that know how to research. Pushing back on his suggested method is now part of reading the owner: the desk weighs a suggestion and may replace it, giving the reason. Double-checking research, and how a research role does its work, are method. They belong in the owner's own instruction files or a vendor's skill, pointed at by a role and chosen by the owner. The room never imposes them.
 
 ## The handshake
 
