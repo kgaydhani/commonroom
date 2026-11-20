@@ -10,7 +10,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, usage
+from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
 from commonroom.ledger import Ledger
@@ -567,6 +567,55 @@ def cmd_breaker(args) -> int:
     return 0
 
 
+def cmd_projects(args) -> int:
+    """List, add, change or remove the projects in the registry (`<room home>/projects.toml`). No model or GitHub call.
+    A change that would break a rule is refused with the reason, and the file is left as it was."""
+    path = registry.default_path()
+    try:
+        reg = registry.load(path, check=False)
+    except registry.RegistryError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    if args.action is None:
+        if not reg.projects:
+            print(f"no projects in {path}")
+        for name in sorted(reg.projects):
+            p = reg.projects[name]
+            share = registry.fmt_number(p.share) if registry.is_number(p.share) else repr(p.share)
+            print(f"{name:<16} share {share:>5}  {p.work}/{p.when}{'/strict' if p.strict is True else ''}  {p.path}")
+        print(f"owner's own slice: {registry.fmt_number(reg.owner_share())}")
+        found = registry.problems(reg)
+        for problem in found:
+            print(f"problem: {problem}")
+        return 1 if found else 0
+    name = args.name
+    if args.action == "add":
+        if any(n.lower() == name.lower() for n in reg.projects):
+            print(f"refused: project {name!r} already exists; use `room projects set`", file=sys.stderr)
+            return 1
+        reg.projects[name] = registry.Project(name, os.path.abspath(args.path), args.share,
+                                              args.work or "open", args.when or "paced", bool(args.strict))
+    elif name not in reg.projects:
+        print(f"refused: no project {name!r} in {path}", file=sys.stderr)
+        return 1
+    elif args.action == "remove":
+        del reg.projects[name]
+    else:
+        p = reg.projects[name]
+        for key in ("share", "work", "when", "strict"):
+            if getattr(args, key) is not None:
+                setattr(p, key, getattr(args, key))
+    try:
+        warnings = registry.save(reg, path, changing=name)
+    except registry.RegistryError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    for warning in warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+    print(f"{args.action} {name}: saved {path}; owner's own slice is {registry.fmt_number(reg.owner_share())}")
+    return 0
+
+
 def cmd_reddit(args) -> int:
     """Read-only Reddit research through public archives. Small reads only: no bulk collection, never training."""
     from commonroom import reddit
@@ -618,6 +667,13 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("guard-command", help="PreToolUse hook: block filter-based process kills (hook JSON on stdin)").set_defaults(func=cmd_guard_command)
     sub.add_parser("check", help="run the project's [checks] test under a per-project lock").set_defaults(func=cmd_check)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
+    p = sub.add_parser("projects", help="list or change the projects and their shares (no model call)"); p.set_defaults(func=cmd_projects)
+    ps = p.add_subparsers(dest="action")
+    q = ps.add_parser("add", help="add a project"); q.add_argument("name"); q.add_argument("path"); q.add_argument("--share", type=float, required=True)
+    q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
+    q = ps.add_parser("set", help="change a project's share or mode"); q.add_argument("name"); q.add_argument("--share", type=float)
+    q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
+    q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     args = parser.parse_args(argv)
     return args.func(args)
 
