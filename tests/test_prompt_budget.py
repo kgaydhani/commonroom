@@ -15,6 +15,7 @@ from commonroom import policy
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "golden_prompts"
 TEMPLATES = ROOT / "commonroom" / "ways" / "prompts"
+HANDSHAKE = ROOT / "commonroom" / "ways" / "handshake"   # the room folder's README, charter and digest (commonroom#253)
 
 
 def tokens(text: str) -> int:
@@ -25,14 +26,17 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")   # universal newlines: a CRLF checkout counts the same as LF
 
 
-def over_budget(fixtures: Path, templates: Path, prompt_limit: int, templates_limit: int) -> list[str]:
+def over_budget(fixtures: Path, templates: Path, prompt_limit: int, templates_limit: int, also: tuple = ()) -> list[str]:
     """What is over budget: each rendered prompt in `fixtures` over `prompt_limit` tokens, naming the file and its
-    size, and every file in `templates` together if over `templates_limit`. Empty when all is inside."""
+    size, and every file in `templates` and the `also` folders together if over `templates_limit`. Empty when all is
+    inside."""
     problems = [f"{p.name} is {n} tokens, over the {prompt_limit}-token budget for one prompt"
                 for p in sorted(fixtures.glob("*.txt")) if (n := tokens(read(p))) > prompt_limit]
-    total = tokens("".join(read(p) for p in sorted(templates.iterdir()) if p.is_file()))
+    folders = (templates, *also)
+    total = tokens("".join(read(p) for folder in folders for p in sorted(folder.iterdir()) if p.is_file()))
     if total > templates_limit:
-        problems.append(f"{templates.name}/ is {total} tokens, over the {templates_limit}-token budget for all templates")
+        problems.append(f"{' + '.join(f.name + '/' for f in folders)} is {total} tokens, over the {templates_limit}-token "
+                        f"budget for all templates")
     return problems
 
 
@@ -40,8 +44,19 @@ class Budget(unittest.TestCase):
     def test_the_rooms_prompt_text_stays_inside_its_token_budget(self):
         self.assertGreater(len(list(FIXTURES.glob("*.txt"))), 0, f"no rendered prompts in {FIXTURES}")
         problems = over_budget(FIXTURES, TEMPLATES, policy.DEFAULTS["prompt_max_tokens"],
-                               policy.DEFAULTS["templates_max_tokens"])
+                               policy.DEFAULTS["templates_max_tokens"], also=(HANDSHAKE,))
         self.assertEqual(problems, [], "; ".join(problems))
+
+    def test_the_handshake_templates_count_toward_the_same_budget(self):
+        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "charter.md", "digest.md"])
+        with tempfile.TemporaryDirectory() as tmp:
+            handshake = Path(tmp) / "handshake"
+            shutil.copytree(HANDSHAKE, handshake)
+            used = tokens("".join(read(p) for f in (TEMPLATES, handshake) for p in sorted(f.iterdir()) if p.is_file()))
+            with open(handshake / "README.md", "a", encoding="utf-8") as f:
+                f.write("x" * 4 * (2501 - used))
+            self.assertEqual(over_budget(FIXTURES, TEMPLATES, 700, 2500, also=(handshake,)),
+                             ["prompts/ + handshake/ is 2501 tokens, over the 2500-token budget for all templates"])
 
     def test_padding_past_the_budget_fails_naming_the_file_and_its_size(self):
         with tempfile.TemporaryDirectory() as tmp:

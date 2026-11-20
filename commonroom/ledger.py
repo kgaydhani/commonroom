@@ -344,3 +344,9 @@ class Ledger:
     def marked(self, project: str | None, key: str) -> float | None:
         row = self.db.execute("SELECT at FROM marks WHERE project=? AND key=?", (project or "", key)).fetchone()
         return row["at"] if row else None
+
+    def marks(self, project: str | None, prefix: str) -> list[tuple[str, float]]:
+        """Every mark of a project whose key starts with `prefix`, as (rest of the key, at), newest first."""
+        rows = self.db.execute("SELECT key, at FROM marks WHERE project=? AND substr(key, 1, ?)=? ORDER BY at DESC",
+                               (project or "", len(prefix), prefix)).fetchall()
+        return [(r["key"][len(prefix):], r["at"]) for r in rows]

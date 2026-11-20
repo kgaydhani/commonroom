@@ -110,6 +110,21 @@ yet, so every project runs as described above (commonroom#225, commonroom#238).
   whole registry. Another project's problem, such as a missing folder, is printed as a warning and the change is
   saved.
 
+## The handshake: a room folder per project (first cut)
+"The handshake" in [design-v3.md](design-v3.md), without `hand` or `share` yet (commonroom#253). It reads the registry
+and the ledger and writes only its own folders, so no project's behaviour changes.
+- **The folder** (`commonroom/handshake.py`): `<room home>/projects/<name>/`, or the registry's optional `shared`
+  folder for that project (a full path, such as a synced drive). It holds `README.md` (from
+  `commonroom/ways/handshake/`, rewritten when its template changes), `charter.md` (created once with empty headings
+  and never written again), `digest.md` (built in code: the charter, share and mode, who attached, the five newest
+  notes, and the last 7 days of runs and landings from the ledger; the cost figure is marked as an estimate) and
+  `inbox/` (one new file per note, never edited or deleted; front matter is optional, and a file that is not text is
+  still listed by name). An agent with no room reads `digest.md` and adds a file to `inbox/`.
+- **Commands** (no model, no GitHub): `room attach [<project>] [--as <who>]` (the project named, or the one whose
+  folder or room folder holds the current directory) makes the folder, records the attach as a ledger mark and prints
+  the digest. `room note <text>|- [--project] [--from] [--to]`, `room notes [--project] [--since]` and
+  `room digest [--project]`. `room digest --hours N` is still the auditor's JSON summary.
+
 ## Roles (defaults)
 | Role | Default | Notes |
 |---|---|---|

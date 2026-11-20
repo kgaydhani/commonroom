@@ -5,7 +5,8 @@ holds the ledger (`COMMONROOM_HOME`, or `~/.commonroom`). A missing file is an e
 is whatever the shares leave, `100 - sum(shares)`: it is derived, never stored.
 
 Only `room projects` and `room pie` (`commonroom.standings`) read it, and nothing is gated on it yet, so it changes no
-project's behaviour. The arithmetic over it is in `commonroom.pie`.
+project's behaviour. The arithmetic over it is in `commonroom.pie`. The handshake (`commonroom.handshake`) reads it to
+find each project's room folder: the optional `shared` key, or `<room home>/projects/<name>`.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ FILENAME = "projects.toml"
 WORK = ("fixed", "open")
 WHEN = ("paced", "spare")
 NAME = re.compile(r"[A-Za-z0-9_-]+")          # a bare TOML key, so `[projects.<name>]` needs no quoting
-PROJECT_KEYS = ("path", "share", "work", "when", "strict")   # the order they are written in
+PROJECT_KEYS = ("path", "share", "work", "when", "strict", "shared")   # the order they are written in
 BUDGET_KEYS = ("reserve_5h",)
 
 HEADER = """\
@@ -55,6 +56,7 @@ class Project:
     work: str = "open"
     when: str = "paced"
     strict: bool = False
+    shared: str | None = None   # the project's room folder, if not under the room home (commonroom#253)
 
 
 @dataclass
@@ -135,6 +137,8 @@ def checks(reg: Registry) -> list[tuple[str | None, str]]:
             bad(f"'when' must be {' or '.join(map(repr, WHEN))}, not {p.when!r}")
         if not isinstance(p.strict, bool):
             bad(f"'strict' must be true or false, not {p.strict!r}")
+        if p.shared is not None and not (isinstance(p.shared, str) and Path(p.shared).is_absolute()):
+            bad(f"'shared' must be the full path of a folder, not {p.shared!r}")
     total = sum(p.share for p in reg.projects.values() if is_number(p.share))
     if total > 100:
         found.append((None, f"shares sum to {fmt_number(total)}, more than 100"))
@@ -195,7 +199,8 @@ def dumps(reg: Registry) -> str:
         lines += ["[budget]", *(f"{key} = {_value(reg.budget[key])}" for key in budget), ""]
     for name in sorted(reg.projects):
         p = reg.projects[name]
-        lines += [f"[projects.{name}]", *(f"{key} = {_value(getattr(p, key))}" for key in PROJECT_KEYS), ""]
+        lines += [f"[projects.{name}]", *(f"{key} = {_value(getattr(p, key))}" for key in PROJECT_KEYS
+                                          if getattr(p, key) is not None), ""]
     return "\n".join(lines).rstrip("\n") + "\n"
 
 

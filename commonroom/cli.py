@@ -14,6 +14,7 @@ from commonroom import board, config as config_mod, gate, guard, metrics, policy
 from commonroom import standings
 from commonroom.dispatch import Dispatcher, runnable_roles, stale_claims, verdicts
 from commonroom import ledger as ledger_mod
+from commonroom import handshake
 from commonroom.ledger import Ledger
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
@@ -426,6 +427,8 @@ def digest(cfg: dict, hours: float) -> dict:
 
 
 def cmd_digest(args) -> int:
+    if args.hours is None:   # no --hours: the project's own digest, for any agent (commonroom#253)
+        return handshake.cmd_digest(args)
     print(json.dumps(digest(config_mod.load(), args.hours), indent=1, default=str))
     return 0
 
@@ -708,7 +711,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
-    p = sub.add_parser("digest", help="JSON summary of recent activity (for the auditor)"); p.add_argument("--hours", type=float, default=1); p.set_defaults(func=cmd_digest)
+    p = sub.add_parser("digest", help="rebuild and print the project's digest; --hours N: JSON summary for the auditor"); g = p.add_mutually_exclusive_group(); g.add_argument("--hours", type=float); g.add_argument("--project"); p.set_defaults(func=cmd_digest)
+    p = sub.add_parser("attach", help="join a project: make its room folder, record who attached, print the digest (no model call)"); p.add_argument("project", nargs="?"); p.add_argument("--as", dest="who"); p.set_defaults(func=handshake.cmd_attach)
+    p = sub.add_parser("note", help="leave a note in a project's inbox ('-' reads the text from standard input)"); p.add_argument("text"); p.add_argument("--project"); p.add_argument("--from", dest="sender"); p.add_argument("--to"); p.set_defaults(func=handshake.cmd_note)
+    p = sub.add_parser("notes", help="a project's notes, newest first"); p.add_argument("--project"); p.add_argument("--since", help="6h, 3d, 2026-11-20 or '2026-11-20 14:00'"); p.set_defaults(func=handshake.cmd_notes)
     p = sub.add_parser("pause", help="pause autonomous work with a reason: nothing new starts, running workers finish"); p.add_argument("reason"); p.add_argument("--kind", default="paused_by_auditor", help="kinds starting with 'pause' let running workers finish"); p.add_argument("--hard", action="store_true", help="also stop running workers now (a runaway, a bad merge)"); p.set_defaults(func=cmd_pause)
     p = sub.add_parser("housekeep", help="merge approved PRs and unblock issues, with no job and no gate"); p.add_argument("--minutes", type=float, default=14); p.add_argument("--every", type=float, default=180); p.set_defaults(func=cmd_housekeep)
     sub.add_parser("services", help="start the dashboard and project services if they aren't running").set_defaults(func=cmd_services)
