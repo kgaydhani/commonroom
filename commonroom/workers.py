@@ -15,10 +15,10 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from commonroom import usage
+from commonroom import policy as policy_mod, usage
 from commonroom.ledger import Ledger
 
-RUN_TIMEOUT = 3600   # seconds the room lets one run go; the headless note tells the worker the same number
+RUN_TIMEOUT = policy_mod.DEFAULTS["run_timeout_seconds"]   # commonroom/ways/policy.toml (commonroom#217)
 CODEX_SITE = Path(__file__).resolve().parent / "codex_site"   # sitecustomize for Codex workers (commonroom#182)
 
 

@@ -1,0 +1,46 @@
+# The room's ways-of-working numbers (commonroom#217). They are read once, at import: a running dispatcher keeps the
+# values it started with, and a missing file or name fails the import naming it.
+# A project overrides a value under `[policy]` in its room.toml, with the same name; unset, it gets the value here.
+# An unknown name, or one marked "room-wide only", is an error naming it when that project's dispatcher starts.
+# Budget and gate settings are not here: they stay in room.toml `[budget]`, `[breakers]`, `[parallel]`, `[owner]`
+# and `[share]`, and in gate.py.
+
+# Review and CI ------------------------------------------------------------------------------------------------------
+
+# This many CHANGES verdicts on one PR go to the director, not back to the builder (commonroom#32).
+review_rounds = 2
+# This many INCOMPLETE verdicts at one head stop re-reviews and go to the director (commonroom#174).
+incomplete_rounds = 2
+# Red CI sends a PR back to its builder at most this often before the director steps in.
+ci_bounces = 3
+# Infrastructure cancellations are rerun at most this many times per run. Room-wide only for now (commonroom#228).
+ci_reruns = 6
+# Minutes between those reruns, growing 20, 40, 60..., so an outage can't use them all up. Room-wide only for now
+# (commonroom#228).
+ci_backoff_minutes = 20
+
+# Pacing and sessions ------------------------------------------------------------------------------------------------
+
+# Seconds (3 hours): a ready research task jumps the build queue at most this often.
+scout_interleave_seconds = 10800
+# Seconds (1 hour) between headless director runs on its ordinary triggers.
+director_cooldown_seconds = 3600
+# Seconds (5 minutes): new owner comments are answered after this, rather than after the director's hourly cooldown.
+owner_cooldown_seconds = 300
+# Minutes: an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63).
+stale_claim_minutes = 30
+# Seconds (10 minutes): a task whose last run was a room-error rests this long, doubling with each one in a row
+# (commonroom#9).
+room_error_backoff_seconds = 600
+# The third room-error in a row goes to the director (commonroom#9).
+room_error_escalate = 3
+# Seconds (12 hours): a stopped Claude session older than this starts fresh (commonroom#142).
+resume_window_seconds = 43200
+# Seconds (6 hours): the room's own work must have run this long in the 24h window before "nothing merged" is a
+# verdict: after a long pause most of the window is pause time, and no build, review and merge cycle fits in the
+# first hours back.
+progress_min_work_seconds = 21600
+# At most this many mention notifications per pass; the rest are summed up in one.
+notify_max = 5
+# Seconds (60 minutes) the room lets one run go; the headless note tells the worker the same number.
+run_timeout_seconds = 3600

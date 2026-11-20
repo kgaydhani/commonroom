@@ -24,6 +24,7 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
+from commonroom import policy as policy_mod
 from commonroom.ledger import Ledger
 from commonroom.lock import acquire_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
@@ -36,7 +37,11 @@ MARK = "[room]"
 STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 INTERACTIVE_PHRASE = "interactive session"
-DIRECTOR_COOLDOWN = 3600
+# The ways-of-working numbers live in commonroom/ways/policy.toml, with why each is what it is (commonroom#217). These
+# names hold the room's values; a Dispatcher reads a number through `Dispatcher.policy`, which applies its project's
+# `[policy]` overrides (POLICY_CONSTANTS maps the names).
+POLICY = policy_mod.DEFAULTS
+DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 # What the room tells workers lives in commonroom/ways/prompts/<name>.md, not here (commonroom#216). `{{name}}` marks a
 # value the code fills in. The files are read once, at import: a running dispatcher keeps the text it started with
 # while the room pulls new files under it, and a missing file fails the import with its name.
@@ -89,19 +94,19 @@ def fill_way(template: str, **values) -> str:
 WAYS = load_ways(WAYS_DIR)
 STEER_REASON = WAYS["steer"]
 BULLETIN_REASON = WAYS["bulletin"]   # fill_way() it with due, issue and owner
-OWNER_COOLDOWN = 300
-ROOM_ERROR_BACKOFF = 600   # a task whose last run was a room-error rests this long, doubling with each one in a row...
-ROOM_ERROR_ESCALATE = 3    # ...and the third in a row goes to the director (commonroom#9)
-SCOUT_INTERLEAVE = 3 * 3600  # a ready research task jumps the build queue at most this often
+OWNER_COOLDOWN = POLICY["owner_cooldown_seconds"]
+ROOM_ERROR_BACKOFF = POLICY["room_error_backoff_seconds"]
+ROOM_ERROR_ESCALATE = POLICY["room_error_escalate"]
+SCOUT_INTERLEAVE = POLICY["scout_interleave_seconds"]
 # A scheduled issue's body carries this, so the schedule sees its last one is still open (commonroom#151).
 SCHEDULE_MARK = "<!-- room-schedule:{role} -->"
-NOTIFY_MAX = 5   # at most this many mention notifications per pass; the rest are summed up in one
+NOTIFY_MAX = POLICY["notify_max"]
 # Roles the room dispatches through their own triggers. Any other role with a `[roles]` entry and an agent file runs on
 # demand from a `role:<name>` + `status:ready` issue (commonroom#4).
 BUILT_IN_ROLES = {"builder", "scout", "director", "reviewer", "auditor"}
 PLAYTEST_TITLE = "Playtest after merges:"   # the room's playtest issues (commonroom#53)
 PLAYTEST_PR = re.compile(r"^- PR #(\d+)\b", re.M)
-STALE_CLAIM_MINUTES = 30   # an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63)
+STALE_CLAIM_MINUTES = POLICY["stale_claim_minutes"]
 # Someone outside the room (the interactive director's local agents, a cloud session) owns the issue: the room never
 # builds it or puts status:ready on it, but still reviews and merges its PR (commonroom#132).
 EXTERNAL = "claim:external"
@@ -162,8 +167,10 @@ def dependencies(body: str | None) -> set[int]:
     return deps
 
 
-def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float) -> list[dict]:
-    """Open `status:in-progress` issues that no run holds and that haven't changed for STALE_CLAIM_MINUTES: a moonshot
+def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
+                 stale_minutes: int | None = None) -> list[dict]:
+    """Open `status:in-progress` issues that no run holds and that haven't changed for `stale_minutes` (None: the
+    room's STALE_CLAIM_MINUTES): a moonshot
     the pace gate stopped a minute after claiming gamemirage#296 left it in progress for 1.5 h (commonroom#63). A running
     run on `#N` holds it, any running moonshot holds them all (it may be on any issue), and an open `i<N>-*` PR means
     it's in review whatever its label says."""
@@ -178,7 +185,7 @@ def stale_claims(issues: list[dict], prs: list[dict], running_runs: list[dict], 
                 or EXTERNAL in labels(issue) or n in in_review or f"#{n}" in held):
             continue
         minutes = int((now - calendar.timegm(time.strptime(updated[:19], "%Y-%m-%dT%H:%M:%S"))) // 60)
-        if minutes >= STALE_CLAIM_MINUTES:
+        if minutes >= (STALE_CLAIM_MINUTES if stale_minutes is None else stale_minutes):
             stale.append({"number": n, "title": issue.get("title"), "minutes": minutes})
     return stale
 
@@ -685,7 +692,7 @@ def latest_review(detail: dict) -> str | None:
     return verdict_of(c["body"]) if c else None
 
 
-INCOMPLETE_ROUNDS = 2   # this many INCOMPLETE verdicts at one head stop re-reviews and go to the director (commonroom#174)
+INCOMPLETE_ROUNDS = POLICY["incomplete_rounds"]
 
 
 def incomplete_reviews(detail: dict) -> int:
@@ -838,9 +845,9 @@ def checks_state(detail: dict) -> str:
 
 
 INFRA_CONCLUSIONS = {"CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
-CI_RERUNS = 6          # infrastructure cancellations are rerun at most this many times per run...
-CI_BACKOFF_MINUTES = 20  # ...waiting 20, 40, 60... minutes between reruns, so an outage can't use them all up
-CI_BOUNCES = 3         # red CI sends a PR back to its builder at most this often before the director steps in
+CI_RERUNS = POLICY["ci_reruns"]   # room-wide only: GitHubBoard.rerun_ci reads them (commonroom#228)
+CI_BACKOFF_MINUTES = POLICY["ci_backoff_minutes"]
+CI_BOUNCES = POLICY["ci_bounces"]
 MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back only to merge main into it
 CONFLICTS_MAIN = "conflicts with main"   # marks the room's comment that sends a conflicting PR back to its builder
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
@@ -865,7 +872,7 @@ def conflicts_main(issue: dict) -> bool:
     return bool(room) and CONFLICTS_MAIN in (room[-1].get("body") or "")
 
 
-REVIEW_ROUNDS = 2      # this many CHANGES verdicts on one PR go to the director, not back to the builder (commonroom#32)
+REVIEW_ROUNDS = POLICY["review_rounds"]
 ROUNDS_ESCALATED = "review rounds without an approval"   # marks the escalation comment; rounds count again after it
 
 
@@ -1032,21 +1039,20 @@ def share_verdict(ledger: Ledger, cfg: dict, provider: str, now: float) -> gate.
                                f"{hours:g}h, cap {float(share['max']):.0%}); {host} goes first")
 
 
-# The room's own work must have run this long in the 24h window before "nothing merged" is a verdict: after a
-# long pause most of the window is pause time, and no build, review and merge cycle fits in the first hours back.
-PROGRESS_MIN_WORK = 6 * 3600
+PROGRESS_MIN_WORK = POLICY["progress_min_work_seconds"]
 
 
 def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit: float = 10.0,
-                   attribute: bool = False) -> dict | None:
+                   attribute: bool = False, min_work: float | None = None) -> dict | None:
     """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker.
-    With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend."""
+    With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend.
+    The room's work must have run `min_work` seconds in the window first (None: the room's PROGRESS_MIN_WORK)."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
     work = [r["started_at"] for r in runs if r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge"]
     if not work:
         return None   # the room didn't work: whatever was spent was the owner's own use
-    if now - min(work) < PROGRESS_MIN_WORK:
+    if now - min(work) < (PROGRESS_MIN_WORK if min_work is None else min_work):
         return None   # the room only just started working (e.g. after a pause): too early to call it no progress
     # Plan-wide weekly growth (per-run deltas double-count parallel runs), counted only across the gap between one
     # usage sample and the next that overlaps an autonomous Claude run in any project: growth with no room run
@@ -1074,7 +1080,16 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
 
 
 # The dispatcher ----------------------------------------------------------------------------------
-RESUME_WINDOW = 12 * 3600   # a stopped Claude session older than this starts fresh (commonroom#142)
+RESUME_WINDOW = POLICY["resume_window_seconds"]
+# Name in policy.toml -> the module and constant holding the room's value. `Dispatcher.policy` reads the constant
+# when asked, so a test that sets one (as tests/test_timeout.py sets workers.RUN_TIMEOUT) is still seen.
+POLICY_CONSTANTS = {"review_rounds": "REVIEW_ROUNDS", "incomplete_rounds": "INCOMPLETE_ROUNDS", "ci_bounces": "CI_BOUNCES",
+                    "ci_reruns": "CI_RERUNS", "ci_backoff_minutes": "CI_BACKOFF_MINUTES",
+                    "scout_interleave_seconds": "SCOUT_INTERLEAVE", "director_cooldown_seconds": "DIRECTOR_COOLDOWN",
+                    "owner_cooldown_seconds": "OWNER_COOLDOWN", "stale_claim_minutes": "STALE_CLAIM_MINUTES",
+                    "room_error_backoff_seconds": "ROOM_ERROR_BACKOFF", "room_error_escalate": "ROOM_ERROR_ESCALATE",
+                    "resume_window_seconds": "RESUME_WINDOW", "progress_min_work_seconds": "PROGRESS_MIN_WORK",
+                    "notify_max": "NOTIFY_MAX", "run_timeout_seconds": "RUN_TIMEOUT"}
 
 
 def session_file(worktree, session_id: str, projects_dir: Path | None = None) -> Path:
@@ -1122,6 +1137,15 @@ class Dispatcher:
         self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
         self.owner = config_mod.owner(cfg)
         self.ways = ways_for(cfg)   # the prompt templates, with the project's `[ways] dir` overrides (commonroom#216)
+        # The numbers this project sets under `[policy]` (commonroom#217); an unknown name fails here, naming it.
+        self.policy_overrides = policy_mod.overrides(cfg)
+
+    def policy(self, name: str) -> int:
+        """A ways-of-working number from commonroom/ways/policy.toml: this project's `[policy]` value if it set one,
+        else the room's, read from its module constant now."""
+        if name in self.policy_overrides:
+            return self.policy_overrides[name]
+        return workers_mod.RUN_TIMEOUT if name == "run_timeout_seconds" else globals()[POLICY_CONSTANTS[name]]
 
     @property
     def board(self) -> TrustedBoard:
@@ -1175,7 +1199,8 @@ class Dispatcher:
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
                 actions.append(f"#{n} was in review with no open PR; back to ready")
-        for claim in stale_claims(everything, prs, self.ledger.running_runs(self.project), time.time()):
+        for claim in stale_claims(everything, prs, self.ledger.running_runs(self.project), time.time(),
+                                  stale_minutes=self.policy("stale_claim_minutes")):
             n = claim["number"]
             if not self.dry_run:
                 self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
@@ -1295,7 +1320,7 @@ class Dispatcher:
                 view = self.reviewer_view(detail)
                 rounds = incomplete_reviews(view)
                 issue = next((i for i in everything if i["number"] == issue_no), None)
-                if (rounds >= INCOMPLETE_ROUNDS and issue and issue["state"] == "OPEN"
+                if (rounds >= self.policy("incomplete_rounds") and issue and issue["state"] == "OPEN"
                         and not labels(issue) & {"status:blocked", "needs:director"}):
                     reasons = [line.strip() for c in view.get("comments") or [] if verdict_of(c.get("body")) == "INCOMPLETE"
                                for line in (c.get("body") or "").splitlines() if INCOMPLETE_LINE.search(line)]
@@ -1325,7 +1350,7 @@ class Dispatcher:
                 escalated = max((c.get("createdAt") or "" for c in issue.get("comments") or []
                                  if ROUNDS_ESCALATED in (c.get("body") or "")), default="")
                 rounds = changes_rounds(detail, since=escalated)
-                if rounds >= REVIEW_ROUNDS:
+                if rounds >= self.policy("review_rounds"):
                     self.board.set_labels(issue_no, add=["status:blocked", "needs:director"],
                                           remove=["status:review", "status:in-progress", "needs:changes"])
                     self.board.comment(issue_no, f"PR #{pr['number']} has had {rounds} {ROUNDS_ESCALATED}. Escalating to "
@@ -1500,12 +1525,12 @@ class Dispatcher:
                 if since is not None and at > since and mention and mention.search(c.get("body") or ""):
                     found.append((at, issue, c))
         found.sort(key=lambda f: f[0])
-        for at, issue, c in found[:NOTIFY_MAX]:
+        for at, issue, c in found[:self.policy("notify_max")]:
             if not self.tell_owner(f"{project} #{issue['number']}: {issue.get('title') or ''}", (c.get("body") or "").strip(),
                                    url=c.get("url") or self.issue_url(issue["number"])):
                 return actions   # the watermark stays, so the rest are sent next pass
             actions.append(f"told the owner about a mention on #{issue['number']}")
-        rest = found[NOTIFY_MAX:]
+        rest = found[self.policy("notify_max"):]
         if rest:
             self.tell_owner(f"{project}: {len(rest)} more mentions",
                             "\n".join(sorted({f"#{f[1]['number']} {f[1].get('title') or ''}" for f in rest})))
@@ -1924,11 +1949,11 @@ class Dispatcher:
             # approval, or one from before the room merged main into the branch, is reviewed again.
             view = self.reviewer_view(detail)
             return (latest_review(view) != "CHANGES" and not self.tested(detail)
-                    and incomplete_reviews(view) < INCOMPLETE_ROUNDS)
+                    and incomplete_reviews(view) < self.policy("incomplete_rounds"))
         view = self.reviewer_view(detail)
         verdict = self.review_verdict(view)
         if verdict == "INCOMPLETE":
-            return incomplete_reviews(view) < INCOMPLETE_ROUNDS and checks_state(detail) != "red"
+            return incomplete_reviews(view) < self.policy("incomplete_rounds") and checks_state(detail) != "red"
         return verdict is None and checks_state(detail) != "red"
 
     def handle_red_ci(self, pr: dict, detail: dict, issue_no: int, everything: list[dict]) -> list[str]:
@@ -1976,7 +2001,7 @@ class Dispatcher:
             return self.tell_external(issue, f"CI is red on PR #{pr['number']}: {names}. Its owner fixes it on the same branch; "
                                              f"the room doesn't build {EXTERNAL} issues.")
         bounces = sum(1 for c in issue.get("comments") or [] if "CI is red" in (c.get("body") or ""))
-        if bounces >= CI_BOUNCES:
+        if bounces >= self.policy("ci_bounces"):
             self.board.set_labels(issue_no, add=["status:blocked", "needs:director"], remove=["status:review"])
             self.board.comment(issue_no, f"CI is red again on PR #{pr['number']} ({names}) after {bounces} fixes. Escalating to the director.")
             return [f"PR #{pr['number']} still red after {bounces} fixes; #{issue_no} escalated"]
@@ -1999,7 +2024,7 @@ class Dispatcher:
         pass, so one leftover folder became five identical failures in two minutes (commonroom#9)."""
         now = time.time()
         resting = {task for task, (count, ended) in self.ledger.room_error_streaks(self.project, now).items()
-                   if now - ended < ROOM_ERROR_BACKOFF * 2 ** min(count - 1, 4)}
+                   if now - ended < self.policy("room_error_backoff_seconds") * 2 ** min(count - 1, 4)}
         return self.ledger.running_tasks(self.project) | resting
 
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
@@ -2207,7 +2232,7 @@ class Dispatcher:
                 return Job("audit", "auditor", reason=audit), *choice
         scout_spec = self.roles.get("scout", ["claude:sonnet"])
         # Research must not starve behind an endless build queue: a ready scout task goes first every few hours.
-        if scouting and time.time() - self.last_run_at("scout") > SCOUT_INTERLEAVE:
+        if scouting and time.time() - self.last_run_at("scout") > self.policy("scout_interleave_seconds"):
             choice = self.choose(scout_spec, allowed)
             if choice:
                 issue = min(scouting, key=priority)
@@ -2339,7 +2364,7 @@ class Dispatcher:
         """New owner comments on owner tasks or suggestions, answered within minutes rather than the hourly cooldown."""
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
-        if time.time() - since < OWNER_COOLDOWN:
+        if time.time() - since < self.policy("owner_cooldown_seconds"):
             return None
         reasons = []
         # The board passes only trusted logins' issues and comments (commonroom#176), but agents post as the owner's
@@ -2364,7 +2389,7 @@ class Dispatcher:
     def director_trigger(self) -> str | None:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
-        if time.time() - since < DIRECTOR_COOLDOWN:
+        if time.time() - since < self.policy("director_cooldown_seconds"):
             return None
         reasons = []
         # Escalations and suggestions count whatever their milestone: a suggestion the director hasn't placed
@@ -2475,7 +2500,7 @@ class Dispatcher:
                 prompt = self.prompt(job, branch) + self.why() + self.headless_note()
             result = run_worker(provider, role, prompt, worktree, self.ledger, self.log_dir,
                                 resume_session=resume["session_id"] if resume else None,
-                                model=model, effort=effort, timeout=workers_mod.RUN_TIMEOUT, scratch_env=(self.cfg.get("codex") or {}).get("scratch_env"),
+                                model=model, effort=effort, timeout=self.policy("run_timeout_seconds"), scratch_env=(self.cfg.get("codex") or {}).get("scratch_env"),
                                 stop_check=lambda: self.stop_reason(provider))
             if result.limited_until or result.interrupted:
                 status, outputs, note = self.requeue(job, provider, result)
@@ -2521,7 +2546,7 @@ class Dispatcher:
                 else self.ledger.role_runs(self.project, job.role, 3, exclude=run_id))
         last = runs[0] if runs else None
         if (not last or last["role"] != job.role or last["provider"] != "claude" or last["status"] not in ("stopped", "limited")
-                or not last["session_id"] or not last["ended_at"] or time.time() - last["ended_at"] > RESUME_WINDOW
+                or not last["session_id"] or not last["ended_at"] or time.time() - last["ended_at"] > self.policy("resume_window_seconds")
                 or str(last.get("worktree") or "").lower() != str(Path(os.path.abspath(worktree))).lower()
                 or not session_file(worktree, last["session_id"], self.claude_projects).exists()):
             return None
@@ -2547,7 +2572,7 @@ class Dispatcher:
         if (job.kind not in ("build", "role") or not job.issue or self.dry_run
                 or not any("timed out after" in e for e in result.errors)):
             return
-        minutes = round(workers_mod.RUN_TIMEOUT / 60)
+        minutes = round(self.policy("run_timeout_seconds") / 60)
         try:
             if branch and self.pushed_commits(branch):
                 kept = f"Its work was preserved on branch `{branch}`; the next attempt continues from it."
@@ -2589,7 +2614,7 @@ class Dispatcher:
         streak = self.ledger.room_error_streaks(self.project).get(task, (0, 0))[0] if task else 0
         m = BRANCH.match((job.pr or {}).get("headRefName") or "")
         n = job.issue["number"] if job.issue else int(m.group(1)) if m else None
-        if streak != ROOM_ERROR_ESCALATE or n is None or self.dry_run:
+        if streak != self.policy("room_error_escalate") or n is None or self.dry_run:
             return
         try:
             if job.issue:   # a build stops here; a review keeps backing off while the director looks
@@ -2786,7 +2811,7 @@ class Dispatcher:
 
     def headless_note(self) -> str:
         extra = self.prompt_text("headless")
-        minutes = round(workers_mod.RUN_TIMEOUT / 60)
+        minutes = round(self.policy("run_timeout_seconds") / 60)
         deadline = " " + fill_way(self.ways["deadline"], minutes=minutes, push_by=minutes - 15)
         return "\n\n" + self.ways["headless"] + deadline + " " + self.trust_note() + (f" {extra}" if extra else "")
 
@@ -3049,7 +3074,8 @@ class Dispatcher:
         now = time.time()
         limit = float((self.cfg.get("breakers") or {}).get("progress_spend_limit", 10.0))
         trip = check_progress(self.ledger, self.project, now, spend_limit=limit,
-                              attribute=(self.cfg.get("share") or {}).get("max") is not None)
+                              attribute=(self.cfg.get("share") or {}).get("max") is not None,
+                              min_work=self.policy("progress_min_work_seconds"))
         if trip:
             self.ledger.trip(self.project, trip["kind"], trip["detail"], now=now)
             self.escalate_breaker(trip)
