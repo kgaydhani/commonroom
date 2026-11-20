@@ -938,13 +938,14 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
     long-running view on old code can never re-trip a breaker the current code would not."""
     now = time.time() if now is None else now
     # A project in the pie's registry keeps back the owner's unused slice, on its own settings (commonroom#241).
-    owner_gate = owner_reserve.for_project(ledger, cfg)   # None: today's gate, unchanged
-    cfg = owner_gate.cfg if owner_gate else cfg
+    owner_gate, passed = owner_reserve.for_project(ledger, cfg), cfg   # None: today's gate, unchanged
     project = cfg["project"].get("name")
     n = cfg["breakers"]["no_output_runs"]
     result = {}
     disk = disk_verdict(cfg, ledger)
     for provider in ("claude", "codex"):
+        cfg, policy, made_from, note = (owner_gate.gate(ledger, provider, now) if owner_gate
+                                        else (passed, config_mod.budget(passed, provider), None, None))
         # A provider that keeps producing nothing is held on its own; the other keeps working.
         # Breakers named `kind:provider` hold that provider only; owner/auditor pauses and no_progress hold everything.
         # Runs from before the latest reset of this breaker are not counted, or a reset would re-trip at once.
@@ -960,12 +961,11 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
             continue
         if tripped and trip:
             ledger.trip(project, f"{tripped['kind']}:{provider}", tripped["detail"], now=now)
-        policy = config_mod.budget(cfg, provider)
-        if owner_gate:
-            policy, made_from = owner_gate.policy(ledger, provider, policy, now)
         v = gate.usage_verdict(provider, ledger.latest_usage(provider), policy, now, cfg["freshness_seconds"])
-        if owner_gate:
+        if made_from:
             v.detail["owner_reserve"] = made_from
+        if note:
+            v = gate.Verdict(v.allowed, f"{v.reason}; {note}", v.detail, v.stop_running)
         cool = ledger.cooldown(provider, now)
         if v.allowed and cool:
             v = gate.Verdict(False, f"{provider}: {cool['reason']}; resting until "

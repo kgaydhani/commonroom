@@ -138,14 +138,11 @@ class Gate(Room):
         self.assertEqual(dispatch.verdicts(self.ledger, cfg_with(self.root), self.now)["codex"].reason,
                          "codex: weekly window nearly empty (96% used)")
 
-    def test_standings_that_cant_be_made_leave_the_projects_own_budget(self):
+    def test_with_no_current_weekly_reading_the_gate_is_todays_with_a_note(self):
         self.registry()
-        self.spend(20, 30, 10)
-        with mock.patch.object(standings, "standings", side_effect=RuntimeError("boom")):
-            v = self.verdict()
-        self.assertFalse(v.allowed)                                 # today's rule on its own [budget]: 60 > 45.5 pace
-        self.assertIn("ahead of weekly pace", v.reason)
-        self.assertIn("boom", v.detail["owner_reserve"]["unknown"])
+        v = self.verdict()
+        self.assertEqual(v.reason, "claude: no five_hour reading yet; the pie can't be read (it has no current weekly "
+                                   "reading), so today's gate applies")
 
     def test_the_estimate_is_made_again_only_when_the_meter_moves(self):
         self.registry()
@@ -205,7 +202,7 @@ class Guest(Room):
     def test_a_registered_guest_keeps_its_own_budget(self):
         self.assertEqual(self.verdict("other").reason, "claude: weekly reserve reached (40% used, 65% kept back)")
         v = self.verdict("alpha")
-        self.assertTrue(v.allowed, v.reason)                        # nor the host's 5-hour reserve of 50: 20% used
+        self.assertTrue(v.allowed, v.reason)
         self.assertEqual(v.detail["owner_reserve"]["reserve_weekly"], 30)   # slice 70, all 40 points the owner's
 
     def test_a_registered_guest_is_not_stopped_by_its_hosts_breakers(self):
@@ -222,6 +219,55 @@ class Guest(Room):
         self.assertEqual(cfg["budget"]["claude"]["reserve_weekly"], 65)                   # the host's, as today
         self.assertEqual(cfg["_own"]["budget"]["claude"]["reserve_weekly"], 25)           # its own: the default
         self.assertEqual(set(cfg["_own"]), set(config.GATE_KEYS))
+        self.assertEqual(cfg["_own_budget"], {})                                          # its file sets none
+
+    def test_the_5_hour_reserve_stays_todays_unless_the_registry_or_its_own_room_toml_sets_one(self):
+        self.ledger.record_usage([usage.observation("claude", "five_hour", 60, self.now + H, "test"),
+                                  usage.observation("claude", "seven_day", 20, self.resets, "test")], now=self.now - 30)
+        held = "claude: 5-hour reserve reached (60% used, 50% kept back)"
+        self.assertEqual(self.verdict("other").reason, held)
+        self.assertEqual(self.verdict("alpha").reason, held)                 # the host's 50, inherited today, stays
+        folder = self.root / "work" / "alpha"
+        (folder / "room.toml").write_text((folder / "room.toml").read_text(encoding="utf-8")
+                                          + "[budget.claude]\nreserve_5h = 20\n", encoding="utf-8")
+        self.guests["alpha"] = config.load(folder / "room.toml")
+        self.assertTrue(self.verdict("alpha").allowed, self.verdict("alpha").reason)   # its own room.toml's 20
+        registry.save(Registry(registry.load().projects, {"reserve_5h": 70}))
+        self.assertEqual(self.verdict("alpha").reason, "claude: 5-hour reserve reached (60% used, 70% kept back)")
+
+    def test_when_the_standings_fail_a_registered_guest_gets_todays_gate_with_a_note(self):
+        with mock.patch.object(standings, "standings", side_effect=RuntimeError("boom")):
+            v, today = self.verdict("alpha"), self.verdict("other")
+            self.assertEqual(v.reason, today.reason + "; the pie can't be read (its standings can't be computed: "
+                                                      "boom), so today's gate applies")
+            self.assertEqual(today.reason, "claude: weekly reserve reached (40% used, 65% kept back)")
+            self.assertEqual((v.allowed, v.stop_running), (today.allowed, today.stop_running))
+            self.assertIn("boom", v.detail["owner_reserve"]["unknown"])
+            # Today's breakers too: the host's pause holds it again.
+            self.ledger.record_usage([usage.observation("claude", "seven_day", 20, self.resets, "test")],
+                                     now=self.now - 30)
+            self.ledger.trip("game", "paused_by_auditor", "owner pause")
+            self.assertEqual(self.verdict("alpha").reason, "breaker open: paused_by_auditor - owner pause")
+
+    def test_a_registry_that_cant_be_read_gives_todays_gate_with_a_note(self):
+        today = "claude: weekly reserve reached (40% used, 65% kept back)"
+        alpha = (self.root / "work" / "alpha").as_posix()
+        # A registry that lists alpha but breaks a rule: alpha gets today's gate with a note; other, unlisted, today's.
+        (self.home / registry.FILENAME).write_text(f'[projects.alpha]\npath = "{alpha}"\nshare = 200\n', encoding="utf-8")
+        v = self.verdict("alpha")
+        self.assertEqual(v.reason, today + "; the pie can't be read (the project registry can't be read: project "
+                                           "'alpha': 'share' must be a number from 0 to 100, not 200; shares sum to "
+                                           "200, more than 100), so today's "
+                                           "gate applies")
+        self.assertTrue(v.stop_running)
+        self.assertEqual(self.verdict("other").reason, today)
+        # One that isn't TOML at all may list anyone: both get the note.
+        (self.home / registry.FILENAME).write_text("[projects.alpha\n", encoding="utf-8")
+        for key in ("alpha", "other"):
+            v = self.verdict(key)
+            self.assertTrue(v.reason.startswith(today + "; the pie can't be read (the project registry can't be read: "
+                                                        "projects.toml is not valid TOML"), v.reason)
+            self.assertTrue(v.reason.endswith("), so today's gate applies"), v.reason)
 
 
 class Unchanged(Room):

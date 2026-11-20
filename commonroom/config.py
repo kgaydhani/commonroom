@@ -112,6 +112,7 @@ def load(path: Path | None = None, follow_host: bool = True) -> dict:
             host_cfg = load(host_path, follow_host=False)
             # Its own settings are kept: a project in the pie's registry is nobody's guest (commonroom#241).
             cfg["_own"] = {key: copy.deepcopy(cfg[key]) for key in GATE_KEYS}
+            cfg["_own_budget"] = copy.deepcopy(data.get("budget") or {})   # only what its own file sets
             for key in GATE_KEYS:
                 cfg[key] = copy.deepcopy(host_cfg[key])
             cfg["_host"] = host_cfg["project"].get("name")
