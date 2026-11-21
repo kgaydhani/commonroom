@@ -38,7 +38,7 @@ director_paths = ["commonroom/gate.py", "commonroom/config.py", "room.toml", "co
 carry_tested_approval = true
 
 [roles]
-# All Claude: one Claude dispatcher serves this project. Codex's sandbox notes come from [prompts] codex, unset here.
+# Claude builds and reviews. Codex takes parallel routine builds (codex_parallel_builds below); Claude Opus reviews them.
 director = ["claude:opus"]
 # Director 2026-10-14 (#119): the weekly Claude allowance is the limit, and size:S builds with written criteria are
 # routine. Sonnet builds them, and Opus still builds size:L/risk:high/builder:heavy and reviews everything. Back to
@@ -48,7 +48,13 @@ builder_heavy = ["claude:opus"]
 reviewer = ["claude:opus"]
 reviewer_high_risk = ["claude:opus"]
 scout = ["claude:opus"]
-codex_parallel_builds = false
+# Director 2026-11-21 (#275): Codex had a whole week unused while Claude was at 49% with 28% of the week gone. Codex
+# takes the second routine ready task (never size:L, risk:high or builder:heavy) and Claude Opus reviews and tests it.
+# Back to false if 2 of the first 4 Codex builds are bounced for correctness, or one breaks main or the live room.
+codex_parallel_builds = true
+
+[prompts]
+codex = "Seven of this repo's tests fail only inside the Codex sandbox (commonroom#184): the git clone/push tests in test_self_serve.LiveCheckout and test_dispatch (msys sh.exe CreateFileMapping), two test_scratch_env tests that write outside the worktree, and test_another_projects_workers_are_not_the_owner. If those are your only failures, push and name them in the PR; the reviewer runs the suite outside the sandbox."
 
 [parallel]
 # One slot: the heartbeat starts a single Claude dispatcher for this project.

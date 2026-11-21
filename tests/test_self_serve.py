@@ -642,6 +642,15 @@ class PullSafety(unittest.TestCase):
         self.assertTrue(room[0].strip().startswith('if exist "%~dp0room.toml" start'))
         self.assertTrue(block[-2].strip().endswith('--provider claude >> "%LOGS%\\heartbeat-claude.log" 2>&1'))
 
+    def test_heartbeat_runs_the_rooms_codex_dispatcher_inside_one_block(self):
+        """commonroom#275: Common Room's own Codex dispatcher, from this checkout, with its own log."""
+        lines = (REPO / "heartbeat.cmd").read_text(encoding="utf-8").splitlines()
+        start, end = lines.index("("), len(lines) - 1 - lines[::-1].index(")")
+        room = [l for l in lines[start + 1:end] if "heartbeat-commonroom-codex.log" in l]
+        self.assertEqual(len(room), 1)
+        self.assertTrue(room[0].strip().startswith('if exist "%~dp0room.toml" start "" /b /d "%~dp0."'))
+        self.assertIn("run --until-idle --provider codex >>", room[0])
+
 
 
 class CarriedStamp(Base):
