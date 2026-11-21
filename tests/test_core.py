@@ -325,8 +325,10 @@ class RedditResearch(unittest.TestCase):
     def test_archive_error_body_is_kept(self):
         import io, os, urllib.error
         body = b'{"data":null,"error":"Timeout. Maybe slow down a bit"}'
+        raised = []
         def refuse(req, timeout=None):
-            raise urllib.error.HTTPError(req.full_url, 422, "Unprocessable Entity", {}, io.BytesIO(body))
+            raised.append(urllib.error.HTTPError(req.full_url, 422, "Unprocessable Entity", {}, io.BytesIO(body)))
+            raise raised[-1]
         orig, home = reddit.urllib.request.urlopen, os.environ.get("COMMONROOM_HOME")
         with tempfile.TemporaryDirectory() as tmp:
             os.environ["COMMONROOM_HOME"] = tmp                               # the pacing stamp stays out of ~/.commonroom
@@ -338,6 +340,7 @@ class RedditResearch(unittest.TestCase):
                 reddit.urllib.request.urlopen = orig
                 os.environ.pop("COMMONROOM_HOME") if home is None else os.environ.update(COMMONROOM_HOME=home)
         self.assertEqual(str(caught.exception), "HTTP 422: Timeout. Maybe slow down a bit")
+        self.assertTrue(raised[0].fp.closed)       # closed, so no stray ResourceWarning lands on another test's stderr (#301)
 
 
 class Services(unittest.TestCase):
