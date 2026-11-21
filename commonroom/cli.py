@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
+from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
@@ -772,7 +772,9 @@ def _pie_json(report: standings.Report | None, now: float) -> dict | None:
             "projects": [{"name": s.name, "share": s.share, "when": s.when, "strict": s.strict, "spent_est": s.spent,
                           "room_est": report.room(s.name), "own_sessions_est": report.own.get(s.name, 0.0),
                           "line": s.allowed, "headroom_est": s.headroom} for s in report.rows],
-            **({"raises": report.raises} if report.raises else {})}
+            **({"raises": report.raises} if report.raises else {}),
+            **({"away_until": report.away_until, "lent": report.lent,
+                "lent_total": sum(report.lent.values())} if report.away_until is not None else {})}
 
 
 def _weekly_json(found: list, moved) -> dict:
@@ -843,6 +845,10 @@ def cmd_pie(args) -> int:
         if now - w.observed_at > config_mod.DEFAULTS["freshness_seconds"]:
             print(f"  STALE: the latest reading is from {_clock(w.observed_at)}, {_ago(now - w.observed_at)} old; "
                   "use since then is not counted, and the lines are for now")
+        if report.away_until is not None:
+            print(f"  owner AWAY until {datetime.fromtimestamp(report.away_until).strftime('%a %d %b %H:%M')}: "
+                  f"{sum(report.lent.values()):.1f} points of his slice lent ("
+                  + ", ".join(f"{k} +{v:.1f}" for k, v in sorted(report.lent.items())) + ")")
         others = "".join(f"; {name} (not registered) est. {pct:.1f}%" for name, pct in sorted(report.unregistered.items()))
         print(f"  projects est. {report.projects_total:.1f}%{others}; owner's slice "
               f"{registry.fmt_number(report.owner_share)}, his own use est. {report.owner_use:.1f}%")
@@ -855,6 +861,36 @@ def cmd_pie(args) -> int:
             if pie_notice.over(report, s.name):
                 print(f"  OVER ITS SHARE: {pie_notice.text(reg, report, s.name, s)}")
     return 0
+
+
+def cmd_away(args) -> int:
+    """`room away until <date>`, `room away`, `room away --clear`: the owner's return, kept beside the registry. It only
+    changes shares and reserves; it never resumes, clears a breaker or starts anything."""
+    words, now = args.words, time.time()
+    try:
+        if args.clear:
+            print("away cleared" if away.clear() else "not away: nothing to clear")
+            return 0
+        if not words:
+            until = away.load()
+            if until is None or until <= now:
+                print("not away" + (" (the stored return time has passed)" if until else ""))
+            else:
+                print(f"away until {datetime.fromtimestamp(until).strftime('%a %d %b %Y %H:%M')}; `room pie` shows "
+                      "how many points are lent")
+            return 0
+        if words[0] != "until" or len(words) < 2:
+            print("use: room away until <date or 'date time'>, room away, or room away --clear", file=sys.stderr)
+            return 1
+        until = away.parse(" ".join(words[1:]))
+        if until <= now:
+            raise registry.RegistryError("that time has already passed")
+        away.save(until)
+        print(f"away until {datetime.fromtimestamp(until).strftime('%a %d %b %Y %H:%M')}: saved {away.path()}")
+        return 0
+    except (registry.RegistryError, OSError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
 
 
 def cmd_reddit(args) -> int:
@@ -920,6 +956,7 @@ def main(argv: list[str] | None = None) -> int:
     q = ps.add_parser("set", help="change a project's share or mode"); q.add_argument("name"); q.add_argument("--share", type=float)
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
+    p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")

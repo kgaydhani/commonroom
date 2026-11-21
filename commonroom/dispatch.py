@@ -1024,7 +1024,8 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
         if v.allowed and cool:
             v = gate.Verdict(False, f"{provider}: {cool['reason']}; resting until "
                                     f"{time.strftime('%H:%M', time.localtime(cool['until']))}", v.detail)
-        if provider == "claude" and v.allowed:
+        away_now = bool(made_from and made_from.get("away_until"))   # no session of his to protect (commonroom#255)
+        if provider == "claude" and v.allowed and not away_now:
             owner = cfg.get("owner") or {}
             minutes = owner.get("active_minutes", 20)
             elsewhere = usage.owner_active(cfg.get("_root"), minutes, now=now,

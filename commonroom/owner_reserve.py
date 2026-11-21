@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from commonroom import config as config_mod, policy as policy_mod, raises, registry as registry_mod, sessions
+from commonroom import away, config as config_mod, policy as policy_mod, raises, registry as registry_mod, sessions
 from commonroom import standings as standings_mod
 from commonroom.registry import Registry
 
@@ -67,11 +67,15 @@ class OwnerGate:
         if problem:
             note = f"the pie can't be read ({problem}), so today's gate applies"
             return self.today, config_mod.budget(self.today, provider), {"unknown": note}, note
-        owner_share, owner_use = found
+        owner_share, owner_use, away_until = found
         policy = dict(config_mod.budget(self.cfg, provider), weekly_pace_check=False,
                       reserve_weekly=reserve(owner_share, owner_use), reserve_5h=self.reserve_5h(provider))
-        return self.cfg, policy, {"owner_share": owner_share, "owner_use": round(owner_use, 1), "floor": FLOOR,
-                                  "reserve_weekly": policy["reserve_weekly"]}, None
+        detail = {"owner_share": owner_share, "owner_use": round(owner_use, 1), "floor": FLOOR,
+                  "reserve_weekly": policy["reserve_weekly"]}
+        if away_until is not None:   # no session of his to protect: no 5-hour reserve, and no owner-active cap
+            policy["reserve_5h"] = 0
+            detail["away_until"] = away_until
+        return self.cfg, policy, detail, None
 
     def headroom(self, ledger, provider: str, now: float, transcripts: Path | None = None) -> float | None:
         """Points this project sits under its own line in the pie (its line less its estimated spend), or None when
@@ -117,8 +121,8 @@ def for_project(ledger, cfg: dict) -> OwnerGate | None:
     return OwnerGate(key, reg, own, cfg)
 
 
-def _owner(ledger, reg: Registry, provider: str, now: float, transcripts: Path | None) -> tuple[float, float] | None:
-    """(the owner's slice, his estimated own use) on `provider`, or None with no current weekly window. A failure is
+def _owner(ledger, reg: Registry, provider: str, now: float, transcripts: Path | None) -> tuple[float, float, float | None] | None:
+    """(the owner's slice, his estimated own use, his return time while he is away) on `provider`, or None with no current weekly window. A failure is
     remembered like a result, so it isn't retried on every line a worker prints."""
     latest = ledger.latest_usage(provider).get(standings_mod.WINDOW)
     try:
@@ -126,12 +130,13 @@ def _owner(ledger, reg: Registry, provider: str, now: float, transcripts: Path |
         stamp = (transfers.st_mtime_ns, transfers.st_size)
     except FileNotFoundError:
         stamp = None
-    made_from = (registry_mod.dumps(reg), latest and (latest["used_pct"], latest["resets_at"], now < (latest["resets_at"] or 0)), stamp)
+    made_from = (registry_mod.dumps(reg), latest and (latest["used_pct"], latest["resets_at"], now < (latest["resets_at"] or 0)), stamp,
+                 _away_stamp(ledger, now, transcripts))
     cached = _CACHE.get((str(ledger.path), provider))
     if not (cached and cached[0] == made_from):
         try:
             report = standings_mod.standings(ledger, reg, provider, now, transcripts)
-            cached = (made_from, None if report is None else (report.owner_share, report.owner_use), None,
+            cached = (made_from, None if report is None else (report.owner_share, report.owner_use, report.away_until), None,
                       {} if report is None else {row.name: row.headroom for row in report.rows})
         except Exception as exc:
             cached = (made_from, None, exc, {})
@@ -139,3 +144,15 @@ def _owner(ledger, reg: Registry, provider: str, now: float, transcripts: Path |
     if cached[2] is not None:
         raise cached[2]
     return cached[1]
+
+
+def _away_stamp(ledger, now: float, transcripts: Path | None) -> tuple:
+    """What the away state depends on, so a cached estimate is made again when it changes: the stored return time, and
+    (while it is ahead) whether a session of the owner's is active."""
+    try:
+        until = away.load(away.path(Path(ledger.path).parent))
+    except registry_mod.RegistryError:
+        return ("unreadable",)
+    if until is None or until <= now:
+        return (None,)
+    return (until, away.owner_is_active(now, exclude=ledger.worker_dirs(now - 20 * 60), transcripts=transcripts))
