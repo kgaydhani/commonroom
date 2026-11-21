@@ -66,6 +66,12 @@ class LookBeforeBuilding(unittest.TestCase):
         picked, _, _ = self.run_check([self.feature(extra=["scout:waived"])])
         self.assertEqual(picked, [10])
 
+    def test_a_feature_outside_the_goal_milestone_gets_no_comment_and_no_lookup(self):
+        other = issue(10, READY + ["kind:feature"], body="Scouted: #5", milestone="M9")
+        picked, d, board = self.run_check([other, issue(5, ["role:scout"])])
+        self.assertEqual(picked, [])
+        self.assertFalse(getattr(board, "comments", []))
+
     def test_flag_off_or_absent_changes_nothing(self):
         picked, _, board = self.run_check([self.feature()], on=False)
         self.assertEqual(picked, [10])

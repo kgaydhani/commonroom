@@ -2511,9 +2511,10 @@ class Dispatcher:
         def blocked(i: dict) -> bool:
             return not merge_main_only(i) and any(n != i["number"] and areas(i) & held_areas for n, held_areas in held)
         ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
-                 and f"#{i['number']}" not in running and not blocked(i) and self.scouted(i)
+                 and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
-                      or any(l.startswith("provider:") for l in labels(i)))]
+                      or any(l.startswith("provider:") for l in labels(i)))
+                 and self.scouted(i)]
         # With none held, only the top issue per area is offered, so the Codex path's second pick can't share an area.
         taken: set[str] = set()
         chosen = set()
