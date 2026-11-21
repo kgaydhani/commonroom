@@ -53,7 +53,10 @@ def _get(url: str) -> dict:
     except urllib.error.HTTPError as exc:
         # The archives say why in the body. Without it a 422 read as "HTTP Error 422: Unprocessable Entity" and was
         # blamed on the wrong parameter; the body said "Timeout. Maybe slow down a bit" (commonroom#26).
-        body = exc.read().decode("utf-8", "replace")
+        # Close it here: a caller that keeps the RuntimeError keeps exc alive as its __context__, and an unclosed
+        # HTTPError later prints "ResourceWarning: Implicitly cleaning up" on whatever stderr is live (commonroom#301).
+        with exc:
+            body = exc.read().decode("utf-8", "replace")
         try:
             reason = json.loads(body).get("error") or body
         except (ValueError, AttributeError):
