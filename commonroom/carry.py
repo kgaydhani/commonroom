@@ -34,6 +34,15 @@ def comment(result: str, head: str, command: str, line: str, approval_at: str, t
             f"of main, so the approval is not carried: the PR goes back to review (commonroom#226).")
 
 
+def decided_comment(result: str, head: str, command: str, line: str) -> str:
+    """The room's comment after it ran the tests on a PR the director decided to merge (commonroom#306): no reviewer
+    approval is carried, so there is no CARRIES line."""
+    first = f"TESTS: {result} {head} {command}: {line}"
+    if result == "PASS":
+        return f"{first}\n\nThe director approved this head; the tests pass on it, so it merges on their decision."
+    return f"{first}\n\nThe director approved this head, but the tests did not pass on it, so it is not merged."
+
+
 def parse(body: str | None) -> dict | None:
     """{result, head, line, approval_at, tested} from a room test comment, else None. `approval_at` and `tested` are
     '' unless it is a PASS that names the approval it carries."""
