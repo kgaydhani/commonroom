@@ -8,8 +8,8 @@ from commonroom import steward
 NOW = calendar.timegm((2026, 11, 21, 12, 0, 0))
 
 
-def issue(n, labels=(), body="", state="OPEN", updated=None):
-    d = {"number": n, "state": state, "body": body, "labels": [{"name": l} for l in labels]}
+def issue(n, labels=(), body="", state="OPEN", updated=None, milestone="M"):
+    d = {"milestone": {"title": milestone} if milestone else None, "number": n, "state": state, "body": body, "labels": [{"name": l} for l in labels]}
     if updated:
         d["updatedAt"] = updated
     return d
@@ -21,13 +21,18 @@ def slugs(found):
 
 class Invariants(unittest.TestCase):
     def test_unplaced_fires(self):
-        found = steward.check([issue(1, ["bug"])], [], [], NOW)
+        found = steward.check([issue(1, ["bug"])], [], [], NOW, "M")
         self.assertEqual(slugs(found), [("unplaced", 1)])
         self.assertTrue(found[0]["detail"])
 
+    def test_only_the_goal_milestone_counts_as_unplaced(self):
+        board = [issue(1, ["bug"]), issue(2, ["bug"], milestone="Other"), issue(3, ["bug"], milestone=None)]
+        self.assertEqual(slugs(steward.check(board, [], [], NOW, "M")), [("unplaced", 1)])
+        self.assertEqual(steward.check(board, [], [], NOW), [])   # no milestone configured: nothing
+
     def test_parked_and_closed_are_not_unplaced(self):
         board = [issue(1, ["parked"]), issue(2, [], state="CLOSED"), issue(3, ["claim:external"])]
-        self.assertEqual(steward.check(board, [], [], NOW), [])
+        self.assertEqual(steward.check(board, [], [], NOW, "M"), [])
 
     def test_blocked_on_nothing_fires(self):
         board = [issue(1, ["status:blocked"], "Depends on #2"), issue(2, [], state="CLOSED"),
