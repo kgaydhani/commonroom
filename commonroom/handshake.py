@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from commonroom import config as config_mod, ledger as ledger_mod, metrics, progress as progress_mod, registry
+from commonroom import config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry
 from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -322,6 +322,18 @@ def _board(ledger: Ledger, p: registry.Project) -> str | None:
     return "\n".join(f"- {f['detail']}" for f in found) if found else "Nothing stale."
 
 
+def _measure(ledger: Ledger, p: registry.Project) -> str | None:
+    """The project's last readings of its own number (commonroom#324), newest first; None if it has none."""
+    found = ledger.readings(ledger_name(p), measure.SHOWN)
+    if not found:
+        return None
+    lines = []
+    for r in found:
+        said = (r["line"] or "(no output)") if r["exit_code"] == 0 else f"FAILED (exit {r['exit_code']}) {r['line']}".rstrip()
+        lines.append(f"- {datetime.fromtimestamp(r['at']):%a %d %b %H:%M}: {r['label']}: {said}")
+    return "\n".join(lines)
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
@@ -329,7 +341,10 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
     board = _board(ledger, p)
-    return text + "\n" + f"## Board check, latest sweep\n{board}" + "\n" if board else text
+    if board:
+        text = text + "\n" + f"## Board check, latest sweep\n{board}" + "\n"
+    shown = _measure(ledger, p)
+    return text + "\n" + f"## Measure\n{shown}" + "\n" if shown else text
 
 
 def refresh(reg: registry.Registry, p: registry.Project, now: float | None = None, who: str | None = None) -> str:

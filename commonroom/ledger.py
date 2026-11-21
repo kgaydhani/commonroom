@@ -72,6 +72,13 @@ CREATE TABLE IF NOT EXISTS findings (
     since REAL NOT NULL,
     PRIMARY KEY (project, invariant, number)
 );
+CREATE TABLE IF NOT EXISTS readings (
+    project TEXT NOT NULL,
+    at REAL NOT NULL,
+    label TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    line TEXT NOT NULL
+);
 """
 
 
@@ -393,6 +400,17 @@ class Ledger:
     def marked(self, project: str | None, key: str) -> float | None:
         row = self.db.execute("SELECT at FROM marks WHERE project=? AND key=?", (project or "", key)).fetchone()
         return row["at"] if row else None
+
+    def record_reading(self, project: str | None, label: str, exit_code: int, line: str, at: float | None = None):
+        with self.db:
+            self.db.execute("INSERT INTO readings (project, at, label, exit_code, line) VALUES (?,?,?,?,?)",
+                            (project or "", time.time() if at is None else at, label, exit_code, line))
+
+    def readings(self, project: str | None, limit: int = 5) -> list[dict]:
+        """The project's latest measure readings (commonroom#324), newest first."""
+        rows = self.db.execute("SELECT at, label, exit_code, line FROM readings WHERE project=? ORDER BY at DESC LIMIT ?",
+                               (project or "", limit)).fetchall()
+        return [dict(r) for r in rows]
 
     SWEEP = "steward-sweep"   # mark: when the steward last swept the project's board
 
