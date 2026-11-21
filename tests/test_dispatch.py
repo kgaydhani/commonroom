@@ -455,6 +455,35 @@ class WithLedger(unittest.TestCase):
         issues[-1] = issue(119, ["needs:director"], milestone=None)
         self.assertEqual(d.director_trigger(), "#119 escalated to the director")
 
+    def test_director_wakes_for_unlabelled_agent_filed_issues(self):
+        issues = [issue(30, ["status:ready", "role:builder"])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        issues.append(issue(40, [], body="[agent:reviewer] found a flaw", milestone=None))
+        self.assertEqual(d.director_trigger(),
+                         "#40 was filed by an agent and is untriaged: make it ready, park it or close it")
+        for labelled in (["parked"], ["status:ready"]):
+            issues[-1] = issue(40, labelled, body="[agent:reviewer] found a flaw", milestone=None)
+            self.assertIsNone(d.director_trigger())
+        issues[-1] = issue(40, [], body="Owner wrote this", milestone=None)
+        self.assertIsNone(d.director_trigger())
+
+    def test_unlabelled_agent_issues_are_capped_at_five_oldest_first(self):
+        issues = [issue(n, [], body="[agent:scout] x", milestone=None) for n in (57, 51, 52, 53, 54, 55, 56)]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        trigger = d.director_trigger()
+        self.assertEqual(trigger.count("was filed by an agent"), 5)
+        for n in range(51, 56):
+            self.assertIn(f"#{n} was filed", trigger)
+        self.assertNotIn("#56 ", trigger)
+        self.assertNotIn("#57 ", trigger)
+
+    def test_unlabelled_agent_issue_respects_the_director_cooldown(self):
+        issues = [issue(40, [], body="[agent:reviewer] x", milestone=None)]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        last = self.ledger.start_run("t", None, "director", "claude", now=time.time() - 60)
+        self.ledger.finish_run(last, "done", outputs=[{"kind": "director", "ref": "x"}], now=time.time() - 30)
+        self.assertIsNone(d.director_trigger())
+
     def test_escalation_for_the_interactive_session_does_not_wake_the_director(self):
         cfg = cfg_with(self.tmp.name)
         cfg["director"] = config.DEFAULTS["director"]

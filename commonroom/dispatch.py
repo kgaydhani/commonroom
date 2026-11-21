@@ -2566,6 +2566,11 @@ class Dispatcher:
                     reasons.append(f"#{issue['number']} escalated to the director")
             if "kind:suggestion" in names and "triaged" not in names:
                 reasons.append(f"#{issue['number']} is an untriaged owner suggestion")
+        # Agents file the work they find with no labels and no milestone; nobody else would notice it.
+        untriaged = sorted(i["number"] for i in every_open
+                           if not labels(i) and (i.get("body") or "").lstrip().startswith("[agent:"))
+        reasons += [f"#{n} was filed by an agent and is untriaged: make it ready, park it or close it"
+                    for n in untriaged[:5]]
         open_issues = [i for i in every_open
                        if self.milestone and (i.get("milestone") or {}).get("title") == self.milestone]
         for issue in open_issues:
