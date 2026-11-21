@@ -44,6 +44,7 @@ INTERACTIVE_PHRASE = "interactive session"
 # names hold the room's values; a Dispatcher reads a number through `Dispatcher.policy`, which applies its project's
 # `[policy]` overrides (POLICY_CONSTANTS maps the names).
 POLICY = policy_mod.DEFAULTS
+AUDIT_MODEL_WINDOW_MAX = 75   # an audit waits while a model's own weekly window is past this: a quarter is the owner's
 READER_COOLDOWN = 1800   # seconds between launches of a provider's meter reader, all processes together
 DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 # What the room tells workers lives in commonroom/ways/prompts/<name>.md, not here (commonroom#216). `{{name}}` marks a
@@ -1243,6 +1244,7 @@ class Dispatcher:
         self.ways = ways_for(cfg)   # the prompt templates, with the project's `[ways] dir` overrides (commonroom#216)
         # The numbers this project sets under `[policy]` (commonroom#217); an unknown name fails here, naming it.
         self.policy_overrides = policy_mod.overrides(cfg)
+        self.model_skips_logged: set = set()   # (provider, model, window, resets_at): each skip is logged once
 
     def policy(self, name: str) -> int:
         """A ways-of-working number from commonroom/ways/policy.toml: this project's `[policy]` value if it set one,
@@ -2433,7 +2435,27 @@ class Dispatcher:
         return [f"PR #{pr['number']} CI red ({names}); #{issue_no} back to its builder"]
 
     # Choosing work ---------------------------------------------------------------------------------
+    def model_skip(self, provider: str, model: str | None, now: float | None = None) -> str | None:
+        """Why the room's work skips `provider:model` for the next entry of a role's list (commonroom#256, part 3): the
+        model's own weekly window is past its line, or unknown. None with no per-model window for it (one weekly
+        window only: everything as before). The window's name carries the model, so no model name is written here."""
+        if not model:
+            return None
+        now = time.time() if now is None else now
+        found = weekly.windows(self.ledger, provider, now)
+        why = weekly.skip_reason(model, found, config_mod.budget(self.cfg, provider), now)
+        if why:
+            window = weekly.window_for(model, [p.window for p in found])
+            resets = next((p.resets_at for p in found if p.window == window), None)
+            key = (provider, model, window, round((resets or 0) / 3600))
+            if key not in self.model_skips_logged:
+                self.model_skips_logged.add(key)
+                self.log(f"   {provider}:{model} skipped for the next model in the role's list: {why}")
+        return why
+
     def choose(self, spec: list[str], allowed: dict[str, gate.Verdict], exclude: str | None = None):
+        spec = [e for e in spec if e.partition(":")[0] not in allowed or not allowed[e.partition(":")[0]].allowed
+                or not self.model_skip(e.partition(":")[0], e.partition(":")[2] or None)]
         choice = choose_provider(spec, allowed, exclude=exclude) or (choose_provider(spec, allowed) if exclude else None)
         if choice and self.only_provider and choice[0] != self.only_provider:
             return None
@@ -2745,10 +2767,13 @@ class Dispatcher:
         every = float(audit.get("every_hours", 1))
         last = self.last_run_at("auditor")
         age = time.time() - last
-        # Fable has its own weekly window: keep a quarter of it for the owner.
-        fable = self.ledger.latest_usage("claude").get("seven_day_fable")
-        if fable and fable["used_pct"] > 75:
-            return None
+        # A model's own weekly window (the top model's): keep a quarter of it for the owner, and hold while one seen
+        # this week is missing from the latest reading, so unknown, never free (axiom A5; commonroom#256).
+        now = time.time()
+        for provider in sorted({e.partition(":")[0] for e in self.roles.get("auditor", ["claude:fable"])}):
+            if any(weekly.model_part(p.window) and (not p.known or p.used_pct > AUDIT_MODEL_WINDOW_MAX)
+                   for p in weekly.windows(self.ledger, provider, now)):
+                return None
         activity = [r for r in self.ledger.recent_runs(self.project, limit=200)
                     if r["started_at"] > last and r["role"] not in ("auditor",)
                     and not (r["role"] == "merge" and any(o.get("quiet") for o in r["outputs"]))]
