@@ -147,6 +147,11 @@ class Ledger:
                                  (provider, *usage.READER_SOURCES)).fetchone()["t"]
         return {r["window"]: dict(r) for r in rows if reader is None or r["observed_at"] >= reader}
 
+    def windows_seen(self, provider: str, since: float) -> list[str]:
+        """Every window of `provider` with a reading seen since `since`."""
+        return [r["window"] for r in self.db.execute(
+            "SELECT DISTINCT window FROM usage WHERE provider=? AND observed_at>=? ORDER BY window", (provider, since))]
+
     def usage_history(self, provider: str, window: str, since: float) -> list[dict]:
         rows = self.db.execute(
             "SELECT first_seen, observed_at, used_pct, resets_at FROM usage WHERE provider=? AND window=? "

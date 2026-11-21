@@ -226,6 +226,10 @@ function renderUsage(u){
     for(const w of ['five_hour','seven_day']){const x=v.windows[w];if(!x)continue;const cap=w=='seven_day'?v.detail.weekly_pace:v.detail.five_hour_cap;
       h+=`<div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i>${cap!=null?`<b style="left:${Math.min(100,cap)}%" title="pace limit"></b>`:''}</div>
           <div class="barlabel"><span>${w=='five_hour'?'5-HOUR':'WEEKLY'} ${x.used_pct.toFixed(0)}%</span><span>RESETS ${clock(x.resets_at).toUpperCase()}</span></div>`}
+    for(const x of (v.weekly||[])){const m=x.window=='seven_day'?'':x.window.replace(/^seven_day[_:]/,'').toUpperCase();
+      if(m&&x.used_pct!=null)h+=`<div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i></div>
+          <div class="barlabel"><span>WEEKLY ${esc(m)} ${x.used_pct.toFixed(0)}%</span><span>RESETS ${clock(x.resets_at).toUpperCase()}</span></div>`;
+      h+=`<div class="why">WEEK${m?' '+esc(m):''}: ${x.used_pct==null?'UNKNOWN, MISSING FROM THE LATEST READING':x.rate_per_day==null?'TOO FEW READINGS TO PROJECT':x.runs_out_at==null?'LASTS THE WEEK':'RUNS OUT '+clock(x.runs_out_at).toUpperCase()}</div>`}
     h+='</div>'}
   $('usage').innerHTML=h;
 }
