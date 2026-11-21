@@ -37,6 +37,9 @@ DEPENDS = re.compile(r"^(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
 DEPENDS_ITEM = re.compile(r"\s*(?:#(\d+)|\([^)]*\)|issues?\b|and\b|[,&:])", re.I)
 BRANCH = re.compile(r"^i(\d+)-")
 MARK = "[room]"
+SCOUT_WAIVED = "scout:waived"
+SCOUT_HELD = "Held by look-before-building"
+SCOUTED = re.compile(r"^\s*Scouted:\s*#(\d+)", re.M | re.I)
 STATUS_LINE = re.compile(r"STATUS:\s*(DONE|BLOCKED)", re.I)
 ACTIONS_LINE = re.compile(r"ACTIONS:\s*(\[.*\])", re.S)
 INTERACTIVE_PHRASE = "interactive session"
@@ -434,6 +437,13 @@ class GitHubBoard:
 
     def comment(self, number: int, body: str):
         board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
+
+    def issue_state(self, number: int) -> str | None:
+        """'OPEN' or 'CLOSED' for issue `number`, None when it can't be read (missing, or a PR)."""
+        try:
+            return (board_mod.gh(["issue", "view", str(number), "--repo", self.repo, "--json", "state"]) or {}).get("state")
+        except RuntimeError:
+            return None
 
     def close_issue(self, number: int, body: str):
         board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--comment", f"{MARK} {body}"])
@@ -1260,6 +1270,8 @@ class Dispatcher:
         self.ways = ways_for(cfg)   # the prompt templates, with the project's `[ways] dir` overrides (commonroom#216)
         # The numbers this project sets under `[policy]` (commonroom#217); an unknown name fails here, naming it.
         self.policy_overrides = policy_mod.overrides(cfg)
+        self.scout_closed: set[int] = set()   # closed scout issues seen (closed stays closed)
+        self.scout_told: set[int] = set()     # issues already told what the look-before-building check wants
         self.model_skips_logged: set = set()   # (provider, model, window, resets_at): each skip is logged once
 
     def policy(self, name: str) -> int:
@@ -2501,7 +2513,8 @@ class Dispatcher:
         ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
                  and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
-                      or any(l.startswith("provider:") for l in labels(i)))]
+                      or any(l.startswith("provider:") for l in labels(i)))
+                 and self.scouted(i)]
         # With none held, only the top issue per area is offered, so the Codex path's second pick can't share an area.
         taken: set[str] = set()
         chosen = set()
@@ -2511,6 +2524,31 @@ class Dispatcher:
                 chosen.add(i["number"])
         ready = [i for i in ready if not areas(i) or merge_main_only(i) or i["number"] in chosen]
         return ready
+
+    def scouted(self, issue: dict) -> bool:
+        """`[checks] look_before_building = true`: a `kind:feature` build is held until its body has `Scouted: #N` naming a
+        closed issue, or it carries `scout:waived`. The reason is commented once. Off by default; bugs and the rest
+        are never held (commonroom#325)."""
+        names = labels(issue)
+        if not (self.cfg.get("checks") or {}).get("look_before_building") or "kind:feature" not in names or SCOUT_WAIVED in names:
+            return True
+        n = issue["number"]
+        found = SCOUTED.search(issue.get("body") or "")
+        if found:
+            ref = int(found.group(1))
+            if ref not in self.scout_closed and ref != n and self.board.issue_state(ref) == "CLOSED":
+                self.scout_closed.add(ref)
+            if ref in self.scout_closed:
+                return True
+            missing = f"`Scouted: #{ref}` names an issue that is not closed yet"
+        else:
+            missing = "its body has no `Scouted: #N` line"
+        if n not in self.scout_told and not self.dry_run and not any(SCOUT_HELD in (c.get("body") or "") for c in issue.get("comments") or []):
+            self.board.comment(n, f"{SCOUT_HELD}: this project looks before building, and {missing}. Add a line `Scouted: #N` "
+                                  "naming a closed scout issue that answered \"does this already exist, free and usable here?\", "
+                                  "or the label `scout:waived`. Until then the issue is skipped.")
+        self.scout_told.add(n)
+        return False
 
     def ready_on_demand(self, open_now: list[dict]) -> list[tuple[dict, str]]:
         """Ready `role:<name>` issues in the goal milestone whose role is configured and has an agent file, each with
