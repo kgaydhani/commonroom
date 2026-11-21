@@ -1,0 +1,1 @@
+Codex finished part or all of this but ended BLOCKED. Its work is preserved on branch `{{branch}}`. A Claude builder continues from it: run the gate, finish what's left, open the PR.

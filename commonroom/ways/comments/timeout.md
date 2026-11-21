@@ -1,0 +1,1 @@
+The room ended this run at its {{minutes}}-minute time limit. {{kept}}
