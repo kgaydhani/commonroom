@@ -1,4 +1,5 @@
 """Per-merge metrics from ledger rows (commonroom#211)."""
+import io
 import json
 import shutil
 import sqlite3
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from commonroom import cli, config, dashboard, metrics, workers
 from commonroom.ledger import Ledger
@@ -139,6 +141,95 @@ class Metrics(unittest.TestCase):
         self.assertIn("7d", got)
         self.assertIn("30d", state)
         self.assertEqual(state["targets"], {"review_runs_per_merge": 1})
+
+
+class CoordinationShare(unittest.TestCase):
+    def row(self, role, tokens, minutes, **extra):
+        return {"role": role, "provider": "claude", "model": "test", "status": "done",
+                "started_at": NOW - 3600, "ended_at": NOW - 3600 + minutes * MIN,
+                "input_tokens": tokens, **extra}
+
+    def rows(self):
+        return [self.row("director", 20, 3), self.row("auditor", 10, 2), self.row("builder", 50, 10),
+                self.row("reviewer", 20, 5), self.row("scout", None, 5)]
+
+    def test_coordination_share_by_tokens_and_minutes(self):
+        w = metrics.window(self.rows(), NOW - metrics.DAY, NOW)
+        self.assertEqual(w["coordination_share"], 0.3)
+        self.assertEqual(w["coordination_share_minutes"], 0.2)
+        self.assertEqual(w["merges"], 0)   # shares do not require a landing
+
+    def test_missing_or_zero_token_counts_give_none(self):
+        for tokens in (None, 0):
+            with self.subTest(tokens=tokens):
+                rows = [self.row("director", tokens, 1), self.row("builder", tokens, 3)]
+                w = metrics.window(rows, NOW - metrics.DAY, NOW)
+                self.assertIsNone(w["coordination_share"])
+                self.assertEqual(w["coordination_share_minutes"], 0.25)
+                self.assertEqual(metrics.over_target(w, {"coordination_share": 0.2}), [])
+        empty = metrics.window([], NOW - metrics.DAY, NOW)
+        self.assertIsNone(empty["coordination_share"])
+        self.assertIsNone(empty["coordination_share_minutes"])
+
+    def test_zero_minutes_and_share_endpoints(self):
+        for role, expected in (("builder", 0), ("director", 1), ("auditor", 1)):
+            with self.subTest(role=role):
+                w = metrics.window([self.row(role, 100, 0)], NOW - metrics.DAY, NOW)
+                self.assertEqual(w["coordination_share"], expected)
+                self.assertIsNone(w["coordination_share_minutes"])
+
+    def test_only_model_work_inside_the_window_counts(self):
+        ignored = [self.row(role, 10000, 30) for role in metrics.ROOM_ROLES]
+        ignored += [self.row("director", 10000, 30, status=status) for status in metrics.NOT_WORK]
+        ignored += [self.row("auditor", 10000, 30, started_at=start)
+                    for start in (NOW - 2 * metrics.DAY, NOW + 1)]
+        w = metrics.window(self.rows() + ignored, NOW - metrics.DAY, NOW)
+        self.assertEqual((w["coordination_share"], w["coordination_share_minutes"]), (0.3, 0.2))
+
+    def test_project_cap_flags_only_windows_over_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "room.toml"
+            path.write_text('[project]\nname = "sample"\n[targets]\ncoordination_share = 0.2\n',
+                            encoding="utf8", newline="\n")
+            cfg = config.load(path)
+        for share in (0.3, 0.1, 0.2, 0.20001):
+            with self.subTest(share=share):
+                rows = [self.row("director", round(share * 100000), 1),
+                        self.row("builder", round((1 - share) * 100000), 9)]
+                report = metrics.report(rows, NOW, cfg["targets"])
+                expected = ([f"{name}: coordination_share {metrics.readable(share)} > 0.2"
+                             for name in metrics.WINDOWS] if share > 0.2 else [])
+                self.assertEqual(report["over_target"], expected)
+        self.assertNotIn("coordination_share", config.DEFAULTS["targets"])
+        self.assertEqual(metrics.report(self.rows(), NOW, config.DEFAULTS["targets"])["over_target"], [])
+
+    def test_digest_prints_shares_and_dashboard_carries_them_for_only_this_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "room.sqlite3"
+            ledger = Ledger(path, synchronous="OFF")
+            try:
+                for role, tokens, minutes in (("director", 20, 3), ("auditor", 10, 2),
+                                              ("builder", 50, 10), ("reviewer", 20, 5)):
+                    rid = ledger.start_run("t", None, role, "claude", "test", now=NOW - 3600)
+                    ledger.finish_run(rid, "done", [], tokens, now=NOW - 3600 + minutes * MIN)
+                rid = ledger.start_run("other", None, "director", "claude", "test", now=NOW - 3600)
+                ledger.finish_run(rid, "done", [], 100000, now=NOW - 1800)
+            finally:
+                ledger.close()
+            cfg = cfg_with(tmp)
+            cfg["project"]["repo"] = None
+            out = io.StringIO()
+            with mock.patch.object(cli.config_mod, "load", return_value=cfg), \
+                    mock.patch.object(cli, "Ledger", side_effect=lambda: Ledger(path, synchronous="OFF")), \
+                    mock.patch.object(dashboard, "Ledger", side_effect=lambda: Ledger(path, synchronous="OFF")), \
+                    mock.patch.object(cli.time, "time", return_value=NOW), mock.patch("sys.stdout", out):
+                self.assertEqual(cli.main(["digest", "--hours", "24"]), 0)
+                state = dashboard.state(cfg)
+            report = json.loads(out.getvalue())["metrics"]
+            for name in metrics.WINDOWS:
+                self.assertEqual(report[name]["coordination_share"], 0.3)
+                self.assertEqual(report[name]["coordination_share_minutes"], 0.25)
+            self.assertEqual(state["metrics"], report)
 
 
 class Targets(unittest.TestCase):
