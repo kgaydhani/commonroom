@@ -1348,7 +1348,7 @@ class Dispatcher:
                 # The room supplies the test proof itself, whatever the reviewer said: it runs once the branch is up
                 # to date (below), and a FAIL or INCOMPLETE at this head stops here with the director.
                 if decided and not mergeable:
-                    mergeable = self.decided_result(detail) is None
+                    mergeable = self.decided_result(detail) is None or self.decided_passed(detail)
             decided_run = decided and not self.ci and not self.decided_passed(detail) and not (review == "APPROVE" and self.tested(detail))
             if mergeable:
                 if not self.dry_run:
@@ -2546,6 +2546,8 @@ class Dispatcher:
             if f"#{m.group(1)}" in running:
                 continue   # its builder is still pushing: review the finished branch, not a draft (commonroom#124)
             detail = self.board.pr_detail(pr["number"])
+            if not self.needs_review(detail):
+                continue
             if issue_labels is None:
                 issue_list = self.board.all_issues()
                 issue_labels = {i["number"]: labels(i) for i in issue_list}

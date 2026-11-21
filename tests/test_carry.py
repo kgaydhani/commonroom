@@ -442,6 +442,25 @@ class DirectorDecided(Carry):
         self.dispatcher(self.cfg(), board).housekeeping()
         self.assertEqual((board.merged, self.calls), ([222], [new]))
 
+    def test_a_merge_that_fails_after_a_pass_is_retried_next_pass_without_a_second_run(self):
+        head = self.merge_main()
+        board = self.decided(head)
+        real, failures = board.merge, [1]
+
+        def flaky(n):
+            if failures:
+                failures.pop()
+                raise RuntimeError("transient")
+            real(n)
+        board.merge = flaky
+        try:
+            self.dispatcher(self.cfg(), board).housekeeping()
+        except RuntimeError:
+            pass
+        self.assertEqual((board.merged, self.calls), ([], [head]))
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual((board.merged, self.calls), ([222], [head]))
+
     def test_a_failed_run_does_not_merge_comments_once_and_is_not_rerun(self):
         head = self.merge_main()
         board = self.decided(head)
