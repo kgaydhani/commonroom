@@ -313,12 +313,23 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
     return "\n".join(lines)
 
 
+def _board(ledger: Ledger, p: registry.Project) -> str | None:
+    """The steward's latest sweep of the project's board; None if it has never run (the digest then shows nothing new)."""
+    name = ledger_name(p)
+    if ledger.marked(name, ledger.SWEEP) is None:
+        return None
+    found = ledger.findings(name)
+    return "\n".join(f"- {f['detail']}" for f in found) if found else "Nothing stale."
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
-    return fill_way(DIGEST, project=p.name, reply=reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
+    text = fill_way(DIGEST, project=p.name, reply=reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
+    board = _board(ledger, p)
+    return text + "\n" + f"## Board check, latest sweep\n{board}" + "\n" if board else text
 
 
 def refresh(reg: registry.Registry, p: registry.Project, now: float | None = None, who: str | None = None) -> str:
