@@ -28,8 +28,7 @@ from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
-README, CHARTER, DIGEST, REPLY, BOARD = (read_way(TEMPLATES / f"{name}.md")
-                                         for name in ("README", "charter", "digest", "reply", "board"))
+README, CHARTER, DIGEST, REPLY = (read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply"))
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
@@ -330,7 +329,7 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
     board = _board(ledger, p)
-    return text + "\n" + fill_way(BOARD, board=board) + "\n" if board else text
+    return text + "\n" + f"## Board check, latest sweep\n{board}" + "\n" if board else text
 
 
 def refresh(reg: registry.Registry, p: registry.Project, now: float | None = None, who: str | None = None) -> str:
