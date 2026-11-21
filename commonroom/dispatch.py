@@ -28,7 +28,7 @@ from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod,
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
-from commonroom import owner_reserve
+from commonroom import owner_reserve, steward
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -109,6 +109,8 @@ def fill_way(template: str, **values) -> str:
     """`template` with each `{{name}}` replaced by its value, in one pass: a value is never expanded again."""
     return PLACEHOLDER.sub(lambda m: str(values[m.group(1)]), template)
 
+
+STEWARD_FIXABLE = {"unplaced", "blocked-on-nothing", "orphan-pr"}   # findings that wake the director; the rest only report
 
 WAYS = load_ways(WAYS_DIR)
 COMMENTS = load_comments(WAYS_DIR)
@@ -1310,6 +1312,7 @@ class Dispatcher:
         # send it back to its builder, who continues from the preserved branch (gamemirage#278).
         has_pr = {int(m.group(1)) for pr in prs if (m := BRANCH.match(pr["headRefName"]))}
         running = self.ledger.running_tasks(self.project)
+        self.sweep(everything, prs)
         actions += self.clear_stray_ready(everything)
         for issue in everything:
             n = issue["number"]
@@ -2848,6 +2851,26 @@ class Dispatcher:
                 reasons.append(f"#{issue['number']} has a new owner comment: answer it, accept the delivery, or close the task")
         return "; ".join(reasons) or None
 
+    def sweep(self, everything: list[dict], prs: list[dict]):
+        """The steward's sweep (commonroom#326, axiom A3) over the snapshot housekeeping already holds: log each finding
+        and keep the latest sweep's in the ledger. A fault in it must not stop the pass."""
+        if self.dry_run:
+            return
+        try:
+            found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time())
+            for f in found:
+                self.log(f"   steward: {f['invariant']}: {f['detail']}")
+            self.ledger.record_findings(self.project, found)
+        except Exception as exc:
+            self.log(f"   steward sweep failed: {exc}")
+
+    def steward_reason(self, since: float) -> str | None:
+        """Findings an agent can fix that appeared after the director last started: told once, until they clear."""
+        new = [f for f in self.ledger.findings(self.project) if f["invariant"] in STEWARD_FIXABLE and f["since"] > since]
+        if not new:
+            return None
+        return "the steward found: " + "; ".join(f["detail"] for f in new[:5])
+
     def director_trigger(self) -> str | None:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
@@ -2887,6 +2910,9 @@ class Dispatcher:
         if machine_open and not busy:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
         reasons += self.ready_for_director()
+        steward_reason = self.steward_reason(since)
+        if steward_reason:
+            reasons.append(steward_reason)
         bulletin = self.bulletin_missed(since)
         if bulletin:
             reasons.append(bulletin)
