@@ -48,7 +48,7 @@ def parse(body: str | None) -> dict | None:
 def tested_sha(body: str | None, oids: list[str]) -> str:
     """The PR commit the approval's `TESTS: PASS` line names (it may give 7 characters), or ''."""
     for line in (body or "").splitlines():
-        if re.search(r"\bTESTS:\s*PASS\b", line, re.I):
+        if re.match(r"[ \t*_>\-]*TESTS:\s*PASS\b", line, re.I):
             for token in HEX.findall(line):
                 found = [o for o in oids if o.lower().startswith(token.lower())]
                 if len(found) == 1:

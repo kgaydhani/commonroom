@@ -761,10 +761,12 @@ def head_sha(detail: dict) -> str:
     return detail.get("headRefOid") or (commits[-1].get("oid") or "" if commits else "")
 
 
-TESTS_LINE = re.compile(r"^.*\bTESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
+# A verdict is a line that begins with the marker (after spaces and markdown `*`, `_`, `>`, `-`). A marker inside a
+# sentence or in backticks is prose that quotes one (commonroom#283).
+TESTS_LINE = re.compile(r"^[ \t*_>\-]*TESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
 
 
-INCOMPLETE_LINE = re.compile(r"\bTESTS:\s*INCOMPLETE\b", re.I)   # never a pass, whatever else the comment says
+INCOMPLETE_LINE = re.compile(r"^[ \t*_>\-]*TESTS:\s*INCOMPLETE\b", re.M | re.I)   # never a pass, whatever else the comment says
 
 
 def tested_on_head(body: str, head: str, command: str | None) -> bool:

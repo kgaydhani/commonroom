@@ -2947,6 +2947,24 @@ class IncompleteReview(unittest.TestCase):
         self.assertFalse(dispatch.tested_on_head(body, "224aaaa", "python -m unittest"))
         self.assertFalse(dispatch.tested_on_head("TESTS: INCOMPLETE 224aaaa python -m unittest: x", "224aaaa", "python -m unittest"))
 
+    def test_a_quoted_marker_in_prose_is_not_a_verdict(self):
+        fixture = Path(__file__).parent / "fixtures" / "pr278_review.md"   # the real review that was bounced four times
+        body = fixture.read_text(encoding="utf-8")
+        self.assertIn("report TESTS: INCOMPLETE", body)
+        self.assertTrue(dispatch.tested_on_head(body, "762cb7a1234", "python -m unittest discover -s tests"))
+
+    def test_verdict_lines_with_markdown_still_count_and_block(self):
+        cmd, ok = "python -m unittest", "TESTS: PASS 224aaaa python -m unittest: OK"
+        def tested(body):
+            return dispatch.tested_on_head(body, "224aaaa", cmd)
+        self.assertTrue(tested(f"**TESTS: PASS 224aaaa {cmd}: Ran 3 tests OK**"))
+        self.assertTrue(tested(f"> - _TESTS: PASS 224aaaa {cmd}: OK_"))
+        for line in ("TESTS: INCOMPLETE 224aaaa x: y", "**TESTS: INCOMPLETE** 224aaaa", "  > TESTS: INCOMPLETE 224aaaa"):
+            self.assertFalse(tested(ok + "\n" + line))
+        self.assertFalse(tested(ok + "\nok\n**TESTS: FAIL 224aaaa x: y**"))
+        self.assertTrue(tested(ok + "\nI saw `TESTS: FAIL` and `TESTS: INCOMPLETE` quoted."))
+        self.assertFalse(tested(f"I ran it. {ok}"))   # a marker in prose is no pass either
+
     def test_finished_incomplete_review_is_done_with_its_own_output(self):
         fake, d = self.setup_board([self.incomplete(5)])
         job = dispatch.Job("review", "reviewer", pr=fake.details[224], reason="x")
