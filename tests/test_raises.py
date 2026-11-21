@@ -197,7 +197,8 @@ class Raises(Room):
 
     def test_owner_reserve_cache_observes_raise_clear_and_expiry_without_a_meter_change(self):
         def owner(now=None):
-            return owner_reserve._owner(self.ledger, self.reg, "claude", now or self.now, self.transcripts)
+            found = owner_reserve._owner(self.ledger, self.reg, "claude", now or self.now, self.transcripts)
+            return found and found[:2]
         self.assertEqual(owner(), (15, 0))
         self.command("raise", "alpha", "10", "--from", "@owner")
         self.assertEqual(owner(), (5, 0))

@@ -15,7 +15,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from commonroom import config as config_mod, pie, raises, sessions
+from commonroom import away, config as config_mod, pie, raises, sessions
 from commonroom.liveness import orphaned
 from commonroom.registry import Registry, RegistryError
 
@@ -46,6 +46,8 @@ class Report:
     raises: list[dict] = field(default_factory=list)    # transfers in this provider's current window
     reset_at: float = 0.0                               # early reset inside the scheduled window
     own_last: dict = field(default_factory=dict)        # {registry key: when its owner's latest session activity ended}
+    away_until: float | None = None                     # the owner's stored return time, while it is in the future
+    lent: dict = field(default_factory=dict)            # {registry key: points of his slice lent to it while he is away}
 
     def room(self, key: str) -> float:
         """A project's estimated spend by room runs: its total less its own sessions'."""
@@ -125,6 +127,20 @@ def own_runs(ledger, reg: Registry, win: Window, now: float, transcripts: Path |
              "cost_usd": None} for span in found]
 
 
+def away_state(ledger, owner_share: float, win: Window, now: float, transcripts: Path | None = None) -> tuple[float | None, float]:
+    """(the owner's stored return time while it is ahead and he is not at a session, the points of his slice lent while he is away). A stored value
+    that can't be read, a return already past, or one of his own sessions active lends nothing."""
+    try:
+        until = away.load(away.path(Path(ledger.path).parent))
+    except RegistryError:
+        return None, 0.0
+    if until is None or until <= now:
+        return None, 0.0
+    if away.owner_is_active(now, exclude=ledger.worker_dirs(now - 20 * 60), transcripts=transcripts):
+        return None, 0.0   # a session of his own ends it at once
+    return until, away.lent(owner_share, until, now, win.resets_at, False)
+
+
 def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Path | None = None) -> Report | None:
     """The registry's projects' standings on `provider` at `now`, or None when there is no current weekly window.
     Each project's spend is its room runs' and its own sessions' (read from `transcripts`, default Claude Code's)."""
@@ -134,6 +150,8 @@ def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Pat
     readings = samples(ledger, win, now)
     transfers = raises.current(raises.load(raises.path(Path(ledger.path).parent)), win, readings)
     shares, owner_share = raises.effective(reg, transfers)
+    until, lent = away_state(ledger, owner_share, win, now, transcripts)
+    shares, owner_share, lent = away.apply(shares, owner_share, lent)
     mine = own_runs(ledger, reg, win, now, transcripts)
     spent = pie.estimate_spend(readings, runs(ledger, win, now) + mine, now)
     own_last: dict = {}
@@ -147,4 +165,4 @@ def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Pat
     rows = pie.standings(projects, by_key, win.elapsed, slack)
     known = set(names.values())
     unregistered = {name or NO_NAME: pct for name, pct in spent.items() if name not in known and not isinstance(name, tuple)}
-    return Report(win, rows, owner_share, unregistered, own, transfers, raises.reset_at(readings), own_last)
+    return Report(win, rows, owner_share, unregistered, own, transfers, raises.reset_at(readings), own_last, until, lent)
