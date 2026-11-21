@@ -178,8 +178,10 @@ class LedgerRules(unittest.TestCase):
 
 # A2: names the room must not hold. The names come from configuration: this repo's room.toml (login, host path,
 # worktree path, the folder projects live in) and the room home's project registry (each project's name and path).
-# OTHER_NAMES adds only what no config lists: role names that belong to one project. Add one here when it joins.
-OTHER_NAMES = ("art-tech",)
+# OTHER_NAMES is a baseline that never depends on this machine: projects the room has served (one may be paused and
+# so missing from the registry) and role names that belong to one project. Add one here when it joins.
+# The live registry is read on purpose, on top of the baseline, so a newly registered project is guarded at once.
+OTHER_NAMES = ("gamemirage", "magazine", "art-tech")
 # Today's violations, each counted (commonroom#218 cleared them).
 EXCEPTIONS = {}
 ISSUE_REF = re.compile(r"[\w./-]+#\d+")
@@ -294,6 +296,10 @@ class RoomKnowsNoProject(unittest.TestCase):
         reg = registry.parse('[projects.shop]' + chr(10) + 'path = "E:/work/shop-app"' + chr(10) + 'share = 50')
         tokens = project_tokens(ROOT, reg)
         self.assertTrue({"shop", "e:/work/shop-app", "shop-app"} <= tokens)
+
+    def test_the_baseline_names_guard_a_project_missing_from_the_registry(self):
+        tokens = project_tokens(ROOT, registry.parse(""))
+        self.assertTrue({"gamemirage", "magazine", "art-tech"} <= tokens)
 
     def test_the_tokens_come_from_room_toml(self):
         with tempfile.TemporaryDirectory() as tmp:
