@@ -173,10 +173,30 @@ class Carry(Base):
         for path in root.glob("*.py"):
             self.assertNotIn('("merge", "update")', path.read_text(encoding="utf-8"), path.name)
 
-    def test_a_director_path_whose_stamp_cannot_be_carried_carries_nothing(self):
+    def director_board(self, stamped):
         board = self.board(self.merge_main(), files=["room.toml"])
+        if stamped:
+            board.details[222]["comments"].append({"createdAt": "2026-11-20T13:30:00Z", "body": f"[agent:director] REVIEW: APPROVE\n\nHEAD: {self.tested[:7]}"})
         cfg = self.cfg()
         cfg["merge"]["director_paths"] = ["room.toml"]
+        return board, cfg
+
+    def test_a_director_path_pr_with_no_stamp_yet_still_carries_the_reviewer_half(self):
+        board, cfg = self.director_board(stamped=False)
+        d = self.dispatcher(cfg, board)
+        detail = board.details[222]
+        self.assertEqual(d.carry_reason(detail), "")
+        self.assertTrue(d.carry_pending(detail))
+        self.assertTrue(d.waits_for_director(detail))                # the merge gate is unchanged
+
+    def test_a_director_path_pr_with_a_stamp_that_cannot_be_carried_is_refused(self):
+        board, cfg = self.director_board(stamped=True)
+        d = self.dispatcher(cfg, board)
+        self.assertEqual(d.carry_reason(board.details[222]), "the director's stamp can't be carried to this head")
+        self.assertTrue(d.waits_for_director(board.details[222]))
+
+    def test_a_director_path_whose_stamp_cannot_be_carried_carries_nothing(self):
+        board, cfg = self.director_board(stamped=True)
         d = self.dispatcher(cfg, board)
         d.housekeeping()
         self.assertEqual((board.merged, board.posted, self.carry_runs()), ([], [], []))
