@@ -1248,6 +1248,19 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(run("show", "--name-only", "--format=", "HEAD", cwd=main).split(), ["a.txt"])
         self.assertIn("i187-x", run("ls-remote", "--heads", "origin", cwd=main))
 
+    def test_preserve_work_still_commits_when_the_exclude_file_write_raises(self):
+        run, main, d, job = self._scratch_fixture()
+        (main / "a.txt").write_text("edited")
+        def boom(cwd): raise OSError("read-only")
+        orig = dispatch.workers_mod.exclude_scratch
+        dispatch.workers_mod.exclude_scratch = boom
+        try:
+            d.preserve_work(job, main, "i187-x")
+        finally:
+            dispatch.workers_mod.exclude_scratch = orig
+        self.assertEqual(run("show", "--name-only", "--format=", "HEAD", cwd=main).split(), ["a.txt"])
+        self.assertIn("i187-x", run("ls-remote", "--heads", "origin", cwd=main))
+
     def test_preserve_work_with_only_scratch_changes_commits_and_pushes_nothing(self):
         run, main, d, job = self._scratch_fixture()
         self._preserve_without_exclude(d, job, main)

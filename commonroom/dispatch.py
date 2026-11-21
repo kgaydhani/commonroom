@@ -2816,6 +2816,9 @@ class Dispatcher:
         committed = False
         try:
             workers_mod.exclude_scratch(worktree)
+        except Exception as exc:    # the pathspec below still keeps .scratch/ out
+            self.log(f"   could not update info/exclude in {worktree}: {str(exc)[:160]}")
+        try:
             if git(["status", "--porcelain"], worktree):
                 # Never stage .scratch/ (worker temp output, commonroom#187): the pathspec holds even if the exclude file can't be written.
                 git(["add", "-A", "--", ".", ":(exclude).scratch"], worktree)
