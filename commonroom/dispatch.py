@@ -1151,11 +1151,12 @@ PROGRESS_MIN_WORK = POLICY["progress_min_work_seconds"]
 
 
 def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit: float = 10.0,
-                   attribute: bool = False, min_work: float | None = None, landed: int | None = None) -> dict | None:
+                   attribute: bool = False, min_work: float | None = None, landed: "int | Callable[[], int | None] | None" = None) -> dict | None:
     """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker.
     With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend.
     The room's work must have run `min_work` seconds in the window first (None: the room's PROGRESS_MIN_WORK).
-    `landed`: what the project's own `[progress] landed` command counted in the window; None counts merges."""
+    `landed`: what the project's own `[progress] landed` command counted in the window; None counts merges.
+    It may be a callable returning that, called only when spend is over the limit and the room worked."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
     work = [r["started_at"] for r in runs if r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge"]
@@ -1182,8 +1183,12 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
     if attribute:
         minutes = run_minutes(ledger, "claude", since, now)
         spent *= minutes.get(project, 0.0) / (sum(minutes.values()) or 1.0)
+    if spent <= spend_limit:
+        return None   # under the limit: nothing to decide, so the project's landed command is not run
+    if callable(landed):
+        landed = landed()   # only now does the answer matter (a command can take up to a minute)
     merged = sum(1 for r in runs if r["role"] == "merge") if landed is None else landed
-    if spent > spend_limit and merged == 0:
+    if merged == 0:
         what = "merged" if landed is None else "landed"
         return {"kind": "no_progress", "detail": f"{spent:.1f}% of the weekly Claude allowance spent in 24h of room work with nothing {what}"}
     return None
@@ -3544,6 +3549,13 @@ class Dispatcher:
                                       "Back to ready; this does not count as an attempt.")
         return actions
 
+    def landed_count(self, now: float) -> int | None:
+        """What the project's `[progress] landed` command counts in the last 24 h; None (merges decide) when unset or no answer."""
+        answer = progress_mod.landed(self.cfg, now - 86400)
+        if answer.why:
+            self.log(f"   progress: {answer.why}; counting merges this pass")
+        return answer.count
+
     def run_once(self) -> dict:
         self.refresh_readings(time.time())
         for line in self.recover_orphans():
@@ -3553,10 +3565,7 @@ class Dispatcher:
             self.log("   " + line)
         now = time.time()
         limit = float((self.cfg.get("breakers") or {}).get("progress_spend_limit", 10.0))
-        answer = progress_mod.landed(self.cfg, now - 86400)
-        if answer.why:
-            self.log(f"   progress: {answer.why}; counting merges this pass")
-        trip = check_progress(self.ledger, self.project, now, spend_limit=limit, landed=answer.count,
+        trip = check_progress(self.ledger, self.project, now, spend_limit=limit, landed=lambda: self.landed_count(now),
                               attribute=(self.cfg.get("share") or {}).get("max") is not None,
                               min_work=self.policy("progress_min_work_seconds"))
         if trip:
