@@ -185,10 +185,6 @@ class GoldenPrompts(unittest.TestCase):
         self.assertIn("(docs/machine.md)", rendered["sweep-environment"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PublicRepoRule(unittest.TestCase):
     """commonroom#316: the build and review prompts say the repo may be public, and what must stay out of it."""
     def test_build_and_review_templates_carry_the_public_repo_rule(self):
@@ -204,3 +200,7 @@ class PublicRepoRule(unittest.TestCase):
         for name in ("full-claude-build", "plain-codex-build", "plain-claude-review", "bare-claude-build"):
             text = (FIXTURES / f"{name}.txt").read_text(encoding="utf-8")
             self.assertIn("This repo may be public", text, name)
+
+
+if __name__ == "__main__":
+    unittest.main()
