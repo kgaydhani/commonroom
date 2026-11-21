@@ -287,6 +287,18 @@ class HandshakeOnly(Hook):
     METHOD = re.compile(r"\b(you|your|should|must|always|never|please|first|before|after|make sure|remember|"
                         r"think|plan|step|test|verify|check|read|review|consider|try|ensure|start|begin)\b", re.I)
 
+    def without_paths(self, text):
+        """`text` with this test's temp folder taken out: the check judges the hook's own words, not where the
+        temporary home happens to be (a reviewer's TEMP is `<tmp>/review-<n>`, commonroom#277)."""
+        for root in {str(self.tmp), str(self.tmp.resolve())}:
+            text = text.replace(root, "TMP")
+        return text
+
+    def test_the_paths_are_taken_out_but_a_method_word_beside_them_is_kept(self):
+        words = self.without_paths(f"You should read `{self.tmp / 'digest.md'}`.")
+        self.assertNotIn(str(self.tmp), words)
+        self.assertEqual([m.lower() for m in self.METHOD.findall(words)], ["you", "should", "read"])
+
     def test_the_text_names_the_folder_the_notes_and_how_to_reply_and_no_method(self):
         self.register()
         self.note("Think step by step and always test first.", "director")
@@ -295,13 +307,28 @@ class HandshakeOnly(Hook):
         text = self.added(self.alpha)
         template = TEMPLATE.read_text(encoding="utf-8") + (ROOT / "commonroom/ways/handshake/reply.md").read_text(
             encoding="utf-8")
-        for words in (text, template):
+        for words in (self.without_paths(text), template):
             self.assertIsNone(self.METHOD.search(words), words)
         sentences = [s for s in re.split(r"(?<=\.)\s+(?=[A-Z])", text) if s]
         self.assertEqual(len(sentences), 3, sentences)
         about = (("state in", "digest.md"), ("Unread notes", "inbox/"), ("To reply", "room note alpha"))
         for sentence, (opening, subject) in zip(sentences, about):
             self.assertTrue(sentence.startswith(("Common Room", opening)) and subject in sentence, sentence)
+
+
+class HandshakeOnlyUnderAReviewFolder(HandshakeOnly):
+    """The same checks with the temp root in a folder named like a reviewer's worktree (commonroom#277)."""
+
+    def setUp(self):
+        outer = tempfile.TemporaryDirectory()
+        self.addCleanup(outer.cleanup)
+        review = Path(outer.name) / "review-1"
+        review.mkdir()
+        temp = mock.patch.object(tempfile, "tempdir", str(review))
+        temp.start()
+        self.addCleanup(temp.stop)
+        super().setUp()
+        self.assertIn("review-1", str(self.tmp))
 
 
 if __name__ == "__main__":
