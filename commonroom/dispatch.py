@@ -909,10 +909,30 @@ REVIEW_ROUNDS = POLICY["review_rounds"]
 ROUNDS_ESCALATED = "review rounds without an approval"   # marks the escalation comment; rounds count again after it
 
 
-def changes_rounds(detail: dict, since: str = "") -> int:
-    """REVIEW: CHANGES verdicts on a PR posted after `since` (an ISO time; '' counts all)."""
-    return sum(1 for c in detail.get("comments") or []
-               if (c.get("createdAt") or "") > since and verdict_of(c.get("body")) == "CHANGES")
+def reviewed_oid(detail: dict, posted: str) -> str:
+    """The head a verdict posted at `posted` looked at: the newest commit made by then ('' when the PR doesn't say)."""
+    done = [c for c in detail.get("commits") or [] if (c.get("committedDate") or "") <= posted]
+    return (done[-1].get("oid") or "") if done else ""
+
+
+def changes_rounds(detail: dict, since: str = "", merge_only=None) -> int:
+    """REVIEW: CHANGES verdicts on a PR posted after `since` (an ISO time; '' counts all). With `merge_only(base, head)`,
+    a CHANGES on a head that differs from the last counted one only by merge commits isn't a round: the builder changed
+    nothing, so there was no fix to judge (commonroom#205). A comparison that raises counts the round."""
+    rounds, base = 0, ""
+    for c in detail.get("comments") or []:
+        if (c.get("createdAt") or "") <= since or verdict_of(c.get("body")) != "CHANGES":
+            continue
+        head = reviewed_oid(detail, c.get("createdAt") or "") if merge_only else ""
+        if base and head and head != base:
+            try:
+                if merge_only(base, head):
+                    continue
+            except Exception:
+                pass
+        rounds += 1
+        base = head or base
+    return rounds
 
 
 def failed_checks(detail: dict) -> list[dict]:
@@ -1463,7 +1483,7 @@ class Dispatcher:
                 # the director merges it, revises the bar or splits the issue. Rounds count again after an escalation.
                 escalated = max((c.get("createdAt") or "" for c in issue.get("comments") or []
                                  if ROUNDS_ESCALATED in (c.get("body") or "")), default="")
-                rounds = changes_rounds(detail, since=escalated)
+                rounds = changes_rounds(detail, since=escalated, merge_only=self.merge_only_between)
                 if rounds >= self.policy("review_rounds"):
                     self.board.set_labels(issue_no, add=["status:blocked", "needs:director"],
                                           remove=["status:review", "status:in-progress", "needs:changes"])
@@ -2092,6 +2112,13 @@ class Dispatcher:
 
     def waits_for_director(self, detail: dict) -> bool:
         return self.needs_director(detail) and not director_approved(detail) and not self.carried_stamp(detail)
+
+    def merge_only_between(self, base: str, head: str) -> bool:
+        """True when every commit after `base` up to `head` is a merge (read from parents, not messages). Raises when
+        GitHub can't say."""
+        found = self.board.compare_since(base, head)
+        commits = found["commits"]
+        return bool(commits) and all(len(c["parents"]) > 1 for c in commits)
 
     def carried_stamp(self, detail: dict) -> str:
         """The director's stamp sha A that still counts for the PR head B, or ''. It does when every commit in A..B is

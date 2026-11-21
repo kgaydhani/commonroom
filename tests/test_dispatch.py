@@ -2340,6 +2340,47 @@ class WithLedger(unittest.TestCase):
         self.assertIn("#1 had status:ready while review: removed status:ready", actions)
         self.assertIn("#2 had status:ready while in-progress: removed status:ready", actions)
 
+    def _rounds_case(self, middle_parents, compare_raises=False):
+        """commonroom#205: CHANGES on head A, then head B (made of `middle_parents`-parent commits), then CHANGES on B."""
+        def changes(t):
+            return {"createdAt": t, "body": "[agent:reviewer] REVIEW: CHANGES - same findings"}
+        work = issue(95, ["status:review"])
+        detail = {"commits": [{"oid": "a" * 40, "committedDate": "2026-10-09T09:00:00Z"},
+                              {"oid": "b" * 40, "committedDate": "2026-10-09T10:00:00Z"}],
+                  "comments": [changes("2026-10-09T09:30:00Z"), changes("2026-10-09T10:30:00Z")],
+                  "statusCheckRollup": [{"conclusion": "SUCCESS"}]}
+        fake = FakeBoard([work], prs=[{"number": 96, "headRefName": "i95-x"}], details={96: detail})
+
+        def compare_since(base, head):
+            if compare_raises:
+                raise RuntimeError("compare is incomplete")
+            return {"commits": [{"sha": "b" * 40, "parents": ["p"] * middle_parents}], "files": []}
+        fake.compare_since = compare_since
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        return dispatch.changes_rounds(detail, merge_only=d.merge_only_between), fake.label_calls
+
+    def test_a_merge_only_head_between_two_changes_is_one_round(self):
+        rounds, calls = self._rounds_case(2)
+        self.assertEqual(rounds, 1)
+        self.assertEqual(calls, [(95, ("status:ready", "needs:changes"), ("status:review", "status:in-progress"))])
+
+    def test_a_head_with_a_real_commit_between_two_changes_is_two_rounds(self):
+        rounds, calls = self._rounds_case(1)
+        self.assertEqual(rounds, 2)
+        self.assertEqual(calls[0][1], ("status:blocked", "needs:director"))
+
+    def test_a_failed_comparison_counts_the_round(self):
+        rounds, calls = self._rounds_case(2, compare_raises=True)
+        self.assertEqual(rounds, 2)
+        self.assertEqual(calls[0][1], ("status:blocked", "needs:director"))
+
+    def test_rounds_after_an_escalation_start_from_zero(self):
+        comments = [{"createdAt": t, "body": "REVIEW: CHANGES"} for t in ("2026-10-09T07:00:00Z", "2026-10-09T07:30:00Z")]
+        detail = {"commits": [], "comments": comments}
+        self.assertEqual(dispatch.changes_rounds(detail, since="2026-10-09T08:00:00Z", merge_only=lambda b, h: True), 0)
+        self.assertEqual(dispatch.changes_rounds(detail, since="2026-10-09T07:10:00Z", merge_only=lambda b, h: True), 1)
+
     def test_a_quoted_verdict_in_a_builder_reply_is_not_a_review(self):
         """commonroom#58: on PR #54 the builder's reply quoted `REVIEW: CHANGES` and housekeeping escalated #49."""
         work = issue(80, ["status:review"])
