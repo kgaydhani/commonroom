@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import owner_reserve, pie_notice, raises, sessions, standings
+from commonroom import owner_reserve, pie_notice, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
@@ -762,6 +762,34 @@ def _pie_json(report: standings.Report | None, now: float) -> dict | None:
             **({"raises": report.raises} if report.raises else {})}
 
 
+def _weekly_json(found: list, moved) -> dict:
+    return {"windows": [p.__dict__ for p in found], **({"switch": moved.__dict__} if moved else {})}
+
+
+def _weekly_lines(found: list, moved) -> list[str]:
+    """One line per weekly window with its projection, and what the room's latest move off one did (commonroom#256)."""
+    lines = []
+    for p in found:
+        name = "all models" if p.window == weekly.ALL else weekly.model_part(p.window)
+        if not p.known:
+            lines.append(f"week ({name}): UNKNOWN, missing from the latest reading (last seen {_clock(p.observed_at)})")
+            continue
+        if p.rate_per_day is None:
+            pace = "too few readings in the last 24 hours to project"
+        elif p.runs_out_at is None:
+            pace = f"+{p.rate_per_day:.1f} points a day over the last 24 hours: lasts the week"
+        else:
+            pace = (f"+{p.rate_per_day:.1f} points a day over the last 24 hours: runs out "
+                    f"{datetime.fromtimestamp(p.runs_out_at).strftime('%a %d %b %H:%M')}")
+        lines.append(f"week ({name}): {p.used_pct:.0f}% used, resets "
+                     f"{datetime.fromtimestamp(p.resets_at).strftime('%a %d %b %H:%M')}; {pace}")
+    if moved:
+        moves = ", ".join(f"{w} {moved.before[w]:.0f}% -> {moved.after[w]:.0f}%" for w in sorted(moved.after))
+        lines.append(f"switch: the room's work left {moved.window} at {_clock(moved.at)}; since then {moves}: "
+                     f"{moved.outcome.upper()}")
+    return lines
+
+
 def cmd_pie(args) -> int:
     """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
@@ -773,6 +801,8 @@ def cmd_pie(args) -> int:
         ledger = Ledger()
         try:
             reports = {provider: standings.standings(ledger, reg, provider, now) for provider in PROVIDERS}
+            weeks = {provider: weekly.windows(ledger, provider, now) for provider in PROVIDERS}
+            switches = {provider: weekly.switch(ledger, provider, now, weeks[provider]) for provider in PROVIDERS}
         finally:
             ledger.close()
     except registry.RegistryError as exc:
@@ -780,7 +810,8 @@ def cmd_pie(args) -> int:
               file=sys.stdout if args.json else sys.stderr)
         return 1
     if args.json:
-        print(json.dumps({"registry": str(path), "providers": {p: _pie_json(r, now) for p, r in reports.items()}}, indent=2))
+        print(json.dumps({"registry": str(path), "providers": {p: _pie_json(r, now) for p, r in reports.items()},
+                          "weekly": {p: _weekly_json(weeks[p], switches[p]) for p in PROVIDERS}}, indent=2))
         return 0
     print("est. = an estimate: the meter is plan-wide, so each project's part is inferred from its room runs and the "
           "owner's own Claude sessions in its folder")
@@ -791,6 +822,8 @@ def cmd_pie(args) -> int:
         w = report.window
         resets = datetime.fromtimestamp(w.resets_at).strftime("%a %d %b %H:%M")
         print(f"{provider}: {w.elapsed:.0%} of the week gone, resets {resets}; plan-wide {w.used_pct:.1f}% used")
+        for line in _weekly_lines(weeks[provider], switches[provider]):
+            print(f"  {line}")
         for e in report.raises:
             donors = ", ".join(f"{k} {v:g}" for k, v in e["from"].items())
             print(f"  raise {e['project']} +{sum(e['from'].values()):g} from {donors}; ends {resets} (or early reset)")

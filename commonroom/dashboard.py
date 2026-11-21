@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from commonroom import board, config as config_mod, metrics
+from commonroom import board, config as config_mod, metrics, weekly
 from commonroom.dispatch import verdicts
 from commonroom.ledger import Ledger
 
@@ -87,7 +87,8 @@ def state(cfg: dict) -> dict:
         usage_state = {}
         for provider, v in verdicts(ledger, cfg, now).items():
             usage_state[provider] = {"allowed": v.allowed, "reason": v.reason, "detail": v.detail,
-                                     "windows": ledger.latest_usage(provider)}
+                                     "windows": ledger.latest_usage(provider),
+                                     "weekly": [p.__dict__ for p in weekly.windows(ledger, provider, now)]}
         runs = ledger.recent_runs(project, limit=25)
         day = [r for r in ledger.recent_runs(project, limit=400) if r["started_at"] >= now - 86400]
         model_runs = [r for r in day if r["role"] not in metrics.ROOM_ROLES and r["status"] != "room-error"]
