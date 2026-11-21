@@ -25,7 +25,7 @@ from pathlib import Path
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
-from commonroom import model_notice, pie_notice, standings as standings_mod, weekly
+from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
 from commonroom import owner_reserve
@@ -1150,10 +1150,11 @@ PROGRESS_MIN_WORK = POLICY["progress_min_work_seconds"]
 
 
 def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit: float = 10.0,
-                   attribute: bool = False, min_work: float | None = None) -> dict | None:
+                   attribute: bool = False, min_work: float | None = None, landed: int | None = None) -> dict | None:
     """Progress guarantee: >spend_limit weekly-% of autonomous Claude spend in 24h with no merge trips a breaker.
     With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend.
-    The room's work must have run `min_work` seconds in the window first (None: the room's PROGRESS_MIN_WORK)."""
+    The room's work must have run `min_work` seconds in the window first (None: the room's PROGRESS_MIN_WORK).
+    `landed`: what the project's own `[progress] landed` command counted in the window; None counts merges."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
     work = [r["started_at"] for r in runs if r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge"]
@@ -1180,9 +1181,10 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
     if attribute:
         minutes = run_minutes(ledger, "claude", since, now)
         spent *= minutes.get(project, 0.0) / (sum(minutes.values()) or 1.0)
-    merged = sum(1 for r in runs if r["role"] == "merge")
+    merged = sum(1 for r in runs if r["role"] == "merge") if landed is None else landed
     if spent > spend_limit and merged == 0:
-        return {"kind": "no_progress", "detail": f"{spent:.1f}% of the weekly Claude allowance spent in 24h of room work with nothing merged"}
+        what = "merged" if landed is None else "landed"
+        return {"kind": "no_progress", "detail": f"{spent:.1f}% of the weekly Claude allowance spent in 24h of room work with nothing {what}"}
     return None
 
 
@@ -3542,7 +3544,10 @@ class Dispatcher:
             self.log("   " + line)
         now = time.time()
         limit = float((self.cfg.get("breakers") or {}).get("progress_spend_limit", 10.0))
-        trip = check_progress(self.ledger, self.project, now, spend_limit=limit,
+        answer = progress_mod.landed(self.cfg, now - 86400)
+        if answer.why:
+            self.log(f"   progress: {answer.why}; counting merges this pass")
+        trip = check_progress(self.ledger, self.project, now, spend_limit=limit, landed=answer.count,
                               attribute=(self.cfg.get("share") or {}).get("max") is not None,
                               min_work=self.policy("progress_min_work_seconds"))
         if trip:
