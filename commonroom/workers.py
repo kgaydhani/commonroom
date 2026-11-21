@@ -28,6 +28,7 @@ class Role:
     model: str | None
     tools: list[str]
     prompt: str
+    connectors: bool = False   # frontmatter `connectors: true`: the role keeps the owner's MCP connectors
 
 
 @dataclass
@@ -58,7 +59,8 @@ def load_role(project_root: str | Path, name: str) -> Role:
             key, value = line.split(":", 1)
             meta[key.strip()] = value.strip()
     tools = [t.strip() for t in meta.get("tools", "").split(",") if t.strip()]
-    return Role(name, meta.get("model"), tools, match.group(2).strip())
+    connectors = meta.get("connectors", "").lower() in ("true", "yes", "1")
+    return Role(name, meta.get("model"), tools, match.group(2).strip(), connectors)
 
 
 ROOM_PY = Path(__file__).resolve().parent.parent / "room.py"
@@ -85,8 +87,9 @@ def claude_command(role: Role, model: str | None, session_id: str, prompt_file: 
         cmd += ["--effort", effort]
     if role.tools:
         cmd += ["--tools", ",".join(role.tools)]
-    if role.name != "art-tech":
-        # Workers don't need the owner's connectors (Drive, Docs, Blender...); they only cost context.
+    if not role.connectors:
+        # Workers don't need the owner's connectors (Drive, Docs, Blender...); they only cost context. A role file
+        # can ask for them with `connectors: true` in its frontmatter.
         cmd += ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
     return cmd
 

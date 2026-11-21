@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-USER_AGENT = "commonroom-research/0.1 (read-only research; github.com/kgaydhani/commonroom)"
+USER_AGENT = "commonroom-research/0.1 (read-only research client)"
 ARCTIC = "https://arctic-shift.photon-reddit.com/api"
 MIN_INTERVAL = 5.0       # seconds between any two requests, across all processes
 CACHE_TTL = 24 * 3600    # query results only, for a day
