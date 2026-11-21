@@ -2090,7 +2090,8 @@ class Dispatcher:
         later = oids[oids.index(tested) + 1:]
         if not later or not all(later):
             return "nothing to carry it across"
-        if self.needs_director(detail) and self.waits_for_director(detail):
+        if (self.needs_director(detail) and director_stamps(detail) and not director_approved(detail)
+                and not self.carried_stamp(detail)):
             return "the director's stamp can't be carried to this head"
         key = (tested, head_sha(detail).lower())
         if key not in self.clean_merges:
