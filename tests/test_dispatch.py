@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from commonroom import config, dispatch, gate, liveness, usage, workers
+from commonroom import carry as carry_mod, config, dispatch, gate, liveness, usage, workers
 from commonroom.ledger import Ledger
 
 
@@ -2958,12 +2958,26 @@ class IncompleteReview(unittest.TestCase):
         def tested(body):
             return dispatch.tested_on_head(body, "224aaaa", cmd)
         self.assertTrue(tested(f"**TESTS: PASS 224aaaa {cmd}: Ran 3 tests OK**"))
-        self.assertTrue(tested(f"> - _TESTS: PASS 224aaaa {cmd}: OK_"))
-        for line in ("TESTS: INCOMPLETE 224aaaa x: y", "**TESTS: INCOMPLETE** 224aaaa", "  > TESTS: INCOMPLETE 224aaaa"):
-            self.assertFalse(tested(ok + "\n" + line))
-        self.assertFalse(tested(ok + "\nok\n**TESTS: FAIL 224aaaa x: y**"))
-        self.assertTrue(tested(ok + "\nI saw `TESTS: FAIL` and `TESTS: INCOMPLETE` quoted."))
-        self.assertFalse(tested(f"I ran it. {ok}"))   # a marker in prose is no pass either
+        self.assertTrue(tested(f"> - TESTS: PASS 224aaaa {cmd}: OK"))
+        forms = ["TESTS: INCOMPLETE 224aaaa x", "**TESTS: INCOMPLETE** 224aaaa", "  > TESTS: INCOMPLETE 224aaaa",
+                 "1. TESTS: INCOMPLETE 224aaaa", "2) TESTS: FAIL 224aaaa", "+ TESTS: FAIL 224aaaa", "## TESTS: FAIL 224aaaa",
+                 "| a | TESTS: FAIL 224aaaa |", "| TESTS: INCOMPLETE 224aaaa |", "\u00a0TESTS: FAIL 224aaaa",
+                 "**Result:** TESTS: FAIL 224aaaa", "\tTESTS: INCOMPLETE x", "It is TESTS: FAIL on 224aaaa", "TESTS: FAIL 224aaaa"]
+        for line in forms:
+            with self.subTest(line=line):
+                self.assertFalse(tested(ok + "\n" + line))
+                self.assertFalse(tested(line + "\n" + ok))
+        self.assertTrue(tested(ok + "\nI saw `TESTS: FAIL` and ``TESTS: INCOMPLETE`` quoted."))
+        self.assertTrue(tested(ok + "\n```\nTESTS: FAIL 224aaaa x\n```\n"))
+        self.assertFalse(tested(ok + "\n```\nunclosed fence\nTESTS: FAIL 224aaaa x"))   # in doubt, it blocks
+
+    def test_a_pass_in_code_is_a_quote_not_a_verdict(self):
+        cmd = "python -m unittest"
+        self.assertFalse(dispatch.tested_on_head(f"```\nTESTS: PASS 224aaaa {cmd}: OK\n```", "224aaaa", cmd))
+        self.assertFalse(dispatch.tested_on_head(f"The builder said `TESTS: PASS 224aaaa {cmd}: OK`", "224aaaa", cmd))
+        oid = "224aaaa" + "0" * 33
+        self.assertEqual(carry_mod.tested_sha("```\nTESTS: PASS 224aaaa x\n```\n`TESTS: PASS 224aaaa`", [oid]), "")
+        self.assertEqual(carry_mod.tested_sha("TESTS: PASS 224aaaa x", [oid]), oid)
 
     def test_finished_incomplete_review_is_done_with_its_own_output(self):
         fake, d = self.setup_board([self.incomplete(5)])

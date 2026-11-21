@@ -761,20 +761,19 @@ def head_sha(detail: dict) -> str:
     return detail.get("headRefOid") or (commits[-1].get("oid") or "" if commits else "")
 
 
-# A verdict is a line that begins with the marker (after spaces and markdown `*`, `_`, `>`, `-`). A marker inside a
-# sentence or in backticks is prose that quotes one (commonroom#283).
-TESTS_LINE = re.compile(r"^[ \t*_>\-]*TESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
+TESTS_LINE = re.compile(r"^.*\bTESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
 
 
-INCOMPLETE_LINE = re.compile(r"^[ \t*_>\-]*TESTS:\s*INCOMPLETE\b", re.M | re.I)   # never a pass, whatever else the comment says
+INCOMPLETE_LINE = re.compile(r"\bTESTS:\s*INCOMPLETE\b", re.I)   # never a pass, whatever else the comment says
 
 
 def tested_on_head(body: str, head: str, command: str | None) -> bool:
     """A project without CI merges on its reviewer's word, so the approval must state that the reviewer ran the test
     command on the PR head and it passed: a line `TESTS: PASS <head sha> <command>: <result>`. The sha matters because a
     commit pushed while the review ran can still predate the review comment."""
-    matches = list(TESTS_LINE.finditer(body or ""))
-    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body or ""):
+    body = carry_mod.without_code(body)
+    matches = list(TESTS_LINE.finditer(body))
+    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body):
         return False
     return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
 
