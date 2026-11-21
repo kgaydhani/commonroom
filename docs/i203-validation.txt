@@ -1,0 +1,66 @@
+Issue: https://github.com/kgaydhani/commonroom/issues/203
+PR: https://github.com/kgaydhani/commonroom/pull/278
+Validation date: 2026-11-21 (Codex Windows sandbox)
+
+Follow-up changes
+- Use one monotonic deadline for waiting and execution.
+- Do not acquire a newly freed lock after the wait deadline, or launch a suite
+  whose total allowance has already expired.
+- Print fractional max_minutes accurately instead of rounding them to zero.
+- Add five regression tests for the default, remaining execution allowance,
+  either lock-wait deadline, an expired allowance, and launch-error cleanup.
+
+Focused validation (current working tree)
+Ran through python "D:/Dev/commonroom/room.py" check with a temporary project
+whose test command selects test_check.py. Preserved the existing codex_site
+shim on PYTHONPATH and used a temporary COMMONROOM_HOME.
+Ran 18 tests in 65.003s
+FAILED (failures=4, errors=2)
+
+All five new deadline regression tests pass. Both prompt tests pass, as do
+the within-limit exit-code tests and the unwritable-home fallback tests.
+The process-tree timeout test exceeds its outer 60-second wait and its
+cleanup reports a directory still in use (two errors for one test).
+Four existing integration tests fail because tasklist cannot inspect live
+processes: alive_matches_the_pid_column_only, lock_wait_is_capped_by_max_minutes,
+two_runs_take_turns, and wait_runs_out_with_exit_3.
+Read-only probe: tasklist /FI "PID eq <calling shell PID>" /NH /FO CSV
+Result: exit 1, ERROR: Access denied.
+Reported separately: https://github.com/kgaydhani/commonroom/issues/279
+
+Full-suite attempt
+Command from the worktree root: python "D:/Dev/commonroom/room.py" check
+Ran 701 tests in 843.050s
+FAILED (failures=9, errors=17)
+Exit code: 1. The live wrapper reported "suite lock unavailable here; running
+unlocked". This attempt began before the follow-up edits; the focused run above
+tests the current files, including all five newly added tests.
+
+Full-suite failures/errors by category:
+- test_check: the same four liveness/locking failures and timeout/cleanup errors
+  as the focused run (#279).
+- test_dispatch: unpushed-commit cleanup and five WorktreeLifecycle tests fail
+  on git clone/push with msys sh.exe CreateFileMapping, Win32 error 5 (#184).
+- test_self_serve: both LiveCheckout setups fail on the same git clone error,
+  and test_another_projects_workers_are_not_the_owner fails (#184).
+- test_scratch_env: both Claude-path tests cannot write outside the worktree
+  to D:/commonroom-tmp (#184). The same restriction affects
+  test_codex_site.WorkerEnv.test_claude_env_is_unchanged and both tests in
+  test_metrics.CacheSplit that launch a fake Claude worker.
+- test_hook.HandshakeOnly matches "check" in this worktree's temp path (#277).
+- test_carry.Carry: clean-merge, failed-result-readback and
+  passing-result-readback assertions fail; both failing/unfinished subtests
+  post no result and raise ValueError. Their cause was not established here.
+No unrelated source changes or repeated full-suite attempt were made.
+
+Other checks
+- python -m py_compile commonroom/cli.py tests/test_check.py: passed.
+- git diff --check: passed. Changed source files use LF.
+- PR #278 has no review comments, reviews, or CI checks to address.
+- New tests use temporary project configs, lock files and room homes; no live
+  ledger is opened. No project-specific code or config lines are added.
+- Windows process-tree termination and the complete suite still need validation
+  outside this sandbox. The unrelated path-sensitive hook test is tracked as #277.
+- Running dispatchers pick up code and prompt changes on their next restart;
+  new check invocations load them immediately. No room process was restarted.
+- Changes are left uncommitted for Common Room to commit and push to PR #278.

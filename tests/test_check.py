@@ -12,7 +12,7 @@ from unittest import mock
 
 from commonroom import cli, config, dispatch
 from commonroom.ledger import Ledger
-from commonroom.lock import claim_lock, release_lock
+from commonroom.lock import alive, claim_lock, release_lock
 
 REPO = Path(__file__).resolve().parent.parent
 ROOM = REPO / "room.py"
@@ -50,6 +50,15 @@ class CheckCommand(unittest.TestCase):
         p = self.start()
         out, _ = p.communicate(timeout=60)
         return p.returncode, out
+
+    @contextlib.contextmanager
+    def local_check(self):
+        cfg = config.load(self.project / "room.toml")
+        with mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.home)}), \
+                mock.patch.object(cli.config_mod, "load", return_value=cfg), \
+                mock.patch("os.getcwd", return_value=str(self.project)), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            yield out
 
     def dead_pid(self):
         p = subprocess.Popen([sys.executable, "-c", "pass"]); p.wait()
@@ -131,6 +140,112 @@ class CheckCommand(unittest.TestCase):
         self.assertIn("suite lock busy: report TESTS: INCOMPLETE", out)
         self.assertFalse((self.project / "log.txt").exists())          # the suite never ran
 
+    def test_suite_past_max_minutes_is_killed(self):
+        child = self.project / "child.pid"
+        script = self.project / "slow.py"
+        script.write_text("import subprocess, sys, time\n"
+                          "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                          f"open(r'{child}', 'w').write(str(c.pid))\n"
+                          "time.sleep(60)\n")
+        (self.project / "room.toml").write_text(
+            "[project]\nname = \"demo\"\nrepo = \"o/demo\"\n[goal]\nmilestone = \"M\"\n[checks]\n"
+            f"test = '\"{sys.executable}\" \"{script}\"'\nmax_minutes = 0.1\n")
+        code, out = self.run_check()
+        self.assertEqual(code, 3)
+        self.assertIn("suite ran out of time after 0.1 min", out)
+        self.assertIn("report TESTS: INCOMPLETE", out)
+        self.assertFalse(self.lock.exists())
+        pid = int(child.read_text())
+        for _ in range(50):
+            if not alive(pid):
+                break
+            time.sleep(0.1)
+        self.assertFalse(alive(pid))
+
+    def test_suite_inside_the_limit_passes_its_code(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 5", "max_minutes = 1\n")
+        self.assertEqual(self.run_check()[0], 5)
+
+    def test_default_limit_is_nine_minutes_and_ignores_wall_clock_changes(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 7")
+        with self.local_check(), mock.patch.object(cli.time, "monotonic", return_value=100), \
+                mock.patch.object(cli.time, "time", side_effect=AssertionError("wall clock used")), \
+                mock.patch.object(cli.subprocess, "Popen") as start:
+            start.return_value.wait.return_value = 7
+            self.assertEqual(cli.cmd_check(None), 7)
+        start.return_value.wait.assert_called_once_with(timeout=540)
+        self.assertFalse(self.lock.exists())
+
+    def test_waiting_leaves_only_the_remaining_time_for_the_suite(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 7",
+                          "max_minutes = 0.1\nlock_poll_seconds = 4\n")
+        self.lock.parent.mkdir(parents=True)
+        self.lock.write_text(str(os.getpid()))
+        now = [100]
+
+        def sleep(seconds):
+            now[0] += seconds
+            release_lock(self.lock)   # the holder lets go after the first poll
+
+        with self.local_check(), mock.patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
+                mock.patch.object(cli.time, "sleep", side_effect=sleep), \
+                mock.patch.object(cli.subprocess, "Popen") as start:
+            start.return_value.wait.return_value = 7
+            self.assertEqual(cli.cmd_check(None), 7)
+        start.return_value.wait.assert_called_once_with(timeout=2)
+        self.assertFalse(self.lock.exists())
+
+    def test_lock_poll_does_not_exceed_either_deadline_or_start_the_suite(self):
+        for settings, seconds in (("max_minutes = 0.01\nlock_wait_minutes = 10", 0.6),
+                                  ("max_minutes = 10\nlock_wait_minutes = 0.01", 0.6)):
+            with self.subTest(settings=settings):
+                self.project_with(f"\"{self.project / 'log.txt'}\" 0 0",
+                                  settings + "\nlock_poll_seconds = 30\n")
+                self.lock.parent.mkdir(parents=True, exist_ok=True)
+                self.lock.write_text(str(os.getpid()))
+                now = [0]
+
+                def sleep(duration):
+                    now[0] += duration
+                    release_lock(self.lock)   # free exactly at the deadline: too late to run
+
+                with self.local_check() as out, \
+                        mock.patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
+                        mock.patch.object(cli.time, "sleep", side_effect=sleep) as poll, \
+                        mock.patch.object(cli.subprocess, "Popen") as start:
+                    self.assertEqual(cli.cmd_check(None), 3)
+                poll.assert_called_once_with(seconds)
+                start.assert_not_called()
+                self.assertIn("suite lock busy: report TESTS: INCOMPLETE", out.getvalue())
+
+    def test_expired_allowance_never_starts_a_process(self):
+        with mock.patch.object(cli.time, "monotonic", return_value=100), \
+                mock.patch.object(cli.subprocess, "Popen") as start:
+            self.assertIsNone(cli._run_limited("unused", 100))
+        start.assert_not_called()
+
+    def test_start_failure_releases_the_lock(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 0")
+        with self.local_check(), mock.patch.object(cli.subprocess, "Popen", side_effect=OSError("cannot start")):
+            with self.assertRaisesRegex(OSError, "cannot start"):
+                cli.cmd_check(None)
+        self.assertFalse(self.lock.exists())
+
+    def test_lock_wait_is_capped_by_max_minutes(self):
+        self.project_with(f"\"{self.project / 'log.txt'}\" 0 0",
+                          "max_minutes = 0.03\nlock_wait_minutes = 10\nlock_poll_seconds = 0.2\n")
+        holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.lock.parent.mkdir(parents=True)
+            self.lock.write_text(str(holder.pid))
+            started = time.time()
+            code, out = self.run_check()
+        finally:
+            holder.kill(); holder.wait()
+        self.assertEqual(code, 3)
+        self.assertIn("suite lock busy: report TESTS: INCOMPLETE", out)
+        self.assertLess(time.time() - started, 25)
+
     def test_claim_and_release(self):
         path = Path(self.tmp.name) / "x.lock"
         self.assertIsNone(claim_lock(path))
@@ -168,6 +283,7 @@ class CheckPrompts(unittest.TestCase):
         room_py = (Path(d.room_root) / "room.py").as_posix()
         for text in (build, review):
             self.assertIn(f'python "{room_py}" check', text)
+            self.assertIn("means unfinished: `TESTS: INCOMPLETE` / `REVIEW: INCOMPLETE`, never FAIL", text)
         self.assertIn(f"`TESTS: PASS <sha> {self.TEST}: ", review)
         self.assertTrue(dispatch.tested_on_head(f"[agent:reviewer] REVIEW: APPROVE\nTESTS: PASS abc1234 {self.TEST}: Ran 3 tests ... OK",
                                                 "abc1234", self.TEST))

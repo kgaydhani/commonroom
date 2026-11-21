@@ -1,1 +1,1 @@
-Run the tests through `python "{{room_py}}" check` from your worktree: it runs `{{test}}` under a lock so parallel workers take turns, and exits with that command's code. If it exits 3 (`suite lock busy`), another run is still going: say so, and don't count it as a test failure.
+Run the tests through `python "{{room_py}}" check` from your worktree: it runs `{{test}}` under a lock so parallel workers take turns, and exits with its code. Exit 3 (`suite lock busy`, `suite ran out of time`) means unfinished: `TESTS: INCOMPLETE` / `REVIEW: INCOMPLETE`, never FAIL.
