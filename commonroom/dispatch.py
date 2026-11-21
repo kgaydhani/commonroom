@@ -771,8 +771,9 @@ def tested_on_head(body: str, head: str, command: str | None) -> bool:
     """A project without CI merges on its reviewer's word, so the approval must state that the reviewer ran the test
     command on the PR head and it passed: a line `TESTS: PASS <head sha> <command>: <result>`. The sha matters because a
     commit pushed while the review ran can still predate the review comment."""
-    matches = list(TESTS_LINE.finditer(body or ""))
-    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body or ""):
+    body = carry_mod.without_code(body)
+    matches = list(TESTS_LINE.finditer(body))
+    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body):
         return False
     return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
 
