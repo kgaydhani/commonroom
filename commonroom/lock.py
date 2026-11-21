@@ -1,10 +1,15 @@
 """Pid lock files: one holder at a time, and a lock left by a dead process is taken over."""
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import time
 from pathlib import Path
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_ERROR_INVALID_PARAMETER = 87
 
 
 def acquire_lock(path: Path) -> bool:
@@ -19,9 +24,38 @@ def acquire_lock(path: Path) -> bool:
     return True
 
 
+def _query_process(pid: int) -> bool | None:
+    """Ask Windows directly whether the process is running. None when it can't answer."""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False if ctypes.GetLastError() == _ERROR_INVALID_PARAMETER else None
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code)):
+                return None
+            return code.value == _STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+    except Exception:
+        return None
+
+
 def alive(pid: int) -> bool:
-    out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
-                         capture_output=True, text=True).stdout
+    """Is the process running? When tasklist itself fails (the Codex sandbox denies it), ask Windows through ctypes;
+    if that can't answer either, say alive: taking a live holder's lock is worse than waiting on a dead one."""
+    try:
+        done = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                              capture_output=True, text=True)
+        failed = done.returncode != 0 or "ERROR" in (done.stdout or "") or "ERROR" in (done.stderr or "")
+        out = done.stdout or ""
+    except Exception:
+        failed, out = True, ""
+    if failed:
+        answer = _query_process(pid)
+        return True if answer is None else answer
     return any(len(f := row.split('","')) > 1 and f[1].strip('"') == str(pid) for row in out.splitlines())
 
 
