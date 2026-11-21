@@ -45,9 +45,22 @@ def parse(body: str | None) -> dict | None:
             "approval_at": c.group(1) if c else "", "tested": c.group(2).lower() if c else ""}
 
 
+FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?^[ \t]*\1[`~]*[ \t]*$", re.M | re.S)
+CODE_SPAN = re.compile(r"(`+)(?!`)[^\n]*?(?<!`)\1(?!`)")
+
+
+def without_code(body: str | None) -> str:
+    """The comment with each closed fenced code block and inline code span that holds a `TESTS:` marker removed. A marker
+    inside code is a quote of a verdict, not a verdict (commonroom#283). Code without a marker stays, so a command in
+    backticks on a PASS line still counts. An unclosed fence is left in: when in doubt a marker still blocks."""
+    def drop(m):
+        return "" if re.search(r"TESTS:", m.group(0), re.I) else m.group(0)
+    return CODE_SPAN.sub(drop, FENCE.sub(drop, body or ""))
+
+
 def tested_sha(body: str | None, oids: list[str]) -> str:
     """The PR commit the approval's `TESTS: PASS` line names (it may give 7 characters), or ''."""
-    for line in (body or "").splitlines():
+    for line in without_code(body).splitlines():
         if re.search(r"\bTESTS:\s*PASS\b", line, re.I):
             for token in HEX.findall(line):
                 found = [o for o in oids if o.lower().startswith(token.lower())]

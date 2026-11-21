@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from commonroom import config, dispatch, gate, liveness, usage, workers
+from commonroom import carry as carry_mod, config, dispatch, gate, liveness, usage, workers
 from commonroom.ledger import Ledger
 
 
@@ -2325,16 +2325,47 @@ class HousekeepingFailure(unittest.TestCase):
         self.assertEqual(report["housekeeping"], ["housekeeping failed: KeyError: 'labels'"])
         self.assertEqual(report["job"]["kind"], "build")
 
-    def test_one_issue_per_exception_type_and_none_in_dry_run(self):
+    def test_issue_filed_only_on_the_third_failure_in_a_row(self):
         board = self.broken_board()
         d = self.dispatcher(board)
+        d.run_once(); d.run_once()
+        self.assertFalse(hasattr(board, "created"))
         d.run_once()
         self.assertEqual([c[:2] for c in board.created], [("[room] Housekeeping is failing: KeyError", ("needs:director",))])
+        body = board.created_bodies[0]
+        self.assertIn("3 passes in a row", body)
+        self.assertIn("first failure was at", body)
+        self.assertIn("'labels'", body)
         board.issues.append(issue(900, [], milestone=None) | {"title": "[room] Housekeeping is failing: KeyError"})
         d.run_once()
         self.assertEqual(len(board.created), 1)
+
+    def test_fail_fail_succeed_fail_files_nothing(self):
+        board = self.broken_board()
+        d = self.dispatcher(board)
+        d.run_once(); d.run_once()
+        del board.all_issues                                    # the instance override goes: housekeeping works again
+        d.run_once()
+        board.all_issues = self.broken_board().all_issues
+        d.run_once()
+        self.assertFalse(hasattr(board, "created"))
+
+    def test_a_completed_pass_closes_an_open_failing_issue_but_not_in_dry_run(self):
+        title = "[room] Housekeeping is failing: KeyError"
+        board = FakeBoard([issue(900, [], milestone=None) | {"title": title}])
+        self.dispatcher(board, dry_run=True).run_once()
+        self.assertFalse(hasattr(board, "closed"))
+        self.assertFalse(hasattr(board, "comments"))
+        self.dispatcher(board).run_once()
+        self.assertEqual([n for n, _ in board.closed], [900])
+        self.assertEqual([n for n, _ in board.comments], [900])
+        self.assertIn("recovered", board.comments[0][1])
+
+    def test_no_issue_in_dry_run(self):
         dry = self.broken_board()
-        self.dispatcher(dry, dry_run=True).run_once()
+        d = self.dispatcher(dry, dry_run=True)
+        for _ in range(4):
+            d.run_once()
         self.assertFalse(hasattr(dry, "created"))
 
     def test_a_working_housekeeping_report_is_unchanged(self):
@@ -2915,6 +2946,38 @@ class IncompleteReview(unittest.TestCase):
         body = "TESTS: PASS 224aaaa python -m unittest: OK\nTESTS: INCOMPLETE 224aaaa python -m unittest: timed out"
         self.assertFalse(dispatch.tested_on_head(body, "224aaaa", "python -m unittest"))
         self.assertFalse(dispatch.tested_on_head("TESTS: INCOMPLETE 224aaaa python -m unittest: x", "224aaaa", "python -m unittest"))
+
+    def test_a_quoted_marker_in_prose_is_not_a_verdict(self):
+        fixture = Path(__file__).parent / "fixtures" / "pr278_review.md"   # the real review that was bounced four times
+        body = fixture.read_text(encoding="utf-8")
+        self.assertIn("report TESTS: INCOMPLETE", body)
+        self.assertTrue(dispatch.tested_on_head(body, "762cb7a1234", "python -m unittest discover -s tests"))
+
+    def test_verdict_lines_with_markdown_still_count_and_block(self):
+        cmd, ok = "python -m unittest", "TESTS: PASS 224aaaa python -m unittest: OK"
+        def tested(body):
+            return dispatch.tested_on_head(body, "224aaaa", cmd)
+        self.assertTrue(tested(f"**TESTS: PASS 224aaaa {cmd}: Ran 3 tests OK**"))
+        self.assertTrue(tested(f"> - TESTS: PASS 224aaaa {cmd}: OK"))
+        forms = ["TESTS: INCOMPLETE 224aaaa x", "**TESTS: INCOMPLETE** 224aaaa", "  > TESTS: INCOMPLETE 224aaaa",
+                 "1. TESTS: INCOMPLETE 224aaaa", "2) TESTS: FAIL 224aaaa", "+ TESTS: FAIL 224aaaa", "## TESTS: FAIL 224aaaa",
+                 "| a | TESTS: FAIL 224aaaa |", "| TESTS: INCOMPLETE 224aaaa |", "\u00a0TESTS: FAIL 224aaaa",
+                 "**Result:** TESTS: FAIL 224aaaa", "\tTESTS: INCOMPLETE x", "It is TESTS: FAIL on 224aaaa", "TESTS: FAIL 224aaaa"]
+        for line in forms:
+            with self.subTest(line=line):
+                self.assertFalse(tested(ok + "\n" + line))
+                self.assertFalse(tested(line + "\n" + ok))
+        self.assertTrue(tested(ok + "\nI saw `TESTS: FAIL` and ``TESTS: INCOMPLETE`` quoted."))
+        self.assertTrue(tested(ok + "\n```\nTESTS: FAIL 224aaaa x\n```\n"))
+        self.assertFalse(tested(ok + "\n```\nunclosed fence\nTESTS: FAIL 224aaaa x"))   # in doubt, it blocks
+
+    def test_a_pass_in_code_is_a_quote_not_a_verdict(self):
+        cmd = "python -m unittest"
+        self.assertFalse(dispatch.tested_on_head(f"```\nTESTS: PASS 224aaaa {cmd}: OK\n```", "224aaaa", cmd))
+        self.assertFalse(dispatch.tested_on_head(f"The builder said `TESTS: PASS 224aaaa {cmd}: OK`", "224aaaa", cmd))
+        oid = "224aaaa" + "0" * 33
+        self.assertEqual(carry_mod.tested_sha("```\nTESTS: PASS 224aaaa x\n```\n`TESTS: PASS 224aaaa`", [oid]), "")
+        self.assertEqual(carry_mod.tested_sha("TESTS: PASS 224aaaa x", [oid]), oid)
 
     def test_finished_incomplete_review_is_done_with_its_own_output(self):
         fake, d = self.setup_board([self.incomplete(5)])

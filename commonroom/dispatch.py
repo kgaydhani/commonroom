@@ -771,8 +771,9 @@ def tested_on_head(body: str, head: str, command: str | None) -> bool:
     """A project without CI merges on its reviewer's word, so the approval must state that the reviewer ran the test
     command on the PR head and it passed: a line `TESTS: PASS <head sha> <command>: <result>`. The sha matters because a
     commit pushed while the review ran can still predate the review comment."""
-    matches = list(TESTS_LINE.finditer(body or ""))
-    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body or ""):
+    body = carry_mod.without_code(body)
+    matches = list(TESTS_LINE.finditer(body))
+    if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body):
         return False
     return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
 
@@ -3275,26 +3276,56 @@ class Dispatcher:
         finally:
             path.unlink(missing_ok=True)
 
+    HOUSEKEEPING_FAILS = "housekeeping-fails"          # mark: `at` holds the consecutive failing passes
+    HOUSEKEEPING_FIRST = "housekeeping-first-failure"  # mark: when the current run of failures began
+    HOUSEKEEPING_FAILS_TO_FILE = 3
+    HOUSEKEEPING_TITLE = "[room] Housekeeping is failing"
+
     def safe_housekeeping(self) -> list[str]:
         """Housekeeping, but an exception in it must not stop the pass: the project's builds run the same code."""
         try:
-            return self.housekeeping()
+            actions = self.housekeeping()
         except Exception as exc:   # KeyboardInterrupt and SystemExit are not Exceptions and still propagate
             trace = traceback.format_exc()
             self.log(trace)
             self.escalate_housekeeping(exc, trace)
             return [f"housekeeping failed: {type(exc).__name__}: {exc}"]
+        self.housekeeping_recovered()
+        return actions
+
+    def housekeeping_recovered(self):
+        """A pass completed: reset the failure count, and close a `Housekeeping is failing` issue the room opened."""
+        if self.dry_run:
+            return
+        try:
+            for i in self.board.open_issues(None):
+                if str(i.get("title", "")).startswith(self.HOUSEKEEPING_TITLE):
+                    self.board.comment(i["number"], "Housekeeping recovered: a pass completed. Closing this.")
+                    self.board.close_issue(i["number"], "Housekeeping recovered.")
+        except Exception as err:   # leave the count as it is, so the next completed pass tries again
+            self.log(f"   could not close the housekeeping issue: {err}")
+            return
+        if self.ledger.marked(self.project, self.HOUSEKEEPING_FAILS):
+            self.ledger.mark(self.project, self.HOUSEKEEPING_FAILS, at=0)
 
     def escalate_housekeeping(self, exc: Exception, trace: str):
         if self.dry_run:
             return
-        title = f"[room] Housekeeping is failing: {type(exc).__name__}"
+        count = int(self.ledger.marked(self.project, self.HOUSEKEEPING_FAILS) or 0) + 1
+        if count == 1:
+            self.ledger.mark(self.project, self.HOUSEKEEPING_FIRST)
+        self.ledger.mark(self.project, self.HOUSEKEEPING_FAILS, at=count)
+        if count < self.HOUSEKEEPING_FAILS_TO_FILE:
+            return
+        title = f"{self.HOUSEKEEPING_TITLE}: {type(exc).__name__}"
         try:
-            if any(i["title"] == title for i in self.board.open_issues(None)):
+            if any(str(i["title"]).startswith(self.HOUSEKEEPING_TITLE) for i in self.board.open_issues(None)):
                 return
+            first = self.ledger.marked(self.project, self.HOUSEKEEPING_FIRST) or time.time()
             tail = "\n".join(trace.strip().splitlines()[-12:])
-            body = ("Housekeeping raised in the dispatcher pass, so it was skipped and the pass carried on.\n\n"
-                    f"**Message:** {exc}\n\n```\n{tail}\n```\n\nDue: {time.strftime('%Y-%m-%d')}")
+            body = (f"Housekeeping raised in {count} passes in a row, so each was skipped and the pass carried on. "
+                    f"The first failure was at {time.strftime('%Y-%m-%d %H:%M', time.localtime(first))}.\n\n"
+                    f"**Last message:** {exc}\n\n```\n{tail}\n```\n\nDue: {time.strftime('%Y-%m-%d')}")
             self.board.create_issue(title, body, labels=("needs:director",))
         except Exception as err:   # the board may be the very thing that is broken
             self.log(f"   could not open the housekeeping issue: {err}")
