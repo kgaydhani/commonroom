@@ -75,7 +75,7 @@ class Budget(unittest.TestCase):
                               f"for all templates"])
 
     def test_the_budget_grew_by_exactly_the_comment_folder(self):
-        self.assertEqual(policy.DEFAULTS["templates_max_tokens"], 2530 + tokens("".join(read(p) for p in sorted(COMMENTS.iterdir()))))
+        self.assertEqual(policy.DEFAULTS["templates_max_tokens"], 2640 + tokens("".join(read(p) for p in sorted(COMMENTS.iterdir()))))
 
     def test_padding_past_the_budget_fails_naming_the_file_and_its_size(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -95,7 +95,7 @@ class Budget(unittest.TestCase):
         self.assertEqual([tokens("x" * n) for n in (0, 1, 4, 5, 2800, 2801)], [0, 1, 1, 2, 700, 701])
 
     def test_the_budgets_are_room_wide_only(self):
-        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 2914))
+        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 3024))
         for name in ("prompt_max_tokens", "templates_max_tokens"):
             with self.subTest(name=name):
                 self.assertIn(name, policy.GLOBAL_ONLY)
