@@ -25,7 +25,7 @@ from pathlib import Path
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
-from commonroom import pie_notice, standings as standings_mod
+from commonroom import model_notice, pie_notice, standings as standings_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
 from commonroom import owner_reserve
@@ -1514,6 +1514,7 @@ class Dispatcher:
         actions += self.open_scheduled(everything)
         actions += self.notify_owner(everything)
         actions += self.notify_pie_over()
+        actions += self.notify_model_window()
         actions += self.prune_logs()
         return actions
 
@@ -1705,6 +1706,43 @@ class Dispatcher:
             return actions
         except Exception as exc:   # a notice never stops housekeeping
             self.log(f"   pie notice skipped: {type(exc).__name__}: {str(exc)[:120]}")
+            return []
+
+    def notify_model_window(self, transcripts: Path | None = None) -> list[str]:
+        """Tell the owner, once per session per window period, that one of his own sessions in this project's folder
+        is spending a per-model weekly window that runs out before its reset (commonroom#256). Nothing with one weekly
+        window only, no notifier, or no registered project here: no transcript is read then. His session is not changed."""
+        if not self.notifier or self.dry_run:
+            return []
+        try:
+            now, actions = time.time(), []
+            for provider in standings_mod.SESSION_PROVIDERS:
+                found = weekly.windows(self.ledger, provider, now)
+                if not model_notice.hot(found):
+                    continue
+                reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME)
+                root = self.cfg.get("_root")
+                key = next((k for k, p in reg.projects.items() if root and sessions.path_key(p.path) == sessions.path_key(root)), None)
+                if key is None:
+                    return []
+                start = now - pie_notice.ACTIVE_MINUTES * 60
+                runs = self.ledger.runs_during(provider, now - pie_mod.WEEK, now)
+                spans = sessions.spans({k: p.path for k, p in reg.projects.items()}, start, now,
+                                       exclude_dirs=self.ledger.worker_dirs(now - pie_mod.WEEK),
+                                       exclude_sessions=[r["session_id"] for r in runs if r["session_id"]],
+                                       projects_dir=transcripts)
+                other = model_notice.next_model(runs, [p.window for p in found])
+                for span, model, window in model_notice.due(spans, key, found, now):
+                    mark = model_notice.mark_key(provider, span["session_id"], window)
+                    if self.ledger.marked(self.project, mark) is not None:
+                        continue
+                    if self.tell_owner(f"{model} is using up {window.window}",
+                                       model_notice.text(span, model, window, found, other)):
+                        self.ledger.mark(self.project, mark, now)
+                        actions.append(f"told the owner a session in {key} is spending {window.window} on {provider}")
+            return actions
+        except Exception as exc:   # a notice never stops housekeeping
+            self.log(f"   model window notice skipped: {type(exc).__name__}: {str(exc)[:120]}")
             return []
 
     def cancel_stale_ci_runs(self) -> list[str]:
