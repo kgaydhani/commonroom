@@ -54,6 +54,12 @@ run_timeout_seconds = { value = 3600, min = 300, max = 14400 }
 # lent only while the others are idle (commonroom#240). Today's `[share] idle_minutes`. Room-wide only: every
 # project's dispatcher must judge "active" alike.
 pie_idle_minutes = 60
+# The owner is told once when a project's estimated spend passes its line by this many points, and again only after it
+# has dropped back below its line by as many (or the week resets or a raise changes the line), so the estimate's own
+# movement never repeats a notice (commonroom#243). Room-wide only.
+pie_notice_margin = { value = 1, min = 0 }
+# Minutes: an own session of the owner's counts as active this long after its last message (commonroom#243).
+pie_own_active_minutes = { value = 20, min = 1 }
 
 # Points of the week: the least a project in the pie's registry keeps back for the owner on each provider. Its weekly
 # reserve is the part of the owner's slice (what the shares leave) he hasn't used, and never less than this, so the

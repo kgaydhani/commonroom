@@ -25,7 +25,7 @@ from pathlib import Path
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
-from commonroom import standings as standings_mod
+from commonroom import pie_notice, standings as standings_mod
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
 from commonroom import owner_reserve
@@ -1442,6 +1442,7 @@ class Dispatcher:
             actions += self.cancel_stale_ci_runs()
         actions += self.open_scheduled(everything)
         actions += self.notify_owner(everything)
+        actions += self.notify_pie_over()
         actions += self.prune_logs()
         return actions
 
@@ -1608,6 +1609,32 @@ class Dispatcher:
         if newest and newest != since:
             self.ledger.mark(self.project, "mentions", newest)
         return actions
+
+    def notify_pie_over(self, transcripts: Path | None = None) -> list[str]:
+        """Tell the owner, once per project per weekly window, that one of his own sessions has taken this project over
+        its share (commonroom#243). Nothing with no notifier or an empty or unreadable registry (no transcript is read),
+        and room runs going over need no notice: the pie holds them."""
+        if not self.notifier or self.dry_run:
+            return []
+        try:
+            reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME)
+            root = self.cfg.get("_root")
+            key = next((k for k, p in reg.projects.items() if root and sessions.path_key(p.path) == sessions.path_key(root)), None)
+            if key is None:
+                return []
+            now, actions = time.time(), []
+            for provider in standings_mod.SESSION_PROVIDERS:
+                report = standings_mod.standings(self.ledger, reg, provider, now, transcripts)
+                if report is None or not pie_notice.due(self.ledger, self.project, report, key, now):
+                    continue
+                row = pie_notice.over(report, key)
+                if self.tell_owner(f"{key} is over its share", pie_notice.text(reg, report, key, row)):
+                    pie_notice.sent(self.ledger, self.project, report, key, now)
+                    actions.append(f"told the owner {key} is over its share on {provider}")
+            return actions
+        except Exception as exc:   # a notice never stops housekeeping
+            self.log(f"   pie notice skipped: {type(exc).__name__}: {str(exc)[:120]}")
+            return []
 
     def cancel_stale_ci_runs(self) -> list[str]:
         """Cancel queued PR runs for merged/closed branches and superseded heads: headless agents can't `gh run cancel`
