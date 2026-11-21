@@ -20,4 +20,4 @@ include = ["commonroom*"]
 
 # What the room tells workers (commonroom#216) and its ways-of-working numbers (commonroom#217): read at import.
 [tool.setuptools.package-data]
-commonroom = ["ways/prompts/*.md", "ways/handshake/*.md", "ways/policy.toml"]
+commonroom = ["ways/prompts/*.md", "ways/handshake/*.md", "ways/comments/*.md", "ways/policy.toml"]
