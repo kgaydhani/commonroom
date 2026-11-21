@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
+from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom import owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
@@ -152,6 +152,11 @@ def cmd_gate(args) -> int:
     ledger.close()
     print(("GO " if v.allowed else "HOLD ") + v.reason)
     return 0 if v.allowed else 1
+
+
+def cmd_beat(args) -> int:
+    """One heartbeat over every registered project (commonroom#247)."""
+    return beat_mod.beat(ledger_mod.default_path().parent, log=lambda line: print(f"{datetime.now():%m-%d %H:%M:%S} {line}", flush=True))
 
 
 def cmd_probe(args) -> int:
@@ -885,6 +890,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("tap", help="status-line command: record Claude rate limits").set_defaults(func=cmd_tap)
     p = sub.add_parser("usage", help="latest readings and gate verdicts"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_usage)
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
+    sub.add_parser("beat", help="one heartbeat over every registered project").set_defaults(func=cmd_beat)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
