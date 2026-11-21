@@ -3,281 +3,120 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>P100 Common Room</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<title>Common Room</title>
 <style>
-/* Teletext, calm palette. Black, white and grey do the work. Cyan is the one accent (structure, working, done).
-   Magenta means exactly one thing: it needs you. Nothing flashes. Purely visual: same sections, same behaviour. */
-:root{--k:#000;--w:#f2f2f2;--dim:#8c8c8c;--line:#3a3a3a;--acc:#35e0e0;--you:#ff4fd8;
-  --tt:"VT323","Courier New",monospace}
-*{box-sizing:border-box;border-radius:0!important}
-html,body{background:var(--k)}
-body{margin:0;color:var(--w);font:400 22px/1.15 var(--tt);-webkit-font-smoothing:none}
-a{color:var(--acc);text-decoration:none}
-.wrap{max-width:1200px;margin:0 auto;padding:14px 16px 70px}
-.acc{color:var(--acc)} .you{color:var(--you)} .dim{color:var(--dim)} .w{color:var(--w)}
-.blk{display:inline-block;padding:0 8px;color:var(--k)}
-.bg-acc{background:var(--acc)} .bg-you{background:var(--you)} .bg-dim{background:var(--dim)} .bg-w{background:var(--w)}
-
-/* Header rows */
-.row1{display:flex;justify-content:space-between;gap:12px;font-size:24px;color:var(--dim)}
-.row1 .p{color:var(--acc)}
-.title{background:var(--acc);color:var(--k);margin:6px 0 8px;padding:2px 12px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
-.title .big{font-size:40px;line-height:1;transform:scaleY(1.35);transform-origin:center;padding:6px 0;text-transform:uppercase;letter-spacing:.02em}
-.title .proj{font-size:20px}
-.line{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:4px 0}
-.blocks{display:inline-flex;gap:3px;vertical-align:middle}
-.blocks i{display:inline-block;width:12px;height:16px;background:#1d1d1d}
-.blocks i.on{background:var(--acc)}
-
-/* Layout */
-.grid{display:grid;gap:18px 28px;margin-top:14px;grid-template-columns:minmax(0,1fr) 400px}
-.side{display:grid;gap:18px;align-content:start}
-.full{grid-column:1/-1}
-@media (max-width:920px){.grid{grid-template-columns:1fr}}
-section{background:none;border:0;padding:0;scroll-margin-top:10px}
-h2{margin:0 0 8px;padding:1px 10px;font:400 26px/1.1 var(--tt);text-transform:uppercase;color:var(--k);background:var(--acc);display:flex;justify-content:space-between;align-items:center}
-h2 .pg{font-size:20px}
-#queueSec.needs h2{background:var(--you)}
-
-/* Queue */
-.task{padding:4px 0 6px}
-.task summary{list-style:none;cursor:pointer;display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
-.task summary::-webkit-details-marker{display:none}
-.task summary::before{content:"\25B6";color:var(--k)}
-.task summary:hover::before,.task[open] summary::before{color:var(--acc)}
-.task .num{color:var(--dim)}
-.task .title2{flex:1;min-width:200px;font-size:24px}
-.task .due{color:var(--dim)}
-.reply-waiting{background:var(--you);color:var(--k);padding:0 6px}
-.sent{color:var(--dim)}
-.brief{color:var(--dim);white-space:pre-wrap;margin:6px 0 6px 22px;max-height:260px;overflow:auto;font-size:20px;line-height:1.15}
-.msg{margin:4px 0 4px 22px;font-size:21px} .msg b{font-weight:400;margin-right:8px} .msg.you b{color:var(--dim)} .msg.room b{color:var(--acc)}
-form.reply{display:flex;gap:10px;margin:8px 0 0 22px}
-input{flex:1;min-width:0;font:400 22px var(--tt);background:var(--k);color:var(--w);border:0;border-bottom:3px solid var(--line);padding:4px 2px;outline:none}
-input::placeholder{color:var(--dim)} input:focus{border-bottom-color:var(--acc)}
-button{font:400 22px var(--tt);border:0;padding:2px 14px;cursor:pointer;background:var(--acc);color:var(--k);text-transform:uppercase}
-button:hover{background:var(--w)} button:disabled{opacity:.5;cursor:default}
-button.alt{background:var(--w);color:var(--k)}
-.hint{color:var(--dim);font-size:19px;margin:4px 0 0 22px}
-.empty{color:var(--dim);padding:4px 0}
-
-/* Proof: dotted leaders, double-height numbers */
-.lead{display:flex;align-items:baseline;gap:8px;margin:2px 0}
-.lead .k{white-space:nowrap;color:var(--dim)}
-.lead .fill{flex:1;border-bottom:3px dotted var(--line);transform:translateY(-6px)}
-.lead .v{font-size:34px;line-height:1;transform:scaleY(1.2);color:var(--w)}
-
-/* Allowance: mosaic bars */
-.prov{margin-bottom:10px}
-.prov .head{display:flex;justify-content:space-between;align-items:baseline}
-.prov .why{color:var(--dim);font-size:19px;margin:0 0 4px}
-.bar{position:relative;height:16px;background:repeating-linear-gradient(90deg,#1d1d1d 0 10px,var(--k) 10px 12px);margin:2px 0}
-.bar>i{position:absolute;inset:0 auto 0 0;background:repeating-linear-gradient(90deg,var(--acc) 0 10px,var(--k) 10px 12px)}
-.bar>b{position:absolute;top:-4px;bottom:-4px;width:4px;background:var(--w)}
-.barlabel{display:flex;justify-content:space-between;font-size:19px;color:var(--dim)}
-
-/* Live feed and runs */
-.feedhead{color:var(--dim);font-size:19px;margin-bottom:4px}
-pre.feed{margin:0;font:400 20px/1.15 var(--tt);color:var(--dim);white-space:pre-wrap;max-height:300px;overflow:auto}
-table{width:100%;border-collapse:collapse;font-size:21px}
-td{padding:1px 10px 3px 0;vertical-align:top}
-td.t{color:var(--dim);white-space:nowrap}
-.st.done{color:var(--acc)} .st.running,.st.failed,.st.blocked{color:var(--w)} .st.room-error{color:var(--dim)}
-.out.none{color:var(--dim)}
-.role{text-transform:uppercase}
-
-/* Board */
-.cols{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
-@media (max-width:920px){.cols{grid-template-columns:1fr 1fr}}
-.col h3{margin:0 0 4px;padding:0 6px;font:400 22px var(--tt);text-transform:uppercase;color:var(--k);background:var(--acc);display:inline-block}
-.col.blocked h3{background:var(--dim)}
-.card{font-size:20px;line-height:1.1;margin:3px 0}
-.card .n{color:var(--dim);margin-right:6px}
-.col.blocked .card{color:var(--dim)}
-
-/* Controls */
-.ctrl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:end}
-.ctrl form{display:flex;gap:10px}
-.breaker{color:var(--you);margin-top:6px}
-
-/* Fastext bar */
-.fastext{position:fixed;left:0;right:0;bottom:0;background:var(--k);display:flex;justify-content:center;gap:28px;padding:6px 10px;font-size:24px;border-top:2px solid #1d1d1d}
-.fastext a{text-transform:uppercase;color:var(--acc)}
+body{margin:0;overflow-wrap:anywhere;font:16px/1.4 system-ui,sans-serif;color:#222;background:#fff}
+main{box-sizing:border-box;max-width:46rem;margin:0 auto;padding:1rem}
+h1{font-size:1.2rem;margin:0 0 .5rem}
+h2{font-size:1rem;margin:1.5rem 0 .4rem;border-bottom:1px solid #ccc}
+p{margin:.3rem 0}
+.dim{color:#666}
+.bad{color:#a00;font-weight:600}
+.row{margin:.5rem 0}
+.row .top{display:flex;justify-content:space-between;gap:.5rem;flex-wrap:wrap}
+.bar{position:relative;height:.8rem;background:#e6e6e6;margin:.2rem 0}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:#36c}
+.bar.over i{background:#c60}
+.bar b{position:absolute;top:-.2rem;bottom:-.2rem;width:2px;background:#000}
+details{margin:.4rem 0}
+summary{cursor:pointer}
+ul{margin:.3rem 0;padding-left:1.2rem}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <div class="row1"><span class="p">P100</span><span class="w">COMMON ROOM</span><span id="clock">--- -- --- --:--</span></div>
-  <div class="title"><span class="big" id="projBig">Common Room</span><span class="proj" id="proj"></span></div>
-  <div class="line"><span class="blk bg-acc">GOAL</span><span id="goalName">-</span><span class="blocks" id="goalBlocks"></span><span class="dim" id="goalMeta"></span></div>
-  <div class="line" id="beacon"><span class="blk bg-dim" id="beaconState">CHECKING</span><span id="beaconWhat"></span></div>
-
-  <section id="reportSec" style="margin-top:12px"><h2><span>Status report</span><span class="pg" id="reportWhen">P050</span></h2>
-    <div class="line"><span class="blk bg-dim" id="verdict">NO REPORT YET</span><span id="headline" class="w">The auditor publishes an overview here after its first run.</span></div>
-    <details id="reportFull"><summary class="dim" style="cursor:pointer;list-style:none">▶ Full report</summary><pre class="feed w" id="reportBody" style="color:var(--w);max-height:none;margin-top:6px"></pre></details>
-  </section>
-
-  <div class="grid">
-    <section id="queueSec"><h2><span>Your queue · <span id="qcount">0</span></span><span class="pg">P201</span></h2><div id="queue"><div class="empty">Loading</div></div></section>
-    <div class="side">
-      <section id="proofSec"><h2><span>Proof · last 24h</span><span class="pg">P300</span></h2><div id="proof"></div></section>
-      <section id="metricsSec"><h2><span>Cost per merge</span><span class="pg">P350</span></h2><table id="metrics"></table><div id="metricsFlags"></div></section>
-      <section id="usageSec"><h2><span>Allowance</span><span class="pg">P400</span></h2><div id="usage"></div></section>
-    </div>
-    <section class="full" id="liveSec"><h2><span>Live</span><span class="pg">P500</span></h2><div class="feedhead" id="feedHead"></div><pre class="feed" id="feed"></pre></section>
-    <section class="full" id="runsSec"><h2><span>Recent runs</span><span class="pg">P600</span></h2><table id="runs"></table></section>
-    <section class="full" id="boardSec"><h2><span>Board</span><span class="pg">P700</span></h2><div class="cols" id="board"></div></section>
-    <section class="full" id="ctrlSec"><h2><span>Suggestions and control</span><span class="pg">P800</span></h2>
-      <div class="ctrl">
-        <form id="suggest"><input name="title" placeholder="Suggest something. The director judges it on its merits"><button>Suggest</button></form>
-        <div><button class="alt" id="pause">Pause autonomy</button></div>
-      </div>
-      <div id="breakers"></div>
-    </section>
-  </div>
-</div>
-<nav class="fastext"><a href="#queueSec">Queue</a><a href="#runsSec">Runs</a><a href="#boardSec">Board</a><a href="#usageSec">Usage</a></nav>
+<main>
+<h1>Common Room</h1>
+<p id="week" class="dim">Loading...</p>
+<p id="verdicts"></p>
+<h2>The pie</h2>
+<div id="pie"></div>
+<h2>Waiting on you</h2>
+<div id="waiting"></div>
+<h2>Projects</h2>
+<div id="projects"></div>
+<p class="dim">est. = an estimate: the weekly meter covers the whole plan, so each part is inferred.</p>
+</main>
 <script>
-const $=id=>document.getElementById(id);
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const ago=t=>{if(!t)return'-';const s=Math.max(0,Date.now()/1000-t);return s<90?Math.round(s)+'s':s<5400?Math.round(s/60)+'m':(s/3600).toFixed(1)+'h'};
-const clock=t=>t?new Date(t*1000).toLocaleString([],{weekday:'short',hour:'2-digit',minute:'2-digit'}):'?';
-const roleName={builder:'Builder',reviewer:'Reviewer',director:'Director',scout:'Scout',merge:'Merge',analyst:'Analyst',playtester:'Playtester'};
-let pageVersion=null; const openItems=new Set();
+"use strict";
+const $ = id => document.getElementById(id);
+function el(tag, text, cls, parent) {
+  const e = document.createElement(tag);
+  if (text != null) e.textContent = text;
+  if (cls) e.className = cls;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const when = t => new Date(t * 1000).toLocaleString([], {weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
+const ago = s => s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " minutes old" : s < 172800 ? Math.round(s / 3600) + " hours old" : Math.round(s / 86400) + " days old";
+const pct = n => (n == null ? "-" : n.toFixed(1) + "%");
 
-function tick(){const d=new Date();$('clock').textContent=d.toLocaleDateString([],{weekday:'short',day:'2-digit',month:'short'})+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'})}
-setInterval(tick,1000);tick();
+function render(d) {
+  const w = $("week");
+  w.className = "";
+  if (!d.week) {
+    w.className = "dim";
+    w.textContent = "No current weekly reading.";
+  } else {
+    w.textContent = `${d.week.week_gone_pct.toFixed(0)}% of the week gone, ${d.week.plan_used_pct.toFixed(0)}% of the plan used, resets ${when(d.week.resets_at)}. Reading ${ago(d.week.reading_age_seconds)}.`;
+    if (d.week.stale) el("span", " Stale: use since then is not counted.", "bad", w);
+  }
+  const v = $("verdicts");
+  v.textContent = "";
+  el("span", "Gate: " + (d.gate.go ? "go" : "hold") + ", " + d.gate.reason + ". ", null, v);
+  if (d.pie) el("span", "Pie: " + (d.pie.go === null ? "" : d.pie.go ? "go, " : "hold, ") + d.pie.reason + ".", null, v);
+  if (d.error) el("p", d.error, "bad", v);
 
-function blocks(el,frac,n=20){el.innerHTML=Array.from({length:n},(_,i)=>`<i class="${i<Math.round(frac*n)?'on':''}"></i>`).join('')}
+  const pie = $("pie");
+  pie.textContent = "";
+  if (!d.registered) el("p", "No projects are registered, so there is no pie. Showing the one project this page is started for.", "dim", pie);
+  for (const r of d.rows) {
+    const row = el("div", null, "row", pie);
+    const top = el("div", null, "top", row);
+    el("span", `${r.name}: ${r.state}`, null, top);
+    const money = r.room_est == null ? "" : ` (room ${pct(r.room_est)}, own sessions ${pct(r.own_sessions_est)})`;
+    el("span", `share ${r.share}%, spent est. ${pct(r.spent_est)}${money}, line ${pct(r.line)}`, "dim", top);
+    const bar = el("div", null, "bar" + (r.state === "over" ? " over" : ""), row);
+    const cap = Math.max(r.share, r.line, r.spent_est, 1);
+    el("i", null, null, bar).style.width = Math.min(100, 100 * r.spent_est / cap) + "%";
+    el("b", null, null, bar).style.left = Math.min(99, 100 * r.line / cap) + "%";
+  }
 
-function beacon(d){
-  const run=d.running[0];
-  const paused=d.breakers.find(b=>b.kind=='paused_by_owner'), breaker=d.breakers.find(b=>b.kind!='paused_by_owner');
-  const allHeld=Object.values(d.usage).every(v=>!v.allowed);
-  let label='IDLE',cls='bg-dim',what='<span class="dim">Nothing ready to run. Waiting for the next task or trigger.</span>';
-  if(run){label=d.running.length>1?`NOW ×${d.running.length}`:'NOW';cls='bg-acc';
-    what=d.running.map(r=>`<span class="w">${esc((roleName[r.role]||r.role).toUpperCase())} ON ${esc(r.task||'-')}</span> <span class="dim">· ${esc(r.provider)} ${esc(r.model||'')} · ${ago(r.started_at)}</span>`).join(' &nbsp;|&nbsp; ')}
-  else if(breaker){label='STOPPED';cls='bg-you';what=`<span class="you">${esc(breaker.detail)}</span>`}
-  else if(paused){label='PAUSED';cls='bg-you';what='<span class="you">Autonomy paused from this page.</span>'}
-  else if(allHeld){label='HELD';cls='bg-dim';what=`<span class="dim">${esc(Object.values(d.usage).map(v=>v.reason).join(' · '))}</span>`}
-  $('beaconState').className='blk '+cls;$('beaconState').textContent=label;$('beaconWhat').innerHTML=what;
+  const wt = $("waiting");
+  wt.textContent = "";
+  if (!d.waiting.length) el("p", "Nothing is waiting on you.", "dim", wt);
+  else {
+    const ul = el("ul", null, null, wt);
+    for (const t of d.waiting.slice(0, 8)) {
+      const li = el("li", null, null, ul);
+      const a = el("a", `#${t.number} ${t.title}`, null, li);
+      if (/^https:\/\//.test(t.url || "")) a.href = t.url;
+      el("span", ` (${t.project}${t.due ? ", due " + t.due : ""})`, "dim", li);
+    }
+    if (d.waiting.length > 8) el("p", `and ${d.waiting.length - 8} more`, "dim", wt);
+  }
+
+  const pj = $("projects");
+  pj.textContent = "";
+  for (const p of d.projects) {
+    const det = el("details", null, null, pj);
+    el("summary", `${p.name}: ${p.status.text}${p.status.until ? " " + when(p.status.until) : ""}`, null, det);
+    el("p", p.landed_7d ? `Landed in the last 7 days: ${p.landed_7d} (latest ${p.landed_recent.join(", ")}).` : "Nothing landed in the last 7 days.", null, det);
+    if (p.breakers.length) for (const b of p.breakers) el("p", `Stopped since ${when(b.since)}: ${b.words}`, "bad", det);
+    else el("p", "No open breakers.", "dim", det);
+    el("a", "details", null, det).href = "/api/state";
+  }
 }
 
-function renderQueue(q){
-  const el=$('queue');
-  $('queueSec').classList.toggle('needs',!!(q&&q.length&&!q.error&&q.some(i=>{const l=i.comments[i.comments.length-1];return l&&l.who=='agent'})));
-  if(!q||q.error||!q.length){$('qcount').textContent='0';el.innerHTML=q&&q.error?`<div class="you">${esc(q.error)}</div>`:'<div class="empty">Nothing needs you right now.</div>';return}
-  $('qcount').textContent=q.length;
-  const a=document.activeElement;
-  if(a&&a.tagName=='INPUT'&&el.contains(a)&&a.value)return; // don't redraw while you're mid-sentence
-  const status=i=>{const last=i.comments[i.comments.length-1];if(!last)return'';
-    return last.who=='agent'?'<span class="reply-waiting">! REPLY WAITING</span>':'<span class="sent">SENT · WITH THE DIRECTOR</span>'};
-  el.innerHTML=q.map(i=>`<details class="task" data-n="${i.number}" ${openItems.has(i.number)?'open':''}>
-    <summary><span class="num">#${i.number}</span><span class="title2">${esc(i.title.replace(/^\[You\]\s*/,''))}</span>${i.due?`<span class="due">DUE ${esc(i.due)}</span>`:''}${status(i)}</summary>
-    <div class="brief">${esc(i.brief)}</div>
-    ${i.comments.map(c=>`<div class="msg ${c.who=='you'?'you':'room'}"><b>${c.who=='you'?'YOU':'ROOM'}</b>${esc(c.body)}</div>`).join('')}
-    <form class="reply" data-n="${i.number}"><input name="text" placeholder="Answer, question, or what you delivered"><button>Send</button></form>
-    <div class="hint">If your reply completes the task, the director checks it and closes it. Otherwise it answers. <a href="${esc(i.url)}" target="_blank">GitHub</a></div>
-  </details>`).join('');
-  el.querySelectorAll('details').forEach(x=>x.ontoggle=()=>{const n=+x.dataset.n;x.open?openItems.add(n):openItems.delete(n)});
-  el.querySelectorAll('form').forEach(f=>f.onsubmit=async e=>{e.preventDefault();const t=f.text.value.trim();
-    if(!t){f.text.placeholder='Write something first';return}
-    const btn=f.querySelector('button');btn.disabled=true;
-    const res=await post('/api/comment',{number:+f.dataset.n,text:t});btn.disabled=false;
-    if(res.error){alert(res.error);return}
-    f.text.value='';document.activeElement&&document.activeElement.blur();
-    f.insertAdjacentHTML('beforebegin',`<div class="msg you"><b>YOU</b>${esc(t)} <span class="sent">SENT</span></div>`);
-    setTimeout(refresh,1500)});
+async function load() {
+  try {
+    const r = await fetch("/api/page", {cache: "no-store"});
+    render(await r.json());
+  } catch (e) {
+    $("week").textContent = "The room's dashboard can't be reached: " + e;
+  }
 }
-
-function renderProof(p){
-  const rate=p.runs_24h?Math.round(100*p.productive_24h/p.runs_24h):0;
-  const row=(k,v,cls)=>`<div class="lead"><span class="k">${k}</span><span class="fill"></span><span class="v ${cls}">${esc(v)}</span></div>`;
-  $('proof').innerHTML=row('MERGED',p.merged_24h,'')+row('RUNS WITH OUTPUT',p.runs_24h?rate+'%':'-','')
-    +row('MODEL RUNS',p.runs_24h,'')+row('SINCE LAST MERGE',ago(p.last_merge_at),'')
-    +row('CLAUDE WEEKLY SPENT',p.weekly_spent_24h+'%','')+row('FAILURES',p.failed_24h,'');
-}
-
-function renderMetrics(m){
-  if(!m){$('metrics').innerHTML='';return}
-  const t=m.targets||{},a=m['7d']||{},b=m['30d']||{};
-  const n=v=>v==null?'n/a':v>=1e6?(v/1e6).toFixed(1)+'M':v>=1e4?Math.round(v/1e3)+'k':String(v);
-  const row=(k,key,target)=>`<tr><td class="t">${k}</td><td>${n(a[key])}</td><td>${n(b[key])}</td><td class="t">${target==null?'':'&le;'+n(target)}</td></tr>`;
-  const roles=[...new Set([...Object.keys(a.runs_per_merge_by_role||{}),...Object.keys(b.runs_per_merge_by_role||{})])];
-  const models=[...new Set([...Object.keys(a.by_builder_model||{}),...Object.keys(b.by_builder_model||{})])];
-  const sub=(x,k,key)=>((x[k]||{})[key]);
-  $('metrics').innerHTML=`<tr><td class="t"></td><td class="dim">7D</td><td class="dim">30D</td><td class="dim">TARGET</td></tr>`
-    +row('MERGES','merges')+row('INPUT TOKENS','input_tokens_per_merge',t.input_tokens_per_merge)
-    +row('&nbsp;UNCACHED','uncached_per_merge')+row('&nbsp;CACHE WRITE','cache_write_per_merge')+row('&nbsp;CACHE READ','cache_read_per_merge')
-    +row('REVIEW RUNS','review_runs_per_merge',t.review_runs_per_merge)+row('CHANGES ROUNDS','changes_rounds_per_merge')
-    +row('RUNS','runs_per_merge')+roles.map(r=>`<tr><td class="t">&nbsp;${esc((roleName[r]||r).toUpperCase())}</td><td>${n((a.runs_per_merge_by_role||{})[r])}</td><td>${n((b.runs_per_merge_by_role||{})[r])}</td><td></td></tr>`).join('')
-    +row('MINUTES','minutes_per_merge')
-    +models.map(k=>`<tr><td class="t">&nbsp;${esc(k)} REV/CHG</td><td>${n(sub(a.by_builder_model||{},k,'review_runs_per_merge'))}/${n(sub(a.by_builder_model||{},k,'changes_rounds_per_merge'))}</td><td>${n(sub(b.by_builder_model||{},k,'review_runs_per_merge'))}/${n(sub(b.by_builder_model||{},k,'changes_rounds_per_merge'))}</td><td></td></tr>`).join('');
-  $('metricsFlags').innerHTML=(m.over_target||[]).map(f=>`<div><span class="blk bg-w">OVER</span> ${esc(f)}</div>`).join('');
-}
-
-function renderUsage(u){
-  let h='';
-  for(const [p,v] of Object.entries(u)){
-    h+=`<div class="prov ${p}"><div class="head"><span class="w">${p.toUpperCase()}</span><span class="blk ${v.allowed?'bg-acc':'bg-dim'}">${v.allowed?'GO':'HOLD'}</span></div><div class="why">${esc(v.reason)}</div>`;
-    for(const w of ['five_hour','seven_day']){const x=v.windows[w];if(!x)continue;const cap=w=='seven_day'?v.detail.weekly_pace:v.detail.five_hour_cap;
-      h+=`<div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i>${cap!=null?`<b style="left:${Math.min(100,cap)}%" title="pace limit"></b>`:''}</div>
-          <div class="barlabel"><span>${w=='five_hour'?'5-HOUR':'WEEKLY'} ${x.used_pct.toFixed(0)}%</span><span>RESETS ${clock(x.resets_at).toUpperCase()}</span></div>`}
-    for(const x of (v.weekly||[])){const m=x.window=='seven_day'?'':x.window.replace(/^seven_day[_:]/,'').toUpperCase();
-      if(m&&x.used_pct!=null)h+=`<div class="bar"><i style="width:${Math.min(100,x.used_pct)}%"></i></div>
-          <div class="barlabel"><span>WEEKLY ${esc(m)} ${x.used_pct.toFixed(0)}%</span><span>RESETS ${clock(x.resets_at).toUpperCase()}</span></div>`;
-      h+=`<div class="why">WEEK${m?' '+esc(m):''}: ${x.used_pct==null?'UNKNOWN, MISSING FROM THE LATEST READING':x.rate_per_day==null?'TOO FEW READINGS TO PROJECT':x.runs_out_at==null?'LASTS THE WEEK':'RUNS OUT '+clock(x.runs_out_at).toUpperCase()}</div>`}
-    h+='</div>'}
-  $('usage').innerHTML=h;
-}
-
-function renderRuns(runs){
-  $('runs').innerHTML=runs.map(r=>`<tr>
-    <td class="t">${clock(r.started_at)}</td>
-    <td><span class="role">${esc(roleName[r.role]||r.role)}</span> <span class="dim">${esc(r.provider)} ${esc(r.model||'')}</span></td>
-    <td>${esc(r.task||'')}</td>
-    <td><span class="st ${esc(r.status)}">${esc(r.status).toUpperCase()}</span></td>
-    <td class="out ${r.outputs.length?'':'none'}">${r.outputs.length?r.outputs.map(o=>esc(o.ref)).join(', '):(r.status=='running'?'<span class="w">IN PROGRESS</span>':'NO OUTPUT')}</td>
-    <td class="t">${r.weekly_end!=null&&r.weekly_start!=null?'+'+(r.weekly_end-r.weekly_start).toFixed(1)+'% wk':''}${r.cost_usd?' ~$'+r.cost_usd.toFixed(2):''}</td></tr>`).join('');
-}
-
-function renderBoard(items){
-  if(!items||items.error){$('board').innerHTML=`<span class="dim">${esc(items&&items.error||'')}</span>`;return}
-  const machine=items.filter(i=>!i.labels.includes('owner:human'));
-  const has=(i,l)=>i.labels.includes(l);
-  const col=(name,cls,test)=>{const xs=machine.filter(test);
-    return `<div class="col ${cls}"><h3>${name} ${xs.length}</h3>${xs.map(i=>`<div class="card"><span class="n">#${i.number}</span>${esc(i.title)}</div>`).join('')||'<div class="dim">-</div>'}</div>`};
-  $('board').innerHTML=col('Ready','ready',i=>has(i,'status:ready'))+col('In progress','prog',i=>has(i,'status:in-progress'))
-    +col('In review','review',i=>has(i,'status:review'))+col('Blocked','blocked',i=>has(i,'status:blocked'));
-}
-
-async function refresh(){
-  let d;try{const r=await fetch('/api/state',{cache:'no-store'});d=await r.json()}catch(e){return}
-  if(pageVersion===null)pageVersion=d.version;else if(d.version!==pageVersion){location.reload();return}
-  $('projBig').textContent=(d.project.name||'Common Room')+' studio';$('proj').textContent=d.project.repo||'';
-  const m=d.milestone;
-  if(m&&!m.error){const total=m.open_issues+m.closed_issues;$('goalName').textContent=d.goal;blocks($('goalBlocks'),total?m.closed_issues/total:0);
-    $('goalMeta').textContent=`${m.closed_issues}/${total} DONE${m.due_on?' · DUE '+m.due_on.slice(0,10):''}`}
-  else $('goalName').textContent=d.goal||'no goal set';
-  const rp=d.report;
-  if(rp){const cls={'ON TRACK':'bg-acc','AT RISK':'bg-w','OFF TRACK':'bg-you'}[rp.verdict]||'bg-dim';
-    $('verdict').className='blk '+cls;$('verdict').textContent=rp.verdict;$('headline').textContent=rp.headline;
-    $('reportWhen').textContent='UPDATED '+new Date(rp.updated*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+ago(rp.updated)+' AGO';
-    if(!$('reportFull').open)$('reportBody').textContent=rp.body}
-  beacon(d);renderQueue(d.owner_queue);renderProof(d.proof);renderMetrics(d.metrics);renderUsage(d.usage);renderRuns(d.runs);renderBoard(d.board);
-  const w=d.worker;$('feedHead').textContent=w?`${w.file} · ${w.count} events · updated ${ago(w.updated)} ago`:'No worker activity yet';
-  $('feed').textContent=w?w.events.join('\n'):'';const f=$('feed');f.scrollTop=f.scrollHeight;
-  const paused=d.breakers.some(b=>b.kind=='paused_by_owner');$('pause').textContent=paused?'Resume autonomy':'Pause autonomy';$('pause').dataset.paused=paused?'1':'';
-  $('breakers').innerHTML=d.breakers.filter(b=>b.kind!='paused_by_owner').map(b=>`<div class="breaker">STOPPED: ${esc(b.kind)}: ${esc(b.detail)}</div>`).join('');
-}
-async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Room':'1'},body:JSON.stringify(body||{})});return r.json()}
-$('pause').onclick=async()=>{await post($('pause').dataset.paused?'/api/resume':'/api/pause');refresh()};
-$('suggest').onsubmit=async e=>{e.preventDefault();const t=e.target.title.value.trim();if(!t)return;const res=await post('/api/suggest',{title:t});
-  if(res.url){e.target.title.value='';e.target.title.placeholder='Filed. The director will triage it'}else alert('Failed: '+res.error)};
-refresh();setInterval(refresh,8000);
+load();
+setInterval(load, 30000);
 </script>
 </body>
 </html>

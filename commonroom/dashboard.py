@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from commonroom import board, config as config_mod, metrics, weekly
+from commonroom import board, config as config_mod, metrics, page, weekly
 from commonroom.dispatch import verdicts
 from commonroom.ledger import Ledger
 
@@ -78,6 +78,17 @@ def latest_report(ledger: Ledger, project: str | None) -> dict | None:
     return {"verdict": verdict, "headline": headline, "body": rest.strip(), "updated": path.stat().st_mtime}
 
 
+def page_data(cfg: dict) -> dict:
+    """The one page's data (commonroom#248): see `commonroom.page`."""
+    ledger = Ledger()
+    try:
+        trusted = config_mod.trusted(cfg)
+        return page.page_state(ledger, cfg, time.time(),
+                               queue=lambda repo: cached("owner:" + repo, 30, lambda: owner_queue(repo, trusted)))
+    finally:
+        ledger.close()
+
+
 def state(cfg: dict) -> dict:
     ledger = Ledger()
     try:
@@ -139,6 +150,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             self.send(200, PAGE.encode(), "text/html; charset=utf-8")
+        elif self.path == "/api/page":
+            self.send(200, json.dumps(page_data(self.cfg), default=str).encode(), "application/json")
         elif self.path == "/api/state":
             self.send(200, json.dumps(state(self.cfg), default=str).encode(), "application/json")
         else:
