@@ -108,6 +108,13 @@ class Lazy(unittest.TestCase):
         trip = dispatch.check_progress(self.ledger, "t", self.now, landed=lambda: self.dispatcher([]).landed_count(self.now))
         self.assertEqual(trip["kind"], "no_progress")
 
+    def test_a_merge_in_the_window_means_the_command_is_not_run(self):
+        m = self.ledger.start_run("t", "#2", "merge", "claude", now=self.now - 2000)
+        self.ledger.finish_run(m, "ok", now=self.now - 1900)
+        d = self.dispatcher([])
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", self.now, landed=lambda: d.landed_count(self.now)))
+        self.assertEqual(self.ran(), 0)
+
     def test_a_failing_command_is_logged_and_merges_decide(self):
         logs = []
         self.cfg["progress"]["landed"][-1] = "raise SystemExit(3)"

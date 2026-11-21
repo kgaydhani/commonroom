@@ -1156,7 +1156,7 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
     With `attribute` (a guest sharing the plan), only the project's share of Claude run time counts as its spend.
     The room's work must have run `min_work` seconds in the window first (None: the room's PROGRESS_MIN_WORK).
     `landed`: what the project's own `[progress] landed` command counted in the window; None counts merges.
-    It may be a callable returning that, called only when spend is over the limit and the room worked."""
+    It may be a callable returning that, called only when spend is over the limit, the room worked and nothing merged."""
     since = now - 86400
     runs = [r for r in ledger.recent_runs(project, limit=500) if r["started_at"] >= since]
     work = [r["started_at"] for r in runs if r["provider"] == "claude" and r["autonomous"] and r["role"] != "merge"]
@@ -1186,6 +1186,8 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
     if spent <= spend_limit:
         return None   # under the limit: nothing to decide, so the project's landed command is not run
     if callable(landed):
+        if any(r["role"] == "merge" for r in runs):
+            return None   # a merge in the window is progress: the command is not run
         landed = landed()   # only now does the answer matter (a command can take up to a minute)
     merged = sum(1 for r in runs if r["role"] == "merge") if landed is None else landed
     if merged == 0:
