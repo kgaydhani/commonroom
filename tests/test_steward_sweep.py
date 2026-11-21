@@ -120,6 +120,16 @@ class Digest(unittest.TestCase):
         self.assertNotIn("Board check", self.digest())
         self.assertTrue(self.digest().endswith("\n") and not self.digest().endswith("\n\n"))
 
+    def test_the_digest_caps_the_board_check_and_counts_the_rest(self):
+        found = [{"invariant": "unplaced", "number": n, "detail": f"#{n} unplaced."} for n in range(1, 31)]
+        found.append({"invariant": "owner-overdue", "number": 99, "detail": "#99 overdue."})
+        self.ledger.record_findings("alpha", found)
+        self.ledger.mark("alpha", Ledger.SWEEP)
+        lines = self.digest().split("## Board check, latest sweep\n")[1].splitlines()
+        self.assertEqual(len(lines), handshake.BOARD_CAP + 1)
+        self.assertEqual(lines[0], "- #99 overdue.")
+        self.assertIn(f"and {31 - handshake.BOARD_CAP} more", lines[-1])
+
     def test_the_digest_lists_the_latest_findings_or_says_nothing_is_stale(self):
         self.ledger.record_findings("alpha", [{"invariant": "unplaced", "number": 5, "detail": "#5 has no label."}])
         self.assertIn("## Board check, latest sweep\n- #5 has no label.\n", self.digest())

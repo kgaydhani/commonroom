@@ -313,13 +313,27 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
     return "\n".join(lines)
 
 
+BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
+BOARD_FIRST = {"owner-overdue": 0, "blocked-on-nothing": 1}   # these lead; the rest follow in the order found
+
+
+BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
+BOARD_FIRST = {"owner-overdue": 0, "blocked-on-nothing": 1}   # these lead; the rest follow in the order found
+
+
 def _board(ledger: Ledger, p: registry.Project) -> str | None:
     """The steward's latest sweep of the project's board; None if it has never run (the digest then shows nothing new)."""
     name = ledger_name(p)
     if ledger.marked(name, ledger.SWEEP) is None:
         return None
     found = ledger.findings(name)
-    return "\n".join(f"- {f['detail']}" for f in found) if found else "Nothing stale."
+    if not found:
+        return "Nothing stale."
+    shown = sorted(found, key=lambda f: (BOARD_FIRST.get(f["invariant"], len(BOARD_FIRST)), f["since"], f["number"]))[:BOARD_CAP]
+    lines = [f"- {f['detail']}" for f in shown]
+    if len(found) > len(shown):
+        lines.append(f"- and {len(found) - len(shown)} more (`room.py findings {name}` lists them all).")
+    return "\n".join(lines)
 
 
 def _measure(ledger: Ledger, p: registry.Project) -> str | None:
@@ -474,6 +488,19 @@ def cmd_notes(args) -> int:
         if n["text"]:
             print("\n".join(f"  {line}".rstrip() for line in n["text"].split("\n")))
         print()
+    return 0
+
+
+@_run
+def cmd_findings(args) -> int:
+    """Every finding of the project's latest steward sweep, uncapped (the digest shows only the first few)."""
+    reg, p = _start(args)
+    ledger = Ledger()
+    try:
+        found = ledger.findings(ledger_name(p))
+    finally:
+        ledger.close()
+    print("\n".join(f"{f['invariant']}: {f['detail']}" for f in found) if found else f"no findings for {p.name}")
     return 0
 
 

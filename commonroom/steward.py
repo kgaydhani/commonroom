@@ -23,11 +23,15 @@ def _open(issue: dict) -> bool:
     return issue.get("state", "OPEN") == "OPEN"
 
 
-def unplaced(issues: list[dict]) -> list[dict]:
-    """Open issues with none of the placing labels: the dispatcher can't see them."""
+def unplaced(issues: list[dict], milestone: str | None = None) -> list[dict]:
+    """Open issues in the goal milestone (the only ones the dispatcher reads) with none of the placing labels.
+    With no milestone configured it reports nothing: issues outside it are a backlog, not a fault."""
+    if not milestone:
+        return []
     return [finding("unplaced", i["number"], f"#{i['number']} is open in the milestone with no status or parking label, "
                     "so the dispatcher can't see it.")
-            for i in issues if _open(i) and not dispatch.labels(i) & PLACED]
+            for i in issues if _open(i) and (i.get("milestone") or {}).get("title") == milestone
+            and not dispatch.labels(i) & PLACED]
 
 
 def blocked_on_nothing(issues: list[dict]) -> list[dict]:
@@ -78,7 +82,8 @@ def owner_overdue(issues: list[dict], now: float) -> list[dict]:
     return found
 
 
-def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float) -> list[dict]:
+def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
+          milestone: str | None = None) -> list[dict]:
     """Every invariant over one snapshot; an empty list means the board is clean."""
-    return (unplaced(issues) + blocked_on_nothing(issues) + orphan_prs(issues, prs)
+    return (unplaced(issues, milestone) + blocked_on_nothing(issues) + orphan_prs(issues, prs)
             + stale_claim_findings(issues, prs, running_runs, now) + owner_overdue(issues, now))
