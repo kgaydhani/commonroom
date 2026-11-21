@@ -149,8 +149,8 @@ class ProjectOverride(unittest.TestCase):
     def test_an_unknown_room_wide_or_bad_name_fails_naming_it(self):
         with self.assertRaisesRegex(ValueError, "review_round'"):
             self.dispatcher("a", {"review_round": 3})
-        with self.assertRaisesRegex(ValueError, "ci_reruns is room-wide only"):
-            self.dispatcher("a", {"ci_reruns": 1})
+        with self.assertRaisesRegex(ValueError, "progress_min_work_seconds is room-wide only"):
+            self.dispatcher("a", {"progress_min_work_seconds": 1})
         for name in ("prompt_max_tokens", "templates_max_tokens"):
             with self.assertRaisesRegex(ValueError, f"{name} is room-wide only because it limits the room's own text"):
                 self.dispatcher("a", {name: 5000})

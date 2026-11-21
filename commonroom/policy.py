@@ -17,10 +17,7 @@ NAMES = ("review_rounds", "incomplete_rounds", "ci_bounces", "ci_reruns", "ci_ba
          "notify_max", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens", "pie_idle_minutes",
          "owner_floor_weekly", "pie_notice_margin", "pie_own_active_minutes")
 # Name -> why no project may set it.
-GLOBAL_ONLY = {"ci_reruns": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it (commonroom#228)",
-               "ci_backoff_minutes": "for now: GitHubBoard.rerun_ci reads it, and no project's value reaches it "
-                                     "(commonroom#228)",
-               "prompt_max_tokens": "because it limits the room's own text (axiom A9)",
+GLOBAL_ONLY = {"prompt_max_tokens": "because it limits the room's own text (axiom A9)",
                "templates_max_tokens": "because it limits the room's own text (axiom A9)",
                "progress_min_work_seconds": "because it is part of the progress breaker's timing, which is the "
                                             "director's call (commonroom#230)",

@@ -812,7 +812,7 @@ class WithLedger(unittest.TestCase):
                          details={85: red, 86: stuck})
         fake.comments, fake.reruns = [], []
         fake.comment = lambda n, body: fake.comments.append((n, body))
-        fake.rerun_ci = lambda run_id, minutes_since: fake.reruns.append(run_id) or 1
+        fake.rerun_ci = lambda run_id, minutes_since, *a: fake.reruns.append(run_id) or 1
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
         actions = d.housekeeping()
         self.assertIn((65, ("status:ready", "needs:changes"), ("status:review", "status:in-progress")), fake.label_calls)
@@ -2447,7 +2447,7 @@ class WithLedger(unittest.TestCase):
         fake = FakeBoard([issue(1, ["status:ready"])], prs=prs, details=details)
         fake.merges, fake.reruns = [], []
         fake.merge = fake.merges.append
-        fake.rerun_ci = lambda run_id, minutes_since: fake.reruns.append(run_id) or 1
+        fake.rerun_ci = lambda run_id, minutes_since, *a: fake.reruns.append(run_id) or 1
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
         actions = d.housekeeping()
         self.assertEqual(fake.merges, [244])
@@ -2456,6 +2456,49 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(fake.label_calls, [])                   # no issue to relabel for any of them
         merge = next(r for r in self.ledger.recent_runs("t") if r["role"] == "merge")
         self.assertEqual(merge["task"], "PR #244")               # counts as progress like any merge
+
+
+class CiRerunPolicy(unittest.TestCase):
+    """commonroom#228: a project's [policy] ci_reruns and ci_backoff_minutes reach the rerun; unset keeps the room's."""
+    def run_rerun(self, attempt, minutes, **kw):
+        calls = []
+
+        def fake_gh(args, timeout=30):
+            calls.append(args)
+            return {"attempt": attempt} if args[:2] == ["run", "view"] else None
+
+        with mock.patch.object(dispatch.board_mod, "gh", fake_gh):
+            result = dispatch.GitHubBoard("o/t").rerun_ci("5", minutes, **kw)
+        return result, [c for c in calls if c[:2] == ["run", "rerun"]]
+
+    def test_unset_uses_the_rooms_values(self):
+        self.assertEqual(self.run_rerun(6, 1e9)[0], 6)                 # 6th attempt: the room allows 6 reruns
+        self.assertIsNone(self.run_rerun(7, 1e9)[0])
+        self.assertEqual(self.run_rerun(2, 19)[0], 0)                  # 20-minute backoff
+        self.assertEqual(self.run_rerun(2, 20)[0], 2)
+
+    def test_a_projects_values_replace_them(self):
+        result, reruns = self.run_rerun(2, 1e9, reruns=1, backoff_minutes=5)
+        self.assertIsNone(result)
+        self.assertEqual(reruns, [])
+        self.assertEqual(self.run_rerun(2, 4, reruns=3, backoff_minutes=5)[0], 0)
+        self.assertEqual(self.run_rerun(2, 5, reruns=3, backoff_minutes=5)[0], 2)
+
+    def test_the_dispatcher_passes_its_projects_values(self):
+        seen = []
+        tmp = tempfile.TemporaryDirectory()
+        ledger = Ledger(Path(tmp.name) / "l.sqlite3")
+        self.addCleanup(tmp.cleanup)
+        self.addCleanup(ledger.close)   # runs first: Windows can't delete an open database
+        for override, want in (({}, (6, 20)), ({"ci_reruns": 2, "ci_backoff_minutes": 7}, (2, 7))):
+            cfg = cfg_with(tmp.name)
+            cfg["policy"] = override
+            fake = FakeBoard([])
+            fake.rerun_ci = lambda run_id, since, *a: seen.append(a) or 1
+            d = dispatch.Dispatcher(cfg, ledger, board=fake, log=lambda *_: None)
+            d.handle_red_ci({"number": 9}, {"statusCheckRollup": [{"name": "t", "conclusion": "CANCELLED",
+                             "detailsUrl": "https://github.com/o/t/actions/runs/33/job/1"}]}, 1, [])
+            self.assertEqual(seen[-1], want)
 
 
 class HousekeepingFailure(unittest.TestCase):

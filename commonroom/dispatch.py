@@ -590,13 +590,17 @@ class GitHubBoard:
         except RuntimeError:
             pass   # already gone (deleted by hand or by the repo's own setting): the merge is what matters
 
-    def rerun_ci(self, run_id: str, minutes_since: float) -> int | None:
-        """Rerun a workflow run's failed or cancelled jobs, backing off during an outage.
+    def rerun_ci(self, run_id: str, minutes_since: float, reruns: int | None = None,
+                 backoff_minutes: int | None = None) -> int | None:
+        """Rerun a workflow run's failed or cancelled jobs, backing off during an outage. `reruns` and
+        `backoff_minutes` are the project's values (commonroom#228); unset, the room's.
         Returns the attempt that was rerun, 0 while backing off, or None once capped."""
+        reruns = CI_RERUNS if reruns is None else reruns
+        backoff_minutes = CI_BACKOFF_MINUTES if backoff_minutes is None else backoff_minutes
         attempt = (board_mod.gh(["run", "view", run_id, "--repo", self.repo, "--json", "attempt"]) or {}).get("attempt", 1)
-        if attempt >= CI_RERUNS + 1:
+        if attempt >= reruns + 1:
             return None
-        if minutes_since < CI_BACKOFF_MINUTES * (attempt - 1):
+        if minutes_since < backoff_minutes * (attempt - 1):
             return 0
         board_mod.gh(["run", "rerun", run_id, "--repo", self.repo, "--failed"])
         return attempt
@@ -869,7 +873,7 @@ def checks_state(detail: dict) -> str:
 
 
 INFRA_CONCLUSIONS = {"CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "STALE"}
-CI_RERUNS = POLICY["ci_reruns"]   # room-wide only: GitHubBoard.rerun_ci reads them (commonroom#228)
+CI_RERUNS = POLICY["ci_reruns"]   # the room's values; a project's come through Dispatcher.policy (commonroom#228)
 CI_BACKOFF_MINUTES = POLICY["ci_backoff_minutes"]
 CI_BOUNCES = POLICY["ci_bounces"]
 MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back only to merge main into it
@@ -2406,7 +2410,8 @@ class Dispatcher:
                         since = (time.time() - calendar.timegm(time.strptime(ended[:19], "%Y-%m-%dT%H:%M:%S"))) / 60
                     except ValueError:
                         since = 1e9
-                    attempt = self.board.rerun_ci(run_id, since)
+                    attempt = self.board.rerun_ci(run_id, since, self.policy("ci_reruns"),
+                                                  self.policy("ci_backoff_minutes"))
                 except Exception as exc:
                     done.append(f"PR #{pr['number']}: CI rerun failed: {str(exc)[:100]}")
                     continue
