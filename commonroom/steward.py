@@ -11,7 +11,7 @@ import re
 from commonroom import dispatch
 
 PLACED = {"status:ready", "status:in-progress", "status:review", "status:blocked", "parked", "needs:director",
-          "owner:human", dispatch.EXTERNAL}
+          "owner:human", "claim:external"}   # the last is dispatch.EXTERNAL (dispatch imports this module: no cycle at load)
 DUE = re.compile(r"^\s*Due:\s*(\d{4}-\d{2}-\d{2})\b", re.I | re.M)
 
 

@@ -64,6 +64,14 @@ CREATE TABLE IF NOT EXISTS marks (
     at REAL NOT NULL,
     PRIMARY KEY (project, key)
 );
+CREATE TABLE IF NOT EXISTS findings (
+    project TEXT NOT NULL,
+    invariant TEXT NOT NULL,
+    number INTEGER NOT NULL,
+    detail TEXT NOT NULL,
+    since REAL NOT NULL,
+    PRIMARY KEY (project, invariant, number)
+);
 """
 
 
@@ -385,6 +393,26 @@ class Ledger:
     def marked(self, project: str | None, key: str) -> float | None:
         row = self.db.execute("SELECT at FROM marks WHERE project=? AND key=?", (project or "", key)).fetchone()
         return row["at"] if row else None
+
+    SWEEP = "steward-sweep"   # mark: when the steward last swept the project's board
+
+    def record_findings(self, project: str | None, found: list[dict], now: float | None = None):
+        """Keep the latest sweep's findings, replacing the previous sweep's. A finding still there keeps its `since`."""
+        now = time.time() if now is None else now
+        with self.db:
+            old = {(r["invariant"], r["number"]): r["since"] for r in self.db.execute(
+                "SELECT invariant, number, since FROM findings WHERE project=?", (project or "",))}
+            self.db.execute("DELETE FROM findings WHERE project=?", (project or "",))
+            self.db.executemany("INSERT OR REPLACE INTO findings (project, invariant, number, detail, since) VALUES (?,?,?,?,?)",
+                                [(project or "", f["invariant"], f["number"], f["detail"],
+                                  old.get((f["invariant"], f["number"]), now)) for f in found])
+        self.mark(project, self.SWEEP, at=now)
+
+    def findings(self, project: str | None) -> list[dict]:
+        """The latest sweep's findings (invariant, number, detail, since), oldest first."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT invariant, number, detail, since FROM findings WHERE project=? ORDER BY since, invariant, number",
+            (project or "",))]
 
     def marks(self, project: str | None, prefix: str) -> list[tuple[str, float]]:
         """Every mark of a project whose key starts with `prefix`, as (rest of the key, at), newest first."""
