@@ -541,10 +541,12 @@ def cmd_submit(args) -> int:
 
 def _run_limited(test: str, deadline: float) -> int | None:
     """Run the test command; None if it is still going at the deadline (its process tree is killed first)."""
+    if time.monotonic() >= deadline:
+        return None   # waiting for the lock may have used the whole allowance
     posix = os.name != "nt"
     process = subprocess.Popen(test, shell=True, cwd=os.getcwd(), start_new_session=posix)
     try:
-        return process.wait(timeout=max(0.0, deadline - time.time()))
+        return process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         if posix:
             try:
@@ -568,8 +570,9 @@ def cmd_check(args) -> int:
     if not cfg.get("_root") or not test:
         print("No [checks] test in room.toml; nothing to run")
         return 2
-    started = time.time()
-    limit = started + float(checks.get("max_minutes", 9)) * 60
+    started = time.monotonic()
+    max_minutes = float(checks.get("max_minutes", 9))
+    limit = started + max_minutes * 60
     wait = float(checks.get("lock_wait_minutes", 5)) * 60
     poll = float(checks.get("lock_poll_seconds", 3))
     lock = suite_lock(ledger_mod.default_path().parent, _project_name(cfg))
@@ -578,7 +581,7 @@ def cmd_check(args) -> int:
     def run() -> int:
         code = _run_limited(test, limit)
         if code is None:
-            print(f"suite ran out of time after {(time.time() - started) / 60:.0f} min: report TESTS: INCOMPLETE", flush=True)
+            print(f"suite ran out of time after {max_minutes:g} min: report TESTS: INCOMPLETE", flush=True)
             return 3
         return code
     # A sandbox that can read the room home but not write it (Codex) fails on any claim, the first or a retry after
@@ -586,14 +589,16 @@ def cmd_check(args) -> int:
     try:
         holder = claim_lock(lock)
         while holder is not None:
-            if time.time() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 print("suite lock busy: report TESTS: INCOMPLETE", flush=True)
                 return 3
             if holder != told:
                 print(f"waiting for the suite lock (pid {holder})", flush=True)
                 told = holder
-            time.sleep(min(poll, max(0.05, deadline - time.time())))
-            holder = claim_lock(lock)
+            time.sleep(min(poll, remaining))
+            if time.monotonic() < deadline:
+                holder = claim_lock(lock)
     except OSError:
         print("suite lock unavailable here; running unlocked", flush=True)
         return run()
