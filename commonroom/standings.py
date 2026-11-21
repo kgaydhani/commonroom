@@ -45,6 +45,7 @@ class Report:
     own: dict = field(default_factory=dict)             # {registry key: the part of its spend from the owner's sessions}
     raises: list[dict] = field(default_factory=list)    # transfers in this provider's current window
     reset_at: float = 0.0                               # early reset inside the scheduled window
+    own_last: dict = field(default_factory=dict)        # {registry key: when its owner's latest session activity ended}
 
     def room(self, key: str) -> float:
         """A project's estimated spend by room runs: its total less its own sessions'."""
@@ -133,8 +134,11 @@ def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Pat
     readings = samples(ledger, win, now)
     transfers = raises.current(raises.load(raises.path(Path(ledger.path).parent)), win, readings)
     shares, owner_share = raises.effective(reg, transfers)
-    spent = pie.estimate_spend(readings,
-                               runs(ledger, win, now) + own_runs(ledger, reg, win, now, transcripts), now)
+    mine = own_runs(ledger, reg, win, now, transcripts)
+    spent = pie.estimate_spend(readings, runs(ledger, win, now) + mine, now)
+    own_last: dict = {}
+    for r in mine:
+        own_last[r["project"][0]] = max(own_last.get(r["project"][0], 0.0), r["ended_at"])
     names = ledger_names(reg)
     projects = {key: {"share": shares[key], "when": p.when, "strict": p.strict} for key, p in reg.projects.items()}
     own = {key: spent.get((key, OWN), 0.0) for key in names}
@@ -143,4 +147,4 @@ def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Pat
     rows = pie.standings(projects, by_key, win.elapsed, slack)
     known = set(names.values())
     unregistered = {name or NO_NAME: pct for name, pct in spent.items() if name not in known and not isinstance(name, tuple)}
-    return Report(win, rows, owner_share, unregistered, own, transfers, raises.reset_at(readings))
+    return Report(win, rows, owner_share, unregistered, own, transfers, raises.reset_at(readings), own_last)
