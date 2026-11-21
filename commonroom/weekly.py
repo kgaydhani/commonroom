@@ -2,7 +2,8 @@
 
 A plan can have more than the all-models week (`seven_day`): Claude reports a smaller one for its top model as
 `seven_day_<model>`, and Codex reports some as `seven_day:<limit>`. The window's name carries the model, so no model
-name is written here. Read-only: `room pie` and the page show what this returns; nothing gates on it yet.
+name is written here. `room pie` and the page show what this returns, and the dispatcher skips a model in a role's
+list whose own window is past its line or unknown (`held`, part 3).
 
 Readings are stored compressed: an unchanged reading only moves its row's `observed_at` on, so the value at a time is
 the latest row first seen by then.
@@ -106,6 +107,33 @@ def windows(ledger, provider: str, now: float) -> list[Projection]:
             if last["resets_at"] is not None and last["resets_at"] > now:
                 found.append(Projection(w, None, last["resets_at"], last["observed_at"], None, None))
     return sorted(found, key=lambda p: (p.window != ALL, p.window))
+
+
+def line(p: Projection, budget: dict, now: float) -> float:
+    """A weekly window's line for the room: the same share-of-the-week pace the pie and the gate use, with the owner's
+    weekly reserve kept back (`(100 - reserve_weekly) * elapsed + weekly_slack`)."""
+    share = 100 - float(budget.get("reserve_weekly", 0))
+    return share * pie.elapsed_fraction(now, p.resets_at) + float(budget.get("weekly_slack", 0))
+
+
+def held(found: list[Projection], budget: dict, now: float) -> dict[str, str]:
+    """{window: why} for each per-model window the room's work keeps off: past its line for the week, or seen this
+    week and missing from the latest reading, so unknown and never free (axiom A5). The all-models week is the gate's."""
+    out = {}
+    for p in found:
+        if not model_part(p.window):
+            continue
+        if not p.known:
+            out[p.window] = f"{p.window} is missing from the latest reading, so it counts as unknown"
+        elif p.resets_at is not None and p.used_pct > (cap := line(p, budget, now)):
+            out[p.window] = f"{p.window} is past its line ({p.used_pct:g}% used, the line is {cap:.0f}% by now)"
+    return out
+
+
+def skip_reason(model: str | None, found: list[Projection], budget: dict, now: float) -> str | None:
+    """Why the room's work shouldn't use `model` now (its own weekly window is held), or None."""
+    window = window_for(model, [p.window for p in found])
+    return held(found, budget, now).get(window) if window else None
 
 
 @dataclass(frozen=True)
