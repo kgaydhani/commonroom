@@ -51,6 +51,7 @@ class Carry(Base):
         self.write("f.txt", "feature\n")
         self.tested = self.commit("feature work")                # the head the reviewer approved and tested
         self.git("checkout", "-q", "main")
+        # The carry tests are about PRs: main's own suite run (commonroom#303) is off here (Base) and on in MainSuite.
 
     def git(self, *args):
         return subprocess.run(["git", *args], cwd=self.root, capture_output=True, text=True).stdout.strip()
@@ -291,3 +292,90 @@ class Format(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RedBoard(Board):
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.created = []
+
+    def create_issue(self, title, body, labels=(), milestone=None):
+        self.created.append({"title": title, "body": body, "labels": list(labels), "milestone": milestone})
+        n = 900 + len(self.created)
+        self.issues.append({"number": n, "state": "OPEN", "title": title, "labels": [{"name": l} for l in labels],
+                            "milestone": {"title": milestone}})
+        return n
+
+    def set_milestone(self, n, milestone): pass
+
+
+class MainSuite(Carry):
+    """commonroom#303: a project with a test command and no CI gets the suite run on main's head, once per sha."""
+
+    def setUp(self):
+        super().setUp()
+        dispatch.Dispatcher.suite_on_main = self._suite_on_main   # Base switched it off
+        self.calls, self.results = [], []
+        self._run = carry.run_suite
+        carry.run_suite = self.stub
+
+    def tearDown(self):
+        carry.run_suite = self._run
+        super().tearDown()
+
+    def stub(self, root, head, command, worktree, lock, max_minutes, **kw):
+        if worktree.name.startswith("carry-"):
+            return "PASS", "Ran 3 tests in 0.1s OK"     # the PR's own carry run, not main's
+        self.calls.append(head)
+        return self.results.pop(0)
+
+    def sha(self):
+        return self.git("rev-parse", "main")
+
+    def setup_ready_pr(self):
+        head = self.merge_main()
+        board = RedBoard([{"number": 222, "headRefName": BRANCH, "labels": []}], {222: self.board(head).details[222]})
+        return board
+
+    def test_a_fail_on_a_new_sha_holds_merges_and_opens_one_task_and_a_pass_on_a_newer_sha_releases_it(self):
+        board = self.setup_ready_pr()
+        sha = self.sha()
+        self.results = [("FAIL", "exit 1: FAILED (errors=1)")]
+        d = self.dispatcher(self.cfg(), board)
+        d.housekeeping()
+        d.housekeeping()                                   # a second pass at the same sha
+        self.assertEqual((self.calls, board.merged), ([sha], []))
+        (task,) = board.created
+        self.assertEqual(task["title"], f"Main is red: exit 1: FAILED (errors=1) failing on {sha[:7]}")
+        self.assertEqual((task["labels"], task["milestone"]),
+                         (["prio:top", "role:builder", "status:ready", "kind:bug"], "M"))
+        self.assertIn("exit 1: FAILED (errors=1)", task["body"])
+        fresh = self.dispatcher(self.cfg(), board)         # a restarted dispatcher: no rerun, no second task
+        fresh.housekeeping()
+        self.assertEqual((len(self.calls), len(board.created), board.merged), (1, 1, []))
+        self.write("later.md", "later\n")
+        newer = self.commit("main moves again")
+        self.results = [("PASS", "Ran 3 tests OK")]
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual(self.calls, [sha, newer])
+        self.assertEqual((len(board.created), board.merged), (1, [222]))
+
+    def test_a_project_with_ci_never_runs_the_suite_on_main(self):
+        board = self.setup_ready_pr()
+        d = self.dispatcher(self.cfg(ci=True), board)
+        d.housekeeping()
+        self.assertEqual((self.calls, board.created), ([], []))
+
+    def test_a_busy_or_unfinished_run_holds_nothing(self):
+        board = self.setup_ready_pr()
+        d = self.dispatcher(self.cfg(), board)
+        self.results = [("BUSY", "the suite lock is held by another run")]
+        self.assertFalse(d.main_suite_red([], []))
+        self.results = [("INCOMPLETE", "still running")]
+        self.assertFalse(d.main_suite_red([], []))
+        self.assertFalse(d.main_suite_red([], []))         # recorded: not run again at this sha
+        self.assertEqual(len(self.calls), 2)
+
+
+for _name in [n for n in dir(Carry) if n.startswith("test_")]:
+    setattr(MainSuite, _name, None)   # MainSuite builds on Carry's repo helpers, not its tests
