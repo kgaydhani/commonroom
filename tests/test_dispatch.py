@@ -1201,6 +1201,27 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(self.ledger.task_failures("t", "#90"), 0)
         self.assertEqual(d.recover_orphans(), [])                                       # once only
 
+    def test_orphan_is_closed_when_its_work_stopped_not_when_it_was_found(self):
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        now = time.time()
+        start = now - 8 * 3600
+        with_log = self.ledger.start_run("t", "PR #5", "reviewer", "codex", now=start)
+        no_log = self.ledger.start_run("t", "PR #6", "reviewer", "claude", now=start)
+        self.ledger.db.execute("UPDATE runs SET pid=NULL"); self.ledger.db.commit()
+        d.log_dir.mkdir(parents=True, exist_ok=True)
+        log = d.log_dir / f"{int(start) + 2}-codex-reviewer.jsonl"
+        log.write_text("x", encoding="utf-8")
+        os.utime(log, (start + 3600, start + 3600))
+        self.assertEqual(len(d.recover_orphans(now)), 2)
+        ended = lambda r: self.ledger.db.execute("SELECT ended_at, note FROM runs WHERE id=?", (r,)).fetchone()
+        self.assertEqual(ended(with_log)[0], start + 3600)
+        self.assertEqual(ended(no_log)[0], start + dispatch.ORPHAN_AGE)
+        self.assertIn("dispatcher died mid-run", ended(no_log)[1])
+        young = self.ledger.start_run("t", "PR #7", "reviewer", "claude", now=now - 600)
+        self.ledger.db.execute("UPDATE runs SET pid=999999 WHERE id=?", (young,)); self.ledger.db.commit()
+        d.recover_orphans(now)
+        self.assertEqual(ended(young)[0], now)                                   # capped at now
+
     def test_extra_slot_takes_reviews_and_research_while_slot_one_is_busy(self):
         cfg = cfg_with(self.tmp.name)
         cfg["roles"].update(reviewer=["claude:opus"], reviewer_high_risk=["codex", "claude:opus"], scout=["claude:opus"])

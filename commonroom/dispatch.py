@@ -3244,6 +3244,22 @@ class Dispatcher:
             except Exception as exc:
                 self.log(f"   {provider} meter refresh failed (retrying in 30 min): {str(exc)[:160]}")
 
+    def orphan_end(self, run: dict, now: float) -> float:
+        """When a dead dispatcher's run really ended: the last write to its worker log, else its start plus the orphan age,
+        never before it started nor after now. Closing at `now` would book hours of work that never happened (commonroom#250)."""
+        started = run["started_at"]
+        last = None
+        try:
+            for f in self.log_dir.glob(f"*-{run['provider']}-{run['role']}.jsonl"):
+                stamp = f.name.split("-", 1)[0]
+                if stamp.isdigit() and started - 60 <= int(stamp) <= started + 600 and (last is None or int(stamp) < last[0]):
+                    last = (int(stamp), f)   # the log this run opened is the first one made right after it started
+            if last:
+                return min(max(last[1].stat().st_mtime, started), now)
+        except OSError:
+            pass
+        return min(started + ORPHAN_AGE, now)
+
     def recover_orphans(self, now: float | None = None) -> list[str]:
         """A dispatcher that died mid-job (PC shut down, crash) leaves its run 'running' and its issue in progress,
         which no one would ever pick up again. Close the run as stopped (not an attempt), save any unsaved work
@@ -3253,7 +3269,8 @@ class Dispatcher:
         for run in self.ledger.running_runs(self.project):
             if not orphaned(run, now):
                 continue
-            if self.dry_run or not self.ledger.close_orphan(run["id"], "dispatcher died mid-run (shutdown or crash); work saved, task requeued", now):
+            if self.dry_run or not self.ledger.close_orphan(run["id"], "dispatcher died mid-run (shutdown or crash); work saved, task requeued",
+                                                            self.orphan_end(run, now)):
                 continue
             task = run["task"] or ""
             actions.append(f"recovered {run['role']}/{run['provider']} {task or '-'} left running by a dead dispatcher")
