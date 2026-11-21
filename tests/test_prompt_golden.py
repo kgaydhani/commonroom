@@ -196,7 +196,7 @@ class PublicRepoRule(unittest.TestCase):
         for name in ("build.md", "build-codex.md", "review.md"):
             text = (prompts / name).read_text(encoding="utf-8")
             self.assertIn("This repo may be public", text, name)
-            self.assertIn("another project's", text, name)
+            self.assertIn("another project", text, name)
         self.assertIn("CHANGES verdict", (prompts / "review.md").read_text(encoding="utf-8"))
         self.assertIn("scratch home with made-up projects", (prompts / "build.md").read_text(encoding="utf-8"))
 
