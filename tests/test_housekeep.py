@@ -194,6 +194,44 @@ class PruneLogs(Base):
         self.assertTrue(old.exists())
         self.assertIsNone(self.ledger.marked(d.project, "prune-logs"))
 
+    def other(self):
+        folder = self.logs / "other"
+        folder.mkdir()
+        old, new = folder / "old.log", folder / "new.log"
+        for f, age in ((old, 20 * self.DAY), (new, self.DAY)):
+            f.write_text("x")
+            os.utime(f, (self.now - age,) * 2)
+        nested = folder / "nested"
+        nested.mkdir()
+        inner = nested / "inner.log"
+        inner.write_text("x")
+        os.utime(inner, (self.now - 99 * self.DAY,) * 2)
+        return old, new, inner
+
+    def test_guest_prunes_other_project_folders_without_recursing(self):
+        old, new, inner = self.other()
+        d = self.dispatcher()
+        d.cfg["share"] = {"host": "h", "max": 0.3}
+        actions = d.prune_logs(self.now)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists() and inner.exists() and inner.parent.is_dir())
+        self.assertEqual(len(actions), 1)
+        self.assertIn("1 worker log", actions[0])
+
+    def test_host_leaves_other_project_folders_alone(self):
+        old, new, inner = self.other()
+        _, actions = self.prune()
+        self.assertTrue(old.exists() and new.exists() and inner.exists())
+        self.assertEqual(actions, [])
+
+    def test_guest_dry_run_deletes_nothing_in_other_folders(self):
+        old, _, _ = self.other()
+        d = self.dispatcher()
+        d.cfg["share"] = {"host": "h", "max": 0.3}
+        d.dry_run = True
+        self.assertEqual(len(d.prune_logs(self.now)), 1)
+        self.assertTrue(old.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
