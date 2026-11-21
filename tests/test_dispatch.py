@@ -2325,16 +2325,47 @@ class HousekeepingFailure(unittest.TestCase):
         self.assertEqual(report["housekeeping"], ["housekeeping failed: KeyError: 'labels'"])
         self.assertEqual(report["job"]["kind"], "build")
 
-    def test_one_issue_per_exception_type_and_none_in_dry_run(self):
+    def test_issue_filed_only_on_the_third_failure_in_a_row(self):
         board = self.broken_board()
         d = self.dispatcher(board)
+        d.run_once(); d.run_once()
+        self.assertFalse(hasattr(board, "created"))
         d.run_once()
         self.assertEqual([c[:2] for c in board.created], [("[room] Housekeeping is failing: KeyError", ("needs:director",))])
+        body = board.created_bodies[0]
+        self.assertIn("3 passes in a row", body)
+        self.assertIn("first failure was at", body)
+        self.assertIn("'labels'", body)
         board.issues.append(issue(900, [], milestone=None) | {"title": "[room] Housekeeping is failing: KeyError"})
         d.run_once()
         self.assertEqual(len(board.created), 1)
+
+    def test_fail_fail_succeed_fail_files_nothing(self):
+        board = self.broken_board()
+        d = self.dispatcher(board)
+        d.run_once(); d.run_once()
+        del board.all_issues                                    # the instance override goes: housekeeping works again
+        d.run_once()
+        board.all_issues = self.broken_board().all_issues
+        d.run_once()
+        self.assertFalse(hasattr(board, "created"))
+
+    def test_a_completed_pass_closes_an_open_failing_issue_but_not_in_dry_run(self):
+        title = "[room] Housekeeping is failing: KeyError"
+        board = FakeBoard([issue(900, [], milestone=None) | {"title": title}])
+        self.dispatcher(board, dry_run=True).run_once()
+        self.assertFalse(hasattr(board, "closed"))
+        self.assertFalse(hasattr(board, "comments"))
+        self.dispatcher(board).run_once()
+        self.assertEqual([n for n, _ in board.closed], [900])
+        self.assertEqual([n for n, _ in board.comments], [900])
+        self.assertIn("recovered", board.comments[0][1])
+
+    def test_no_issue_in_dry_run(self):
         dry = self.broken_board()
-        self.dispatcher(dry, dry_run=True).run_once()
+        d = self.dispatcher(dry, dry_run=True)
+        for _ in range(4):
+            d.run_once()
         self.assertFalse(hasattr(dry, "created"))
 
     def test_a_working_housekeeping_report_is_unchanged(self):
