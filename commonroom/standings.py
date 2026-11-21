@@ -2,7 +2,8 @@
 and the registry (commonroom#238).
 
 Read-only: it computes standings, and `dispatch.pie_holds` gates new model work on them (commonroom#240). Every function is given what it reads (the ledger, the registry, the
-provider and `now`): no clock, no global. The arithmetic is `commonroom.pie`'s; this module only picks its inputs. Every
+provider and `now`), with weekly raises read beside the supplied ledger: no clock or live ledger. The arithmetic is
+`commonroom.pie`'s; this module only picks its inputs. Every
 spend figure is an ESTIMATE, because the meter is plan-wide (see `pie.estimate_spend`).
 
 On Claude, the owner's own sessions in a project's folder count as that project's, beside its room runs
@@ -14,7 +15,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from commonroom import config as config_mod, pie, sessions
+from commonroom import config as config_mod, pie, raises, sessions
 from commonroom.liveness import orphaned
 from commonroom.registry import Registry, RegistryError
 
@@ -42,6 +43,8 @@ class Report:
     owner_share: float                                  # the owner's unassigned slice
     unregistered: dict = field(default_factory=dict)    # room projects in the ledger but not the registry: estimates
     own: dict = field(default_factory=dict)             # {registry key: the part of its spend from the owner's sessions}
+    raises: list[dict] = field(default_factory=list)    # transfers in this provider's current window
+    reset_at: float = 0.0                               # early reset inside the scheduled window
 
     def room(self, key: str) -> float:
         """A project's estimated spend by room runs: its total less its own sessions'."""
@@ -127,14 +130,17 @@ def standings(ledger, reg: Registry, provider: str, now: float, transcripts: Pat
     win = window(ledger, provider, now)
     if win is None:
         return None
-    spent = pie.estimate_spend(samples(ledger, win, now),
+    readings = samples(ledger, win, now)
+    transfers = raises.current(raises.load(raises.path(Path(ledger.path).parent)), win, readings)
+    shares, owner_share = raises.effective(reg, transfers)
+    spent = pie.estimate_spend(readings,
                                runs(ledger, win, now) + own_runs(ledger, reg, win, now, transcripts), now)
     names = ledger_names(reg)
-    projects = {key: {"share": p.share, "when": p.when, "strict": p.strict} for key, p in reg.projects.items()}
+    projects = {key: {"share": shares[key], "when": p.when, "strict": p.strict} for key, p in reg.projects.items()}
     own = {key: spent.get((key, OWN), 0.0) for key in names}
     by_key = {key: spent.get(name, 0.0) + own[key] for key, name in names.items()}
     slack = config_mod.DEFAULTS["budget"].get(provider, {}).get("weekly_slack", 0)
     rows = pie.standings(projects, by_key, win.elapsed, slack)
     known = set(names.values())
     unregistered = {name or NO_NAME: pct for name, pct in spent.items() if name not in known and not isinstance(name, tuple)}
-    return Report(win, rows, reg.owner_share(), unregistered, own)
+    return Report(win, rows, owner_share, unregistered, own, transfers, raises.reset_at(readings))
