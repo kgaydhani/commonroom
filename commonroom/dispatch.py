@@ -2857,7 +2857,8 @@ class Dispatcher:
         if self.dry_run:
             return
         try:
-            found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time())
+            found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time(),
+                                   self.milestone)
             for f in found:
                 self.log(f"   steward: {f['invariant']}: {f['detail']}")
             self.ledger.record_findings(self.project, found)
