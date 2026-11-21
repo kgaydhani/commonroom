@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import pie_notice, raises, sessions, standings
+from commonroom import owner_reserve, pie_notice, raises, sessions, standings
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
@@ -63,9 +63,13 @@ def cmd_tap(args) -> int:
         if observations:
             ledger = Ledger()
             ledger.record_usage(observations)
-            cfg = config_mod.load()
-            readings = ledger.latest_usage("claude")
-            v = gate.usage_verdict("claude", readings, config_mod.budget(cfg, "claude"), time.time(), cfg["freshness_seconds"])
+            folder = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
+            cfg = config_mod.load(config_mod.find_config(Path(folder)) if folder else None)
+            if owner_reserve.for_project(ledger, cfg):
+                v = _verdicts(ledger, cfg, time.time())["claude"]   # a registered project: the verdict its dispatcher acts on, pie holds included (#272)
+            else:
+                readings = ledger.latest_usage("claude")
+                v = gate.usage_verdict("claude", readings, config_mod.budget(cfg, "claude"), time.time(), cfg["freshness_seconds"])
             ledger.close()
             five = next((o for o in observations if o["window"] == "five_hour"), None)
             week = next((o for o in observations if o["window"] == "seven_day"), None)

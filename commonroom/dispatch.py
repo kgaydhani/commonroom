@@ -966,6 +966,10 @@ def verdicts(ledger: Ledger, cfg: dict, now: float | None = None, trip: bool = F
         v = gate.usage_verdict(provider, ledger.latest_usage(provider), policy, now, cfg["freshness_seconds"])
         if made_from:
             v.detail["owner_reserve"] = made_from
+            if "unknown" not in made_from:
+                headroom = owner_gate.headroom(ledger, provider, now)
+                if headroom is not None:
+                    v.detail["pie_headroom"] = round(headroom, 1)
         if note:
             v = gate.Verdict(v.allowed, f"{v.reason}; {note}", v.detail, v.stop_running)
         cool = ledger.cooldown(provider, now)
@@ -2285,8 +2289,12 @@ class Dispatcher:
         return routed or default
 
     def pace_headroom_ok(self, provider: str, v: gate.Verdict) -> bool:
-        """Weekly use sits at least `[parallel] min_pace_headroom` under the pace line. An unpaced provider
+        """Weekly use sits at least `[parallel] min_pace_headroom` under the pace line. A registered project is judged
+        against its own line in the pie (`pie_headroom`, commonroom#272), not the plan-wide pace. An unpaced provider
         ([budget.<p>] pace = false) always passes."""
+        floor = (self.cfg.get("parallel") or {}).get("min_pace_headroom", 15)
+        if v.detail.get("pie_headroom") is not None:
+            return v.detail["pie_headroom"] >= floor
         pace, used = v.detail.get("weekly_pace"), v.detail.get("weekly_used")
         paced = ((self.cfg.get("budget") or {}).get(provider) or {}).get("pace", True)
         if not paced:

@@ -73,6 +73,16 @@ class OwnerGate:
         return self.cfg, policy, {"owner_share": owner_share, "owner_use": round(owner_use, 1), "floor": FLOOR,
                                   "reserve_weekly": policy["reserve_weekly"]}, None
 
+    def headroom(self, ledger, provider: str, now: float, transcripts: Path | None = None) -> float | None:
+        """Points this project sits under its own line in the pie (its line less its estimated spend), or None when
+        the pie can't be read. The extra slot and background roles are judged on it (commonroom#272)."""
+        try:
+            _owner(ledger, self.reg, provider, now, transcripts)
+        except Exception:
+            return None
+        cached = _CACHE.get((str(ledger.path), provider))
+        return cached[3].get(self.key) if cached and cached[1] is not None and cached[2] is None else None
+
     def reserve_5h(self, provider: str):
         """The registry's `[budget] reserve_5h`, else the one the project's own room.toml sets, else today's (a host's
         included): only the weekly reserve and pace change for a registered project."""
@@ -121,9 +131,10 @@ def _owner(ledger, reg: Registry, provider: str, now: float, transcripts: Path |
     if not (cached and cached[0] == made_from):
         try:
             report = standings_mod.standings(ledger, reg, provider, now, transcripts)
-            cached = (made_from, None if report is None else (report.owner_share, report.owner_use), None)
+            cached = (made_from, None if report is None else (report.owner_share, report.owner_use), None,
+                      {} if report is None else {row.name: row.headroom for row in report.rows})
         except Exception as exc:
-            cached = (made_from, None, exc)
+            cached = (made_from, None, exc, {})
         _CACHE[(str(ledger.path), provider)] = cached
     if cached[2] is not None:
         raise cached[2]
