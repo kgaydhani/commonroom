@@ -187,16 +187,22 @@ class Transcripts(unittest.TestCase):
             self.assertNotIn(SECRET, text)
             self.assertNotIn("private", text)
 
-    def test_a_cache_written_before_models_were_kept_is_read_again(self):
+    def test_a_cache_written_before_models_were_kept_is_left_alone(self):
         cwd = str(self.alpha)
         self.write(cwd, "s1", [assistant(T0, "s1", cwd, "m1")])
-        cache = sessions.cache_file()
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        old = {"v": 1, "files": {}}
-        cache.write_text(json.dumps(old), encoding="utf-8")
+        old_cache = self.home / "sessions-cache.json"           # where a v1 reader, still running, keeps its cache
+        old_cache.parent.mkdir(parents=True, exist_ok=True)
+        old_text = json.dumps({"v": 1, "files": {"x": {"size": 1, "mtime": 1.0, "offset": 1,
+                                                        "calls": [[1.0, "s", "c", None, 5]]}}})
+        old_cache.write_text(old_text, encoding="utf-8")
+        self.assertNotEqual(sessions.cache_file(), old_cache)
         [span] = self.spans()
         self.assertEqual(span["models"], {"claude-test": 200})
-        self.assertEqual(json.loads(cache.read_text(encoding="utf-8"))["v"], sessions.CACHE_VERSION)
+        self.assertEqual(old_cache.read_text(encoding="utf-8"), old_text)   # not wiped, so a v1 reader keeps its cache
+        self.assertEqual(json.loads(sessions.cache_file().read_text(encoding="utf-8"))["v"], sessions.CACHE_VERSION)
+        sessions.stats.update(bytes=0, files=0)
+        self.spans()
+        self.assertEqual(sessions.stats["bytes"], 0)                       # the v2 cache is used on the next call
 
     def test_only_messages_inside_the_span_count_and_old_files_are_not_opened(self):
         cwd = str(self.alpha)

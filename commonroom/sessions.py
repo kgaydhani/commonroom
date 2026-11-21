@@ -127,7 +127,9 @@ stats = {"bytes": 0, "files": 0}
 
 
 def cache_file() -> Path:
-    return Path(os.environ.get("COMMONROOM_HOME") or Path.home() / ".commonroom") / "sessions-cache.json"
+    """Each cache version has its own file. Processes still running an older reader keep theirs, so the two never
+    reject and overwrite each other's cache (and re-read every transcript) while the room runs both."""
+    return Path(os.environ.get("COMMONROOM_HOME") or Path.home() / ".commonroom") / f"sessions-cache-v{CACHE_VERSION}.json"
 
 
 def _valid(entry) -> bool:
@@ -207,7 +209,7 @@ is under None), `context` is the largest context one call sent, and `folder` is 
 first. With no project, nothing is read.
 
     Only the bytes added to each transcript since the last call are read: what was parsed so far is kept in `cache`
-    (default: sessions-cache.json in the room home). The answer is the same as a full read."""
+    (default: sessions-cache-v<CACHE_VERSION>.json in the room home). The answer is the same as a full read."""
     if not projects:
         return []
     roots = {path_key(folder): key for key, folder in projects.items()}
