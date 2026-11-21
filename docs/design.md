@@ -121,6 +121,18 @@ yet, so every project runs as described above (commonroom#225, commonroom#238).
 - **Registry warnings.** `add`, `set` and `remove` refuse only for the project being changed and for rules of the
   whole registry. Another project's problem, such as a missing folder, is printed as a warning and the change is
   saved.
+- **One-week raises** (commonroom#242). `room pie raise <project> <points> [--from <project>...]` transfers points
+  in proportion to the donors' unspent shares; by default donors are the other projects. `--from owner` explicitly
+  includes the unassigned slice (`--from "@owner"` works even when a project is named `owner`). Raises cover every provider with a
+  current weekly reading; `--provider claude|codex` selects just one. A refusal writes nothing, including when one
+  provider cannot fund the raise. `room pie raise --clear [<project>]` removes all raises or just that recipient's.
+  If a recipient has donated its raised share onward, clearing just it can be refused to keep every share valid:
+  clear the dependent raises first, or clear all.
+  Transfers live in `<room home>/pie-raises.json`, separate from `projects.toml` so standing shares are untouched,
+  with provider, recipient, donor amounts and `resets_at`. Standings apply the effective shares and lines, which the
+  dispatcher reads too; `room pie` and `--json` show the donors and expiry. A scheduled or early reset expires them
+  (including a meter drop over `RESET_DROP` with an unchanged reset time); expired entries disappear on the next
+  successful raise or clear write. A short-lived write lock and atomic replace protect concurrent commands/readers.
 
 ## The handshake: a room folder per project (first cut)
 "The handshake" in [design-v3.md](design-v3.md), without `hand` or `share` yet (commonroom#253). It reads the registry

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import standings
+from commonroom import raises, standings
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
@@ -632,6 +632,51 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def cmd_pie_raise(args) -> int:
+    if (args.clear and (args.points is not None or args.sources)) or (not args.clear and (args.name is None or args.points is None)):
+        print("use: room pie raise <project> <points> [--from <project>...] or raise --clear [<project>]", file=sys.stderr)
+        return 1
+    lock = raises.path().with_suffix(".lock")
+    if claim_lock(lock) is not None:
+        print("refused: another pie raise write is in progress", file=sys.stderr)
+        return 1
+    ledger = None
+    try:
+        reg, now = registry.load(), time.time()
+        ledger = Ledger()
+        entries = raises.load()
+        current = []
+        for provider in PROVIDERS:
+            win = standings.window(ledger, provider, now)
+            if win:
+                current.extend(raises.current(entries, win, standings.samples(ledger, win, now)))
+        if args.clear:
+            current = [e for e in current if not ((args.name is None or e["project"] == args.name)
+                       and (args.provider is None or e["provider"] == args.provider))]
+        else:
+            providers = (args.provider,) if args.provider else PROVIDERS
+            reports = [standings.standings(ledger, reg, p, now) for p in providers]
+            if not any(reports) or (args.provider and reports[0] is None):
+                raise registry.RegistryError("no current weekly reading for the requested provider(s)")
+            for report in filter(None, reports):
+                active = [e for e in current if e["provider"] == report.window.provider]
+                entry = raises.transfer(reg, report, active, args.name, args.points, args.sources)
+                raises.effective(reg, active + [entry])
+                current.append(entry)
+        for provider in PROVIDERS:
+            raises.effective(reg, [e for e in current if e["provider"] == provider])
+        raises.save(current)
+        print(f"{'cleared raises' if args.clear else 'raised ' + args.name}: saved {raises.path()}")
+        return 0
+    except (registry.RegistryError, OSError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        if ledger is not None:
+            ledger.close()
+        release_lock(lock)
+
+
 def _pie_json(report: standings.Report | None, now: float) -> dict | None:
     if report is None:
         return None
@@ -643,12 +688,12 @@ def _pie_json(report: standings.Report | None, now: float) -> dict | None:
             "owner_share": report.owner_share, "owner_use_est": report.owner_use,
             "projects": [{"name": s.name, "share": s.share, "when": s.when, "strict": s.strict, "spent_est": s.spent,
                           "room_est": report.room(s.name), "own_sessions_est": report.own.get(s.name, 0.0),
-                          "line": s.allowed, "headroom_est": s.headroom} for s in report.rows]}
+                          "line": s.allowed, "headroom_est": s.headroom} for s in report.rows],
+            **({"raises": report.raises} if report.raises else {})}
 
 
 def cmd_pie(args) -> int:
-    """Each registered project's standing against its share of each provider's week (commonroom#238). Read-only:
-    nothing is gated on it. Spend per project is an estimate, because the meter is plan-wide."""
+    """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
     try:
         reg = registry.load(path)
@@ -676,6 +721,9 @@ def cmd_pie(args) -> int:
         w = report.window
         resets = datetime.fromtimestamp(w.resets_at).strftime("%a %d %b %H:%M")
         print(f"{provider}: {w.elapsed:.0%} of the week gone, resets {resets}; plan-wide {w.used_pct:.1f}% used")
+        for e in report.raises:
+            donors = ", ".join(f"{k} {v:g}" for k, v in e["from"].items())
+            print(f"  raise {e['project']} +{sum(e['from'].values()):g} from {donors}; ends {resets} (or early reset)")
         if now - w.observed_at > config_mod.DEFAULTS["freshness_seconds"]:
             print(f"  STALE: the latest reading is from {_clock(w.observed_at)}, {_ago(now - w.observed_at)} old; "
                   "use since then is not counted, and the lines are for now")
@@ -752,7 +800,13 @@ def main(argv: list[str] | None = None) -> int:
     q = ps.add_parser("set", help="change a project's share or mode"); q.add_argument("name"); q.add_argument("--share", type=float)
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
-    p = sub.add_parser("pie", help="each project's standing against its share of the week (read-only, estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
+    p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
+    ps = p.add_subparsers(dest="action")
+    q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")
+    q.add_argument("name", nargs="?"); q.add_argument("points", nargs="?", type=float)
+    q.add_argument("--from", dest="sources", nargs="+", action="extend", help="donor projects; @owner names the unassigned slice")
+    q.add_argument("--clear", action="store_true"); q.add_argument("--provider", choices=PROVIDERS)
+    q.set_defaults(func=cmd_pie_raise)
     args = parser.parse_args(argv)
     return args.func(args)
 

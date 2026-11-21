@@ -17,14 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from commonroom import config as config_mod, policy as policy_mod, registry as registry_mod, sessions
+from commonroom import config as config_mod, policy as policy_mod, raises, registry as registry_mod, sessions
 from commonroom import standings as standings_mod
 from commonroom.registry import Registry
 
 FLOOR = policy_mod.DEFAULTS["owner_floor_weekly"]
 # {(ledger path, provider): (what the estimate was made from, (owner's slice, his own use) or None, error or None)}.
 # The standings read every transcript of the week, which takes seconds, and the gate is asked on every line a worker
-# prints, so the estimate (or its failure) is made again only when the weekly meter or the registry changes.
+# prints, so the estimate (or its failure) is made again only when the meter, registry or weekly raises change.
 _CACHE: dict = {}
 
 
@@ -111,7 +111,12 @@ def _owner(ledger, reg: Registry, provider: str, now: float, transcripts: Path |
     """(the owner's slice, his estimated own use) on `provider`, or None with no current weekly window. A failure is
     remembered like a result, so it isn't retried on every line a worker prints."""
     latest = ledger.latest_usage(provider).get(standings_mod.WINDOW)
-    made_from = (registry_mod.dumps(reg), latest and (latest["used_pct"], latest["resets_at"]))
+    try:
+        transfers = raises.path(Path(ledger.path).parent).stat()
+        stamp = (transfers.st_mtime_ns, transfers.st_size)
+    except FileNotFoundError:
+        stamp = None
+    made_from = (registry_mod.dumps(reg), latest and (latest["used_pct"], latest["resets_at"], now < (latest["resets_at"] or 0)), stamp)
     cached = _CACHE.get((str(ledger.path), provider))
     if not (cached and cached[0] == made_from):
         try:
