@@ -1476,7 +1476,8 @@ class Dispatcher:
 
     def prune_logs(self, now: float | None = None) -> list[str]:
         """Delete worker logs older than `[logs] keep_days` (default 14) from the room's log folder and this project's
-        `logs/<project>` folder (where its worker runs write), at most once a day (commonroom#162). Only files directly
+        `logs/<project>` folder (where its worker runs write; the guest project, with `[share]`, also prunes every other
+        `logs/<name>` folder), at most once a day (commonroom#162). Only files directly
         in those folders, no recursion; at least a day is kept, so a running worker's log is safe."""
         now = time.time() if now is None else now
         key = "prune-logs"
@@ -1488,7 +1489,14 @@ class Dispatcher:
         except (TypeError, ValueError):
             keep_days = 14.0
         count = size = 0
-        for folder in (Path(self.ledger.path).parent / "logs", self.log_dir):
+        root = Path(self.ledger.path).parent / "logs"
+        folders = [root, self.log_dir]
+        if self.cfg.get("share"):   # the guest also prunes projects the heartbeat no longer runs (commonroom#172)
+            try:
+                folders += sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and p != self.log_dir)
+            except OSError:
+                pass
+        for folder in folders:
             if not folder.is_dir():
                 continue
             for path in folder.iterdir():
