@@ -1,6 +1,7 @@
 """What each landed change costs, from ledger run rows alone (commonroom#211): input tokens split into uncached,
 cache-write and cache-read, review runs and CHANGES rounds (also by the model that built the PR), runs by role, and
-minutes, all per landing, over 7 and 30 days. Pure functions over rows: no GitHub calls, no clock reads."""
+minutes per landing, plus coordination's share of input tokens and run time, over 7 and 30 days.
+Pure functions over rows: no GitHub calls, no clock reads."""
 from __future__ import annotations
 
 import re
@@ -9,6 +10,7 @@ DAY = 86400
 WINDOWS = {"7d": 7 * DAY, "30d": 30 * DAY}
 LOOKBACK = 37 * DAY          # rows to load: the longest window plus a week, so its PRs' builders are found
 ROOM_ROLES = ("merge", "update", "carry")   # rows the room writes itself: no model ran (carry: commonroom#226)
+COORDINATION_ROLES = ("director", "auditor")
 NOT_WORK = ("running", "room-error")     # unfinished, or failed before any model work
 PR_REF = re.compile(r"PR #(\d+)")
 
@@ -71,6 +73,12 @@ def window(rows: list[dict], since: float, until: float, models: dict[int, str] 
     landed, work = landings(rows, since, until), model_runs(rows, since, until)
     n = len(landed)
     models = builder_models(rows) if models is None else models
+    coordination = [r for r in work if r["role"] in COORDINATION_ROLES]
+    tokens = sum(r.get("input_tokens") or 0 for r in work)
+    minutes = sum(((r.get("ended_at") or r["started_at"]) - r["started_at"]) / 60 for r in work)
+    coordination_tokens = sum(r.get("input_tokens") or 0 for r in coordination)
+    coordination_minutes = sum(((r.get("ended_at") or r["started_at"]) - r["started_at"]) / 60
+                               for r in coordination)
     split = [r for r in work if r.get("cache_read_tokens") is not None or r.get("cache_write_tokens") is not None]
     read = sum(r.get("cache_read_tokens") or 0 for r in split)
     write = sum(r.get("cache_write_tokens") or 0 for r in split)
@@ -95,7 +103,10 @@ def window(rows: list[dict], since: float, until: float, models: dict[int, str] 
         b["changes_rounds_per_merge"] = per(b["changes_rounds"], b["landings"])
     return {
         "merges": n, "runs": len(work),
-        "input_tokens_per_merge": per(sum(r.get("input_tokens") or 0 for r in work), n, 0),
+        "input_tokens_per_merge": per(tokens, n, 0),
+        # Keep fractions unrounded so a target comparison uses the measured share.
+        "coordination_share": coordination_tokens / tokens if tokens else None,
+        "coordination_share_minutes": coordination_minutes / minutes if minutes else None,
         # Only runs that recorded the split count here; None (n/a) when no run in the window did.
         "uncached_per_merge": per(uncached, n, 0) if split else None,
         "cache_write_per_merge": per(write, n, 0) if split else None,
@@ -105,7 +116,7 @@ def window(rows: list[dict], since: float, until: float, models: dict[int, str] 
         "changes_rounds_per_merge": per(sum(verdict(r) == "CHANGES" for r in reviews), n),
         "runs_per_merge": per(len(work), n),
         "runs_per_merge_by_role": {role: per(count, n) for role, count in sorted(by_role.items())},
-        "minutes_per_merge": per(sum(((r.get("ended_at") or r["started_at"]) - r["started_at"]) / 60 for r in work), n, 1),
+        "minutes_per_merge": per(minutes, n, 1),
         "by_builder_model": dict(sorted(by_model.items())),
     }
 
