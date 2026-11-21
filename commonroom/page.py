@@ -88,7 +88,7 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
         age = now - win.observed_at
         week = {"week_gone_pct": win.elapsed * 100, "plan_used_pct": win.used_pct, "resets_at": win.resets_at,
                 "reading_at": win.observed_at, "reading_age_seconds": age,
-                "stale": age > config_mod.DEFAULTS["freshness_seconds"]}
+                "stale": age > cfg.get("freshness_seconds", config_mod.DEFAULTS["freshness_seconds"])}
     gate_v = verdicts(ledger, cfg, now)[PROVIDER]
     holds = pie_holds(ledger, cfg, {PROVIDER: gate_v}, now, transcripts) if reg.projects else None
     gate = {"go": gate_v.allowed, "reason": gate_v.reason}
