@@ -1329,6 +1329,10 @@ class Dispatcher:
             # Research reports (docs only) skip review: CI green is enough.
             if self.ci and "review:skip" in labels(pr) and checks == "green":
                 review = "APPROVE"
+            # An escalated issue whose PR the director approved: their approval is the decision (commonroom#306).
+            decided = self.director_decided(detail, next((i for i in everything if i["number"] == issue_no), None))
+            if decided and self.ci:
+                review = "APPROVE"
             if self.ci:
                 mergeable = review == "APPROVE" and checks == "green"
             else:
@@ -1341,6 +1345,11 @@ class Dispatcher:
                     carried = True
                     actions += self.carry_approval(pr, detail, issue_no)
                     mergeable = self.tested(detail)
+                # The room supplies the test proof itself, whatever the reviewer said: it runs once the branch is up
+                # to date (below), and a FAIL or INCOMPLETE at this head stops here with the director.
+                if decided and not mergeable:
+                    mergeable = self.decided_result(detail) is None or self.decided_passed(detail)
+            decided_run = decided and not self.ci and not self.decided_passed(detail) and not (review == "APPROVE" and self.tested(detail))
             if mergeable:
                 if not self.dry_run:
                     # One merge per pass, and only of a branch that already contains main, so the CI that passed ran
@@ -1382,6 +1391,14 @@ class Dispatcher:
                                 else:
                                     actions.append(f"PR #{pr['number']}: updating it with main failed: {str(exc)[:100]}")
                         continue
+                if decided_run and not self.dry_run:
+                    if carried:
+                        continue   # one suite run per pass
+                    carried = True
+                    ran = self.decide_run(pr, detail, issue_no)
+                    actions += ran
+                    if not self.decided_passed(detail):
+                        continue
                 # Asked only once the branch contains main, so the director judges the tree main becomes and an update
                 # doesn't void their approval (commonroom#49).
                 if self.waits_for_director(detail):
@@ -1401,6 +1418,9 @@ class Dispatcher:
                         output["quiet"] = quiet
                     self.ledger.finish_run(run, "done", outputs=[output])
                 actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
+                if decided and issue_no and not self.dry_run:
+                    self.board.comment(issue_no, f"PR #{pr['number']} merged on the director's decision: their approval "
+                                                 f"holds for the head and the room's own test run passed on it.")
                 carried = self.carried_stamp(detail) if self.needs_director(detail) else ""
                 if carried:
                     actions.append(f"director stamp {carried[:7]} carried to {head_sha(detail)[:7]}: director paths unchanged")
@@ -2206,6 +2226,51 @@ class Dispatcher:
             return False
         return all(merges_main_only(self.root, oid, clean=True) for oid in chain[:chain.index(tested)])
 
+    # An escalated PR the director decided to merge (commonroom#306) ---------------------------------------------
+    def director_decided(self, detail: dict, issue: dict | None) -> bool:
+        """The issue is escalated to the director, and the director's newest verdict on the PR is an APPROVE that
+        holds for its head (named there, or carried across clean merges of main)."""
+        if not issue or issue.get("state") != "OPEN" or DIRECTOR_LABEL not in labels(issue):
+            return False
+        head = head_sha(detail).lower()
+        return bool(head) and (director_approved(detail) or any(head.startswith(s) for s in director_stamps(detail))
+                               or bool(self.carried_stamp(detail)))
+
+    def decided_result(self, detail: dict) -> dict | None:
+        """The room's test run on this head for a director-decided PR, if any (a `[room] TESTS:` comment that carries no
+        reviewer approval)."""
+        result = self.room_result(detail)
+        return result if result and not result["approval_at"] else None
+
+    def decided_passed(self, detail: dict) -> bool:
+        result, command = self.decided_result(detail), (self.cfg.get("checks") or {}).get("test")
+        return bool(result and command and result["result"] == "PASS" and result["line"].startswith(f"{command}:"))
+
+    def decide_run(self, pr: dict, detail: dict, issue_no: int | None) -> list[str]:
+        """Run the tests on the director-decided PR's head in code and say so on the PR; on FAIL or INCOMPLETE tell the
+        issue once, and the PR stays with the director."""
+        n, head, checks = pr["number"], head_sha(detail).lower(), self.cfg.get("checks") or {}
+        started = time.time()
+        result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
+                                           suite_lock(Path(self.ledger.path).parent, self.project),
+                                           float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+        if result == "BUSY":
+            return [f"PR #{n}: tests not run in code yet ({line}); next pass"]
+        run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{n}", "carry", "none", now=started)
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"PR #{n}", "head": head, "result": result}])
+        body = carry_mod.decided_comment(result, head, checks["test"], line)
+        self.board.comment(n, body)
+        detail.setdefault("comments", []).append({"createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                                  "body": f"{MARK} {body}"})
+        if result == "PASS":
+            return [f"PR #{n}: tests pass on {head[:7]} in code ({line}); it merges on the director's decision"]
+        if issue_no:
+            self.board.comment(issue_no, f"PR #{n}: the room ran the tests on {head[:7]} for the director's decision to "
+                                         f"merge and did not merge it.\n\nTESTS: {result} {head} {checks['test']}: {line}\n\n"
+                                         f"It stays with the director (`needs:director`).")
+        return [f"PR #{n}: tests {'failed' if result == 'FAIL' else 'could not finish'} on {head[:7]} in code ({line}); "
+                f"not merged, left with the director"]
+
     def carry_approval(self, pr: dict, detail: dict, issue_no: int | None) -> list[str]:
         """Run the tests on the PR head in code and say on the PR whether the approval carries. The run is a ledger row
         with no model (provider none), like a merge."""
@@ -2229,6 +2294,11 @@ class Dispatcher:
             return [f"PR #{n}: tests pass on {head[:7]} in code ({line}); the approval of {tested[:7]} carries"]
         return [f"PR #{n}: tests {'failed' if result == 'FAIL' else 'could not finish'} on {head[:7]} in code ({line}); "
                 f"the approval is not carried, back to review"]
+
+    def review_wanted(self, detail: dict, issue: dict | None) -> bool:
+        """A reviewer run is worth spending: not on a PR the director decided to merge (commonroom#306), where the
+        room supplies the test proof in code."""
+        return self.needs_review(detail) and not self.director_decided(detail, issue)
 
     def needs_review(self, detail: dict) -> bool:
         if not self.ci:
@@ -2476,9 +2546,12 @@ class Dispatcher:
             if f"#{m.group(1)}" in running:
                 continue   # its builder is still pushing: review the finished branch, not a draft (commonroom#124)
             detail = self.board.pr_detail(pr["number"])
-            if self.needs_review(detail):
-                if issue_labels is None:
-                    issue_labels = {i["number"]: labels(i) for i in self.board.all_issues()}
+            if not self.needs_review(detail):
+                continue
+            if issue_labels is None:
+                issue_list = self.board.all_issues()
+                issue_labels = {i["number"]: labels(i) for i in issue_list}
+            if self.review_wanted(detail, next((i for i in issue_list if i["number"] == int(m.group(1))), None)):
                 # Codex (the smaller subscription) is spent where independence matters most: high-risk changes.
                 high_risk = "risk:high" in issue_labels.get(int(m.group(1)), set())
                 spec = self.roles.get("reviewer_high_risk" if high_risk else "reviewer", builder_spec)

@@ -379,3 +379,121 @@ class MainSuite(Carry):
 
 for _name in [n for n in dir(Carry) if n.startswith("test_")]:
     setattr(MainSuite, _name, None)   # MainSuite builds on Carry's repo helpers, not its tests
+
+
+class DirectorDecided(Carry):
+    """commonroom#306: PR #300 got CHANGES twice for a flaky test on main, was escalated, and the director approved it.
+    The room then runs the suite in code and merges on that approval, with no reviewer or builder round."""
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self._run = carry.run_suite
+        carry.run_suite = self.stub
+        self.result = ("PASS", "Ran 3 tests in 0.1s OK")
+
+    def tearDown(self):
+        carry.run_suite = self._run
+        super().tearDown()
+
+    def stub(self, root, head, command, worktree, lock, max_minutes, **kw):
+        self.calls.append(head)
+        return self.result
+
+    def decided(self, head, stamp="head", labels=("status:blocked", "needs:director"), behind=0, director=True):
+        changes = [{"createdAt": f"2026-11-20T1{i}:00:00Z", "body": "[agent:reviewer] REVIEW: CHANGES\n\nTESTS: FAIL x"}
+                   for i in (4, 5)]
+        board = self.board(head)
+        detail = board.details[222]
+        detail["comments"] = changes
+        if director:
+            sha = head if stamp == "head" else stamp
+            detail["comments"].append({"createdAt": "2026-11-20T16:00:00Z",
+                                       "body": f"[agent:director] REVIEW: APPROVE\n\nHEAD: {sha[:7]}"})
+        board.issues = [{"number": 222, "state": "OPEN", "title": "t", "milestone": {"title": "M"}, "comments": [],
+                         "labels": [{"name": l} for l in labels]}]
+        board.behind[head] = behind
+        self.issue_comments = lambda: [b for n, b in board.posted if n == 222]
+        return board
+
+    def test_the_300_shape_runs_the_suite_once_and_merges_with_no_reviewer_or_builder(self):
+        head = self.merge_main()
+        board = self.decided(head)
+        d = self.dispatcher(self.cfg(), board)
+        self.assertFalse(d.review_wanted(board.details[222], board.issues[0]))
+        d.housekeeping()
+        self.assertEqual((board.merged, self.calls), ([222], [head]))
+        self.assertTrue(board.posted[0][1].startswith(f"[room] TESTS: PASS {head} {PASS}: "), board.posted[0])
+        self.assertIn("merged on the director's decision", self.issue_comments()[-1])
+        self.assertEqual(board.labels, [])                                # no relabel, no builder round
+
+    def test_behind_main_it_updates_first_then_runs_the_suite_at_the_carried_head(self):
+        head = self.merge_main()
+        board = self.decided(head, behind=1)
+        d = self.dispatcher(self.cfg(), board)
+        d.housekeeping()
+        self.assertEqual((board.updated, board.merged, self.calls), ([222], [], []))
+        new = self.merge_main("more.md", "more\n")
+        detail = board.details[222]
+        detail["commits"].append({"oid": new, "committedDate": "2026-11-20T17:00:00Z"})
+        detail["headRefOid"] = new
+        board.compare_since = lambda base, h: {"commits": [{"sha": new, "parents": [head, "m" * 40]}], "files": ["more.md"]}
+        board.behind[new] = 0
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual((board.merged, self.calls), ([222], [new]))
+
+    def test_a_merge_that_fails_after_a_pass_is_retried_next_pass_without_a_second_run(self):
+        head = self.merge_main()
+        board = self.decided(head)
+        real, failures = board.merge, [1]
+
+        def flaky(n):
+            if failures:
+                failures.pop()
+                raise RuntimeError("transient")
+            real(n)
+        board.merge = flaky
+        try:
+            self.dispatcher(self.cfg(), board).housekeeping()
+        except RuntimeError:
+            pass
+        self.assertEqual((board.merged, self.calls), ([], [head]))
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual((board.merged, self.calls), ([222], [head]))
+
+    def test_a_failed_run_does_not_merge_comments_once_and_is_not_rerun(self):
+        head = self.merge_main()
+        board = self.decided(head)
+        self.result = ("FAIL", "exit 1: FAILED (errors=1)")
+        for _ in range(2):
+            self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual((board.merged, self.calls, board.labels), ([], [head], []))
+        pr_comment, issue_comment = self.issue_comments()    # the PR's result, then the issue's note (same number here)
+        self.assertTrue(pr_comment.startswith(f"[room] TESTS: FAIL {head}"))
+        self.assertIn("stays with the director", issue_comment)
+
+    def test_no_director_approval_or_a_stale_one_changes_nothing(self):
+        head = self.merge_main()
+        for name, board in {"none": self.decided(head, director=False),
+                            "older head": self.decided(head, stamp="a" * 40)}.items():
+            with self.subTest(name):
+                board.compare_since = lambda base, h: {"commits": [{"sha": h, "parents": ["b" * 40]}], "files": []}
+                self.dispatcher(self.cfg(), board).housekeeping()
+                self.assertEqual((board.merged, self.calls, board.updated, board.posted), ([], [], [], []))
+
+    def test_an_approval_on_an_issue_that_is_not_escalated_changes_nothing(self):
+        head = self.merge_main()
+        board = self.decided(head, labels=("status:review",))
+        self.dispatcher(self.cfg(), board).housekeeping()
+        self.assertEqual((board.merged, self.calls), ([], []))
+
+    def test_a_project_with_ci_takes_the_directors_approval_for_the_reviewers(self):
+        head = self.merge_main()
+        board = self.decided(head)
+        board.details[222]["statusCheckRollup"] = [{"name": "t", "status": "COMPLETED", "conclusion": "SUCCESS"}]
+        self.dispatcher(self.cfg(ci=True), board).housekeeping()
+        self.assertEqual((board.merged, self.calls), ([222], []))
+
+
+for _name in [n for n in dir(Carry) if n.startswith("test_")]:
+    setattr(DirectorDecided, _name, getattr(DirectorDecided, _name) if _name in DirectorDecided.__dict__ else None)
