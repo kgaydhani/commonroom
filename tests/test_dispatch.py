@@ -2326,6 +2326,24 @@ class WithLedger(unittest.TestCase):
         d.assess(job, "i427-x", "old", "", workers.WorkerResult(ok=True, final_text="Nothing left.\nSTATUS: DONE"))
         self.assertEqual(state(), {"status:review"})
 
+    def test_pushed_build_ending_blocked_goes_to_the_director_not_review(self):
+        """commonroom#319: a push with STATUS: BLOCKED used to reach review; DONE still does."""
+        work = issue(319, ["status:in-progress", "role:builder"])
+        fake = LabelBoard([work], prs=[{"number": 5, "headRefName": "i319-x"}], details={})
+        fake.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN"}, pr=True)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.remote_head = lambda branch: "new"
+        job = dispatch.Job("build", "builder", issue=work, reason="ready")
+        state = lambda: {l for l in dispatch.labels(work) if l.startswith(("status:", "needs:"))}
+        status, outputs, _ = d.assess(job, "i319-x", "old", "", workers.WorkerResult(ok=True, final_text="Part done.\nSTATUS: BLOCKED"))
+        self.assertEqual(status, "blocked")
+        self.assertEqual(state(), {"status:blocked", "needs:director"})
+        self.assertIn("PR #5", outputs[0]["ref"])
+        work["labels"] = [{"name": "status:in-progress"}]
+        status, _, _ = d.assess(job, "i319-x", "old", "", workers.WorkerResult(ok=True, final_text="Done.\nSTATUS: DONE"))
+        self.assertEqual(status, "done")
+        self.assertEqual(state(), {"status:review"})
+
     def test_housekeeping_clears_ready_from_issues_in_review_or_in_progress(self):
         """commonroom#93: a ready label next to review or in-progress invites a second builder."""
         both = [issue(1, ["status:ready", "status:review"]), issue(2, ["status:ready", "status:in-progress"]),

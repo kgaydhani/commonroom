@@ -3197,6 +3197,14 @@ class Dispatcher:
             pr = self.board.pr_for_branch(branch)
             after = self.remote_head(branch)
             if pr and pr["state"] == "OPEN" and after and after != before:
+                if blocked:
+                    # Pushed, but the builder says it can't finish: that goes to the director now, not to a review
+                    # that would only find the same blocker (commonroom#319). A Codex build still hands off.
+                    ref = f"PR #{pr['number']} (blocked)"
+                    if self.codex_handoff(job, branch, result.final_text or ""):
+                        return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked, handed to Claude"}], tail
+                    self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
+                    return "blocked", [{"kind": "pr", "ref": ref}], tail
                 self.to_review(n)
                 if job.role == "scout" and hasattr(self.board, "label_pr"):
                     self.board.label_pr(pr["number"], "review:skip")
