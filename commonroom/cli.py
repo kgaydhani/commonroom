@@ -880,7 +880,11 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--from", dest="sources", nargs="+", action="extend", help="donor projects; @owner names the unassigned slice")
     q.add_argument("--clear", action="store_true"); q.add_argument("--provider", choices=PROVIDERS)
     q.set_defaults(func=cmd_pie_raise)
-    args = parser.parse_args(argv)
+    args, extra = parser.parse_known_args(argv)
+    if extra and args.func is handshake.cmd_note and not any(x.startswith("-") and x != "-" for x in extra):
+        args.words += extra    # argparse ends a `+` positional at the first option: words after `--from X` still belong to it
+    elif extra:
+        parser.error("unrecognized arguments: " + " ".join(extra))
     return args.func(args)
 
 

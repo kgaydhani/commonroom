@@ -1299,7 +1299,7 @@ class Dispatcher:
         # Is main red? Read once per pass, mergeable PR or not, so a red main is rerun or gets its fix task within one
         # heartbeat (commonroom#111: gamemirage's main sat red 1 h 42 min unseen until a PR was approved). Without CI
         # there are no checks to read; it is then read only when a PR is first ready to merge, as before.
-        held = self.main_red(everything, actions) if self.ci and not self.dry_run else None
+        held = self.main_red(everything, actions) if (self.ci or self.suite_on_main()) and not self.dry_run else None
         for pr in sorted(prs, key=lambda p: p["number"]):   # oldest first: a stacked base lands before what builds on it
             m = BRANCH.match(pr["headRefName"])
             # PRs on other branches (audit-*, director-*, moonshot/*) have no issue to send back to, but `review:skip`
@@ -1837,9 +1837,70 @@ class Dispatcher:
             self.board.comment(issue["number"], f"{MARK} {note}")
         return [f"#{issue['number']} is {EXTERNAL}: told its owner, didn't relabel ({note.split('.')[0]})"]
 
+    def suite_on_main(self) -> bool:
+        """No GitHub CI to read, but a test command and a checkout: the room runs the suite on main itself."""
+        return not self.ci and bool(self.root and (self.cfg.get("checks") or {}).get("test"))
+
+    def main_suite_red(self, everything: list[dict], actions: list[str]) -> bool:
+        """The no-CI `main_red` (commonroom#303): run the suite on main's head once per sha, in code with no model, and
+        hold merges while the latest result is FAIL, with the one `Main is red` task open. The result is a ledger mark per
+        sha, so a restarted dispatcher doesn't rerun it. A run that couldn't finish holds nothing."""
+        if not self.suite_on_main():
+            return False
+        checks = self.cfg["checks"]
+        try:
+            git(["fetch", "--quiet", "origin", "main"], self.root)
+            sha = git(["rev-parse", "origin/main"], self.root).strip().lower()
+        except RuntimeError:
+            return False
+        red_key, seen_key = f"main-suite-red:{sha}", f"main-suite:{sha}"
+        if self.ledger.marked(self.project, seen_key) is None:
+            started = time.time()
+            result, line = carry_mod.run_suite(self.root, sha, checks["test"], self.worktree_base() / "main-suite",
+                                               suite_lock(Path(self.ledger.path).parent, self.project),
+                                               float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+            if result == "BUSY":
+                actions.append(f"main's suite not run in code yet ({line}); next pass")
+                return False
+            run = self.ledger.start_run(self.project, f"main {sha[:7]}", "carry", "none", now=started)
+            self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"main {sha[:7]}", "head": sha,
+                                                          "result": result}])
+            self.ledger.mark(self.project, seen_key)
+            if result == "FAIL":
+                self.ledger.mark(self.project, red_key)
+                self.ledger.mark(self.project, f"main-suite-line:{line}")
+            actions.append(f"tests {result} on main {sha[:7]} in code ({line})")
+            if result != "FAIL":
+                return False
+            summary = line
+        elif self.ledger.marked(self.project, red_key) is None:
+            return False
+        else:
+            summary = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-line:")), "")
+        fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
+        if fix:
+            actions.append(f"merges held: the suite fails on main {sha[:7]}; #{fix['number']} fixes it")
+            return True
+        test = checks["test"]
+        body = (f"The suite (`{test}`) fails on main {sha[:7]}, run by the room: {summary}\n\n"
+                f"The room holds every "
+                f"other merge until the suite passes on main again; this task's PR is the one exception. Find the cause "
+                f"(often two PRs that each passed alone), fix it on this issue's branch, run `{test}`, and open a PR. "
+                f"Change nothing else.")
+        try:
+            number = self.board.create_issue(f"{MAIN_RED}: {summary[:80]} failing on {sha[:7]}", body,
+                                             labels=["prio:top", "role:builder", "status:ready", "kind:bug"],
+                                             milestone=self.milestone)
+            actions.append(f"the suite fails on main {sha[:7]}: merges held, opened #{number} to fix it")
+        except Exception as exc:
+            actions.append(f"the suite fails on main {sha[:7]}: merges held; opening the fix task failed: {str(exc)[:100]}")
+        return True
+
     def main_red(self, everything: list[dict], actions: list[str]) -> bool:
         """Has main's own CI failed (not merely been cancelled)? Then merges hold until it is green again, and a
-        top-priority task to fix it exists (commonroom#19)."""
+        top-priority task to fix it exists (commonroom#19). With no CI, the room runs the suite on main itself."""
+        if not self.ci:
+            return self.main_suite_red(everything, actions)
         try:
             runs = self.board.main_checks()
         except Exception as exc:

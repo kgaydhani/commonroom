@@ -278,6 +278,20 @@ class Reply(Room):
         self.assertEqual(self.room("digest", "alpha", "--project", "beta")[0], 1)
         self.assertEqual(self.room("note", "alpha", "beta", "text")[0], 1)
 
+    def test_note_options_go_anywhere_among_the_words(self):
+        self.register()
+        for argv in (("alpha", "--from", "X", "--to", "Y", "text"), ("--from", "X", "alpha", "text"),
+                     ("alpha", "text", "--from", "X", "--to", "Y"), ("alpha", "--from", "X", "two words")):
+            self.assertEqual(self.room("note", *argv)[0], 0, argv)
+        notes = handshake.read_notes(self.folder("alpha"))
+        self.assertEqual(len(notes), 4)
+        self.assertEqual({n["from"] for n in notes}, {"X"})
+        self.assertEqual(sorted(n["to"] or "" for n in notes), ["", "", "Y", "Y"])
+        self.assertEqual(self.room("note", "alpha", "--from", "X", "beta", "text")[0], 1)
+        for argv in (("notes", "alpha", "--since", "6h"), ("attach", "alpha", "--as", "desk"),
+                     ("digest", "--project", "alpha")):
+            self.assertEqual(self.room(*argv)[0], 0, argv)
+
     def test_a_note_refreshes_the_projects_digest(self):
         self.register()
         self.room("attach", "alpha")
