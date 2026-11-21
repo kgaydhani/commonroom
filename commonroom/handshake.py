@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from commonroom import config as config_mod, ledger as ledger_mod, metrics, registry
+from commonroom import config as config_mod, ledger as ledger_mod, metrics, progress as progress_mod, registry
 from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -302,6 +302,11 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
     if running:
         lines.append("Running now: " + ", ".join(f"{r['role']} on {r['task'] or 'no item'}" for r in running) + ".")
     lines.append(f"Landed: {len(landed)}." if landed else "Nothing landed.")
+    own = room_toml(p)
+    if progress_mod.declared(own):
+        answer = progress_mod.landed(own, now - 86400)
+        lines.append("Landed by the project's own count in 24 h: "
+                     + (str(answer.count) if answer.count is not None else f"no answer ({answer.why}); merges count") + ".")
     for r in sorted(landed, key=lambda r: r["started_at"], reverse=True):
         refs = ", ".join(o.get("ref") for o in r["outputs"] if o.get("ref"))
         lines.append(f"- {_when(r['started_at'])}: {r['task'] or 'no item'}{f' ({refs})' if refs else ''}")

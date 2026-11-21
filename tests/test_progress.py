@@ -4,7 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
-from commonroom import dispatch, progress, usage
+from commonroom import config, dispatch, progress, usage
 from commonroom.ledger import Ledger
 
 
@@ -62,6 +62,72 @@ class Breaker(unittest.TestCase):
         merge = self.ledger.start_run("t", "#1", "merge", "none", now=self.now - 100)
         self.ledger.finish_run(merge, "done", outputs=[{"kind": "merge", "ref": "PR #3"}], now=self.now - 100)
         self.assertIsNone(dispatch.check_progress(self.ledger, "t", self.now, landed=None))
+
+
+class Lazy(unittest.TestCase):
+    """The landed command runs only when the breaker would otherwise trip (commonroom#313)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.ledger = Ledger(self.root / "room.sqlite3", synchronous="OFF")
+        self.now = now = time.time()
+        run = self.ledger.start_run("t", "#1", "builder", "claude", now=now - 7 * 3600)
+        self.ledger.finish_run(run, "failed", now=now - 3000)
+        for t, pct in ((now - 3600, 10), (now - 3000, 22)):
+            self.ledger.record_usage([usage.observation("claude", "seven_day", pct, now + 86400, "test")], now=t)
+        self.calls = self.root / "calls.txt"
+        code = f"open({str(self.calls)!r}, 'a').write('x'); print('a')"
+        self.cfg = cfg(str(self.root), code)
+
+    def tearDown(self):
+        self.ledger.close(); self.tmp.cleanup()
+
+    def dispatcher(self, logs):
+        return dispatch.Dispatcher(self.base() | {"progress": self.cfg["progress"]}, self.ledger, board=object(), log=logs.append)
+
+    def base(self):
+        return config.merge(config.DEFAULTS, {"project": {"name": "t", "repo": "o/t"}, "goal": {"milestone": "M0"}}) | {"_root": str(self.root)}
+
+    def ran(self):
+        return len(self.calls.read_text()) if self.calls.exists() else 0
+
+    def test_under_the_limit_the_command_is_not_run(self):
+        trip = dispatch.check_progress(self.ledger, "t", self.now, spend_limit=50,
+                                       landed=lambda: self.dispatcher([]).landed_count(self.now))
+        self.assertIsNone(trip); self.assertEqual(self.ran(), 0)
+
+    def test_early_or_no_room_work_does_not_run_it(self):
+        self.assertIsNone(dispatch.check_progress(self.ledger, "other", self.now, landed=lambda: self.fail("ran")))
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", self.now, min_work=10 ** 9, landed=lambda: self.fail("ran")))
+
+    def test_over_the_limit_it_runs_once_and_its_count_decides(self):
+        d = self.dispatcher([])
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", self.now, landed=lambda: d.landed_count(self.now)))
+        self.assertEqual(self.ran(), 1)
+        self.cfg["progress"]["landed"][-1] = "print()"
+        trip = dispatch.check_progress(self.ledger, "t", self.now, landed=lambda: self.dispatcher([]).landed_count(self.now))
+        self.assertEqual(trip["kind"], "no_progress")
+
+    def test_a_merge_in_the_window_means_the_command_is_not_run(self):
+        m = self.ledger.start_run("t", "#2", "merge", "claude", now=self.now - 2000)
+        self.ledger.finish_run(m, "ok", now=self.now - 1900)
+        d = self.dispatcher([])
+        self.assertIsNone(dispatch.check_progress(self.ledger, "t", self.now, landed=lambda: d.landed_count(self.now)))
+        self.assertEqual(self.ran(), 0)
+
+    def test_a_failing_command_is_logged_and_merges_decide(self):
+        logs = []
+        self.cfg["progress"]["landed"][-1] = "raise SystemExit(3)"
+        d = self.dispatcher(logs)
+        self.assertIsNone(d.landed_count(self.now))
+        self.assertTrue(any("exited 3" in l and "counting merges" in l for l in logs), logs)
+        trip = dispatch.check_progress(self.ledger, "t", self.now, landed=lambda: d.landed_count(self.now))
+        self.assertEqual(trip["kind"], "no_progress")
+
+    def test_unset_never_logs_or_runs(self):
+        logs = []
+        d = dispatch.Dispatcher(self.base(), self.ledger, board=object(), log=logs.append)
+        self.assertIsNone(d.landed_count(self.now)); self.assertEqual(logs, [])
 
 
 if __name__ == "__main__":

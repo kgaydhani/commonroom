@@ -217,6 +217,10 @@ class Digest(Room):
         self.assertIn("About $4 of Claude use at API prices. That is an estimate", out)
         self.assertIn("Landed: 1.", out)
         self.assertIn(": #7 (PR #9)", out)
+        self.assertNotIn("own count", out)   # no [progress] landed declared: nothing extra
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n[progress]\nlanded = ["{python}", "-c", "print(1); print(2)"]\n', encoding="utf-8")
+        code, out, _ = self.room("digest", "--project", "alpha")
+        self.assertIn("Landed by the project's own count in 24 h: 2.", out)
 
     def test_digest_with_hours_is_still_the_auditors_json(self):
         with mock.patch.object(cli, "digest", return_value={"window_hours": 3}) as old, \
