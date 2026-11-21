@@ -162,10 +162,47 @@ class Transcripts(unittest.TestCase):
         self.write(cwd, "s1", [user(T0 - 30, "s1", cwd), assistant(T0, "s1", cwd, "m1"), user(T0 + 30, "s1", cwd)])
         found = self.spans()
         self.assertEqual(len(found), 1)
-        self.assertEqual(set(found[0]), {"project", "session_id", "started_at", "ended_at", "messages", "tokens"})
+        self.assertEqual(set(found[0]), {"project", "session_id", "started_at", "ended_at", "messages", "tokens",
+                                         "models", "context", "folder"})
         text = json.dumps(found)
         self.assertNotIn(SECRET, text)
-        self.assertNotIn("claude-test", text)
+        self.assertNotIn("private", text)
+
+    def test_the_model_of_each_call_is_reported_with_its_tokens_and_no_text(self):
+        # commonroom#256: a session that moves from one model to another, and a subagent on a third.
+        cwd = str(self.alpha)
+        lines = [assistant(T0, "s1", cwd, "m1", 1000), assistant(T0 + 60, "s1", cwd, "m2", 3000)]
+        lines[1]["message"]["model"] = "claude-other-1"
+        lines[1]["message"]["usage"]["cache_read_input_tokens"] = 400_000
+        no_model = assistant(T0 + 90, "s1", cwd, "m4", 5)
+        del no_model["message"]["model"]
+        self.write(cwd, "s1", lines + [no_model, user(T0 + 100, "s1", cwd)])
+        self.write(cwd, "s1", [assistant(T0 + 120, "s1", cwd, "m3", 50)], subagent="a1")
+        [span] = self.spans()
+        self.assertEqual(span["models"], {"claude-test": 2000 + 100, "claude-other-1": 6000 + 400_000, None: 10})
+        self.assertEqual(span["tokens"], sum(span["models"].values()))
+        self.assertEqual(span["context"], 403_000)                  # input and cache read of the widest call
+        self.assertEqual(span["folder"], cwd)
+        for text in (json.dumps(span), sessions.cache_file().read_text(encoding="utf-8")):
+            self.assertNotIn(SECRET, text)
+            self.assertNotIn("private", text)
+
+    def test_a_cache_written_before_models_were_kept_is_left_alone(self):
+        cwd = str(self.alpha)
+        self.write(cwd, "s1", [assistant(T0, "s1", cwd, "m1")])
+        old_cache = self.home / "sessions-cache.json"           # where a v1 reader, still running, keeps its cache
+        old_cache.parent.mkdir(parents=True, exist_ok=True)
+        old_text = json.dumps({"v": 1, "files": {"x": {"size": 1, "mtime": 1.0, "offset": 1,
+                                                        "calls": [[1.0, "s", "c", None, 5]]}}})
+        old_cache.write_text(old_text, encoding="utf-8")
+        self.assertNotEqual(sessions.cache_file(), old_cache)
+        [span] = self.spans()
+        self.assertEqual(span["models"], {"claude-test": 200})
+        self.assertEqual(old_cache.read_text(encoding="utf-8"), old_text)   # not wiped, so a v1 reader keeps its cache
+        self.assertEqual(json.loads(sessions.cache_file().read_text(encoding="utf-8"))["v"], sessions.CACHE_VERSION)
+        sessions.stats.update(bytes=0, files=0)
+        self.spans()
+        self.assertEqual(sessions.stats["bytes"], 0)                       # the v2 cache is used on the next call
 
     def test_only_messages_inside_the_span_count_and_old_files_are_not_opened(self):
         cwd = str(self.alpha)
