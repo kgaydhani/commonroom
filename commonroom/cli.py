@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import raises, standings
+from commonroom import pie_notice, raises, sessions, standings
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
@@ -77,8 +77,37 @@ def cmd_tap(args) -> int:
             parts.append("room: go" if v.allowed else "room: hold")
     except Exception as exc:  # the status line must keep rendering
         parts.append(f"room tap error: {type(exc).__name__}")
+    parts += _tap_over_share(data)
     print(" | ".join(parts) or "room")
     return 0
+
+
+def _tap_over_share(data: dict) -> list[str]:
+    """["<project> over its share (est.)"] when the folder this status line runs in is a registered project that is over
+    its line (commonroom#243). Nothing for any other folder, and nothing when the registry or ledger can't be read."""
+    try:
+        folder = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
+        if not folder:
+            return []
+        reg = registry.load()
+        key = next((k for k, p in reg.projects.items() if sessions.path_key(folder) == sessions.path_key(p.path)
+                    or sessions.path_key(folder).startswith(sessions.path_key(p.path).rstrip(os.sep) + os.sep)), None)
+        if key is None:
+            return []
+        ledger = Ledger()
+        try:
+            found = []
+            for provider in standings.SESSION_PROVIDERS:
+                report = standings.standings(ledger, reg, provider, time.time())
+                row = report and pie_notice.over(report, key)
+                if row:
+                    found.append(f"{key} over its share on {provider}: est. {row.spent:.0f}% of {row.allowed:.0f}% "
+                                 f"(room pie)")
+            return found
+        finally:
+            ledger.close()
+    except Exception:
+        return []
 
 
 def _verdicts(ledger, cfg: dict, now: float) -> dict:
@@ -772,6 +801,9 @@ def cmd_pie(args) -> int:
         for s in report.rows:
             print(f"  {s.name:<16} {registry.fmt_number(s.share):>5}  {s.when:<6} {s.spent:>10.1f} "
                   f"{report.room(s.name):>6.1f} {report.own.get(s.name, 0.0):>12.1f} {s.allowed:>6.1f} {s.headroom:>+13.1f}")
+        for s in report.rows:
+            if pie_notice.over(report, s.name):
+                print(f"  OVER ITS SHARE: {pie_notice.text(reg, report, s.name, s)}")
     return 0
 
 
