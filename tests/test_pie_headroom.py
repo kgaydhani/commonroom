@@ -80,3 +80,12 @@ class PieHeadroom(Gate):
         self.spend(0, 30, 66)                             # the week nearly gone: the pie's reserve holds
         self.used = 96
         self.assertIn("room: hold", self.tap("alpha"))
+
+    def test_tap_says_hold_when_the_pie_holds_though_the_reserve_gate_allows(self):
+        self.registry()
+        self.spend(30, 0, 0)                              # alpha spent 30 of its 17.4 line: the pie holds it
+        self.used = 30
+        self.add_run("beta-site", self.now - 600)         # beta (under its line) is running now, so it is beta's turn
+        out = self.tap("alpha")
+        self.assertIn("room: hold", out)
+        self.assertNotIn("room: go", out)

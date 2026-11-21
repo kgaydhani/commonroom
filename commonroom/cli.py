@@ -66,7 +66,7 @@ def cmd_tap(args) -> int:
             folder = (data.get("workspace") or {}).get("current_dir") or data.get("cwd")
             cfg = config_mod.load(config_mod.find_config(Path(folder)) if folder else None)
             if owner_reserve.for_project(ledger, cfg):
-                v = verdicts(ledger, cfg)["claude"]   # a registered project: the verdict its dispatcher acts on (#272)
+                v = _verdicts(ledger, cfg, time.time())["claude"]   # a registered project: the verdict its dispatcher acts on, pie holds included (#272)
             else:
                 readings = ledger.latest_usage("claude")
                 v = gate.usage_verdict("claude", readings, config_mod.budget(cfg, "claude"), time.time(), cfg["freshness_seconds"])
