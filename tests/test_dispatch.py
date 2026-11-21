@@ -1215,6 +1215,58 @@ class WithLedger(unittest.TestCase):
         bundles = list((Path(self.ledger.path).parent / "rescue").glob("i92-x-*.bundle"))
         self.assertEqual(len(bundles), 1)                                               # ...so it's bundled locally
 
+    def _scratch_fixture(self):
+        root = Path(self.tmp.name)
+        run = lambda *a, cwd=root: dispatch.git(list(a), cwd)
+        run("init", "-q", "--bare", "-b", "main", str(root / "origin.git"))
+        run("clone", "-q", str(root / "origin.git"), str(root / "main"))
+        main = root / "main"
+        for k, v in (("user.email", "t@t"), ("user.name", "t")):
+            run("config", k, v, cwd=main)
+        (main / "a.txt").write_text("a")
+        run("add", "-A", cwd=main); run("commit", "-qm", "base", cwd=main); run("push", "-q", "origin", "main", cwd=main)
+        run("checkout", "-qb", "i187-x", cwd=main)
+        (main / ".scratch" / "tmp").mkdir(parents=True)
+        (main / ".scratch" / "tmp" / "junk.txt").write_text("junk")
+        board = FakeBoard([issue(187, ["status:ready"])]); board.comment = lambda n, body: None
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        return run, main, d, dispatch.Job("build", "builder", issue=board.issues[0])
+
+    def _preserve_without_exclude(self, d, job, main):
+        orig = dispatch.workers_mod.exclude_scratch
+        dispatch.workers_mod.exclude_scratch = lambda cwd: None      # the exclude file could not be written
+        try:
+            d.preserve_work(job, main, "i187-x")
+        finally:
+            dispatch.workers_mod.exclude_scratch = orig
+
+    def test_preserve_work_commits_edits_but_never_scratch_files(self):
+        run, main, d, job = self._scratch_fixture()
+        (main / "a.txt").write_text("edited")
+        self._preserve_without_exclude(d, job, main)
+        self.assertEqual(run("rev-list", "--count", "origin/main..HEAD", cwd=main), "1")
+        self.assertEqual(run("show", "--name-only", "--format=", "HEAD", cwd=main).split(), ["a.txt"])
+        self.assertIn("i187-x", run("ls-remote", "--heads", "origin", cwd=main))
+
+    def test_preserve_work_still_commits_when_the_exclude_file_write_raises(self):
+        run, main, d, job = self._scratch_fixture()
+        (main / "a.txt").write_text("edited")
+        def boom(cwd): raise OSError("read-only")
+        orig = dispatch.workers_mod.exclude_scratch
+        dispatch.workers_mod.exclude_scratch = boom
+        try:
+            d.preserve_work(job, main, "i187-x")
+        finally:
+            dispatch.workers_mod.exclude_scratch = orig
+        self.assertEqual(run("show", "--name-only", "--format=", "HEAD", cwd=main).split(), ["a.txt"])
+        self.assertIn("i187-x", run("ls-remote", "--heads", "origin", cwd=main))
+
+    def test_preserve_work_with_only_scratch_changes_commits_and_pushes_nothing(self):
+        run, main, d, job = self._scratch_fixture()
+        self._preserve_without_exclude(d, job, main)
+        self.assertEqual(run("rev-list", "--count", "origin/main..HEAD", cwd=main), "0")
+        self.assertNotIn("i187-x", run("ls-remote", "--heads", "origin", cwd=main))
+
     def test_room_yields_while_the_owner_uses_claude_elsewhere(self):
         now = time.time()
         self.fresh_readings(now)

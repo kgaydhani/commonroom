@@ -2815,11 +2815,17 @@ class Dispatcher:
             return
         committed = False
         try:
+            workers_mod.exclude_scratch(worktree)
+        except Exception as exc:    # the pathspec below still keeps .scratch/ out
+            self.log(f"   could not update info/exclude in {worktree}: {str(exc)[:160]}")
+        try:
             if git(["status", "--porcelain"], worktree):
-                git(["add", "-A"], worktree)
-                git(["commit", "-q", "-m", "WIP: unfinished work preserved by Common Room\n\nThe worker stopped before "
-                     "finishing; the next attempt continues from this commit."], worktree)
-                committed = True
+                # Never stage .scratch/ (worker temp output, commonroom#187): the pathspec holds even if the exclude file can't be written.
+                git(["add", "-A", "--", ".", ":(exclude).scratch"], worktree)
+                if git(["diff", "--cached", "--name-only"], worktree):
+                    git(["commit", "-q", "-m", "WIP: unfinished work preserved by Common Room\n\nThe worker stopped before "
+                         "finishing; the next attempt continues from this commit."], worktree)
+                    committed = True
             # Also catch commits that exist only here (e.g. the room committed Codex's work, then the push failed).
             try:
                 base = git(["rev-parse", "--verify", "-q", f"origin/{branch}"], worktree)
