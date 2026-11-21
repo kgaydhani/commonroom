@@ -1,0 +1,1 @@
+PR #{{pr}} {{conflicts_main}}. The next Claude builder run merges origin/main into the branch, resolves the conflicts and reruns the tests.

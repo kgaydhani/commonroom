@@ -55,6 +55,10 @@ PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-
            "continue-board", "continue-branch", "continue-review", "deadline", "default-test", "director", "headless",
            "review", "review-no-ci", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
            "why-milestone", "why-mission")
+# The text the room posts as issue comments, in ways/comments (commonroom#223).
+COMMENTS_NAMES = ("assess-escalate", "assess-retry", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
+                  "merge-main-changes", "merge-stands-approve", "merge-stands-review", "preserved", "rescue", "timeout",
+                  "timeout-kept", "timeout-lost")
 PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
 
 
@@ -67,6 +71,11 @@ def read_way(path: Path) -> str:
 def load_ways(folder: Path) -> dict[str, str]:
     """Every prompt template under `folder`/prompts, by name. A missing one raises FileNotFoundError naming it."""
     return {name: read_way(folder / "prompts" / f"{name}.md") for name in PROMPTS}
+
+
+def load_comments(folder: Path) -> dict[str, str]:
+    """Every comment template under `folder`/comments, by name. A missing one raises FileNotFoundError naming it."""
+    return {name: read_way(folder / "comments" / f"{name}.md") for name in COMMENTS_NAMES}
 
 
 def ways_for(cfg: dict) -> dict[str, str]:
@@ -90,12 +99,18 @@ def ways_for(cfg: dict) -> dict[str, str]:
     return ways
 
 
+def fenced(text: str) -> str:
+    """`text` as a code block."""
+    return f"```\n{text}\n```"
+
+
 def fill_way(template: str, **values) -> str:
     """`template` with each `{{name}}` replaced by its value, in one pass: a value is never expanded again."""
     return PLACEHOLDER.sub(lambda m: str(values[m.group(1)]), template)
 
 
 WAYS = load_ways(WAYS_DIR)
+COMMENTS = load_comments(WAYS_DIR)
 STEER_REASON = WAYS["steer"]
 BULLETIN_REASON = WAYS["bulletin"]   # fill_way() it with due, issue and owner
 OWNER_COOLDOWN = POLICY["owner_cooldown_seconds"]
@@ -856,6 +871,18 @@ CI_BACKOFF_MINUTES = POLICY["ci_backoff_minutes"]
 CI_BOUNCES = POLICY["ci_bounces"]
 MERGE_MAIN = "merge-main run"   # marks the room's comment that sends a PR back only to merge main into it
 CONFLICTS_MAIN = "conflicts with main"   # marks the room's comment that sends a conflicting PR back to its builder
+
+
+def check_markers(comments: dict[str, str]):
+    """The comment templates must still carry the markers the code looks for in them (`merge_main_only`,
+    `conflicts_main`), or the room would stop recognising its own comment."""
+    for name, marker in (("merge-main", "merge_main"), ("merge-main", "conflicts_main"),
+                         ("merge-main-changes", "conflicts_main")):
+        if "{{%s}}" % marker not in comments[name]:
+            raise ValueError(f"ways/comments/{name}.md must contain {{{{{marker}}}}}: the room looks for it in its own comment")
+
+
+check_markers(COMMENTS)
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
 RUN_URL = re.compile(r"(.*/actions/runs/(\d+))")   # a check's workflow run, from its details URL
 
@@ -1795,12 +1822,11 @@ class Dispatcher:
                                              f"and resolves the conflicts; the room doesn't build {EXTERNAL} issues.")
         self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
         if review == "CHANGES":
-            self.board.comment(issue_no, f"PR #{pr['number']} {CONFLICTS_MAIN}. The next Claude builder run merges "
-                                         f"origin/main into the branch, resolves the conflicts and reruns the tests.")
+            self.board.comment(issue_no, fill_way(COMMENTS["merge-main-changes"], pr=pr["number"], conflicts_main=CONFLICTS_MAIN))
             return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder"]
-        self.board.comment(issue_no, f"PR #{pr['number']} {CONFLICTS_MAIN}. A {MERGE_MAIN} merges origin/main into the "
-                                     f"branch, resolves only the conflicts and reruns the tests. Nothing else changes, so "
-                                     f"{'its approval stands' if review == 'APPROVE' else 'the review still sees only the PR'}.")
+        stands = COMMENTS["merge-stands-approve" if review == "APPROVE" else "merge-stands-review"]
+        self.board.comment(issue_no, fill_way(COMMENTS["merge-main"], pr=pr["number"], conflicts_main=CONFLICTS_MAIN,
+                                              merge_main=MERGE_MAIN, stands=stands))
         return [f"PR #{pr['number']} has merge conflicts; issue #{issue_no} back to its builder for a {MERGE_MAIN}"]
 
     def tell_external(self, issue: dict, note: str) -> list[str]:
@@ -2207,9 +2233,7 @@ class Dispatcher:
             return [f"PR #{pr['number']} still red after {bounces} fixes; #{issue_no} escalated"]
         self.board.set_labels(issue_no, add=["status:ready", "needs:changes"], remove=["status:review", "status:in-progress"])
         test = (self.cfg.get("checks") or {}).get("test") or "the project's tests"
-        self.board.comment(issue_no, f"CI is red on PR #{pr['number']}: {names}. Read the failure with "
-                                     f"`gh pr checks {pr['number']}` and `gh run view <run id> --log-failed`, fix it on the same "
-                                     f"branch, and run `{test}` before pushing.")
+        self.board.comment(issue_no, fill_way(COMMENTS["ci-red"], pr=pr["number"], names=names, test=test))
         return [f"PR #{pr['number']} CI red ({names}); #{issue_no} back to its builder"]
 
     # Choosing work ---------------------------------------------------------------------------------
@@ -2784,12 +2808,10 @@ class Dispatcher:
         minutes = round(self.policy("run_timeout_seconds") / 60)
         try:
             if branch and self.pushed_commits(branch):
-                kept = f"Its work was preserved on branch `{branch}`; the next attempt continues from it."
+                kept = fill_way(COMMENTS["timeout-kept"], branch=branch)
             else:
-                kept = ("Nothing was committed, so nothing was preserved and the next attempt starts over. "
-                        "If this keeps happening, the issue may need splitting.")
-            self.board.comment(job.issue["number"],
-                               f"The room ended this run at its {minutes}-minute time limit. {kept}")
+                kept = COMMENTS["timeout-lost"]
+            self.board.comment(job.issue["number"], fill_way(COMMENTS["timeout"], minutes=minutes, kept=kept))
         except Exception as exc:
             self.log(f"   could not comment on the timeout: {str(exc)[:160]}")
 
@@ -2884,8 +2906,7 @@ class Dispatcher:
                 return
             git(["push", "-q", "-u", "origin", branch], worktree)
             if committed and job.issue:
-                self.board.comment(job.issue["number"], f"Unfinished work was preserved on branch `{branch}`. "
-                                                        f"The next attempt continues from it.")
+                self.board.comment(job.issue["number"], fill_way(COMMENTS["preserved"], branch=branch))
         except Exception as exc:
             self.log(f"   could not push work on {branch}: {str(exc)[:160]}")
             self.rescue(job, worktree, branch)
@@ -2899,8 +2920,7 @@ class Dispatcher:
             git(["bundle", "create", str(bundle), "HEAD", "^origin/main"], worktree)
             self.log(f"   rescued unpushed work to {bundle}")
             if job.issue:
-                self.board.comment(job.issue["number"], f"Pushing this branch failed, so its unpushed work was saved "
-                                                        f"locally as `{bundle}` (`git fetch <bundle> HEAD:{branch}` restores it).")
+                self.board.comment(job.issue["number"], fill_way(COMMENTS["rescue"], bundle=bundle, branch=branch))
         except Exception as exc:
             self.log(f"   could not rescue work on {branch}: {str(exc)[:160]}")
 
@@ -2938,13 +2958,8 @@ class Dispatcher:
         if hasattr(self.board, "ensure_label"):
             self.board.ensure_label("provider:claude")
         self.board.set_labels(n, add=["status:ready", "provider:claude"], remove=["status:in-progress"])
-        if changed:
-            lead = (f"Codex finished part or all of this but ended BLOCKED. Its work is preserved on branch `{branch}`. "
-                    f"A Claude builder continues from it: run the gate, finish what's left, open the PR.")
-        else:
-            lead = (f"Codex ended BLOCKED before changing anything, so this run left nothing on branch `{branch}`. "
-                    f"A Claude builder starts from the issue: build it, run the gate, open the PR.")
-        self.board.comment(n, f"{lead}\n\n```\n{text.strip()[-1500:]}\n```")
+        lead = fill_way(COMMENTS["handoff-changed" if changed else "handoff-fresh"], branch=branch)
+        self.board.comment(n, f"{lead}\n\n{fenced(text.strip()[-1500:])}")
         return True
 
     def assess(self, job: Job, branch: str | None, before: str | None, started_iso: str, result) -> tuple[str, list, str]:
@@ -2974,10 +2989,10 @@ class Dispatcher:
             diagnosis = "; ".join(result.errors[-3:]) or tail or "worker ended without a PR"
             if failures >= self.cfg["breakers"]["task_failures"]:
                 self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
-                self.board.comment(n, f"Attempt {failures} failed, escalating to the director instead of retrying.\n\n```\n{diagnosis[-1500:]}\n```")
+                self.board.comment(n, f"{fill_way(COMMENTS['assess-escalate'], failures=failures)}\n\n{fenced(diagnosis[-1500:])}")
             else:
                 self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
-                self.board.comment(n, f"Attempt {failures} produced no PR. Back to ready.\n\n```\n{diagnosis[-1500:]}\n```")
+                self.board.comment(n, f"{fill_way(COMMENTS['assess-retry'], failures=failures)}\n\n{fenced(diagnosis[-1500:])}")
             return "failed", [], diagnosis
         if job.kind == "role":
             n = job.issue["number"]

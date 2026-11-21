@@ -1,0 +1,1 @@
+PR #{{pr}} {{conflicts_main}}. A {{merge_main}} merges origin/main into the branch, resolves only the conflicts and reruns the tests. Nothing else changes, so {{stands}}.
