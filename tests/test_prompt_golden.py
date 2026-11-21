@@ -187,3 +187,20 @@ class GoldenPrompts(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublicRepoRule(unittest.TestCase):
+    """commonroom#316: the build and review prompts say the repo may be public, and what must stay out of it."""
+    def test_build_and_review_templates_carry_the_public_repo_rule(self):
+        prompts = Path(__file__).resolve().parent.parent / "commonroom" / "ways" / "prompts"
+        for name in ("build.md", "build-codex.md", "review.md"):
+            text = (prompts / name).read_text(encoding="utf-8")
+            self.assertIn("This repo may be public", text, name)
+            self.assertIn("another project's", text, name)
+        self.assertIn("CHANGES verdict", (prompts / "review.md").read_text(encoding="utf-8"))
+        self.assertIn("scratch home with made-up projects", (prompts / "build.md").read_text(encoding="utf-8"))
+
+    def test_rendered_prompts_carry_it(self):
+        for name in ("full-claude-build", "plain-codex-build", "plain-claude-review", "bare-claude-build"):
+            text = (FIXTURES / f"{name}.txt").read_text(encoding="utf-8")
+            self.assertIn("This repo may be public", text, name)

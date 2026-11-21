@@ -1,4 +1,4 @@
-Review PR #5 in o/p (it implements issue #7). The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment with `gh pr comment 5 --repo o/p --body ...` that starts with `[agent:reviewer] REVIEW: APPROVE` or `[agent:reviewer] REVIEW: CHANGES`.
+Review PR #5 in o/p (it implements issue #7). The PR branch is checked out here. Follow your reviewer instructions. Post exactly one comment with `gh pr comment 5 --repo o/p --body ...` that starts with `[agent:reviewer] REVIEW: APPROVE` or `[agent:reviewer] REVIEW: CHANGES`. This repo may be public: an image, diff, PR body or comment that shows another project's or the live room's data is a CHANGES verdict.
 
 Why this matters: it serves the milestone **M** and the mission: Ship the thing. Judge your work against that goal as well as the task's criteria.
 
