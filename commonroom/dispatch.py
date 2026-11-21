@@ -28,7 +28,7 @@ from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod,
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
-from commonroom import owner_reserve, steward
+from commonroom import measure, owner_reserve, steward
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -1313,6 +1313,7 @@ class Dispatcher:
         has_pr = {int(m.group(1)) for pr in prs if (m := BRANCH.match(pr["headRefName"]))}
         running = self.ledger.running_tasks(self.project)
         self.sweep(everything, prs)
+        self.take_measure()
         actions += self.clear_stray_ready(everything)
         for issue in everything:
             n = issue["number"]
@@ -2864,6 +2865,17 @@ class Dispatcher:
             self.ledger.record_findings(self.project, found)
         except Exception as exc:
             self.log(f"   steward sweep failed: {exc}")
+
+    def take_measure(self):
+        """The project's `[measure]` reading, when one is due (commonroom#324). Never stops the pass."""
+        if self.dry_run or not self.root:
+            return
+        try:
+            reading = measure.take(self.ledger, self.project, self.cfg, self.root, bash=find_bash())
+            if reading:
+                self.log(f"   measure: {reading['label']}: exit {reading['exit_code']} {reading['line']}")
+        except Exception as exc:
+            self.log(f"   measure failed: {exc}")
 
     def steward_reason(self, since: float) -> str | None:
         """Findings an agent can fix that appeared after the director last started: told once, until they clear."""
