@@ -15,7 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from commonroom import dispatch, usage, workers
+from commonroom import dispatch, registry, usage, workers
 from commonroom.ledger import Ledger
 from tests.test_dispatch import FakeBoard, cfg_with, issue
 
@@ -176,20 +176,28 @@ class LedgerRules(unittest.TestCase):
         self.assertEqual(self.errors("AX-A1,Not true yet. Missing: a test.,A1,owner,2026-11-20,,gap"), [])
 
 
-# A2: names the room must not hold. Projects the room has served and their project-specific role names; add a project's
-# here when it joins. The login, host path, worktree path and the folder projects live in come from this repo's room.toml.
-OTHER_PROJECTS = ("gamemirage", "magazine", "art-tech")
-# Today's violations, each counted. Fixing one means taking it off this list; a new one fails the test (commonroom#218).
-EXCEPTIONS = {
-    ("commonroom/workers.py", "art-tech"): 1,   # one project's role keeps the owner's MCP connectors
-    ("commonroom/reddit.py", "kgaydhani"): 1,   # the owner's login in the research user agent
-}
+# A2: names the room must not hold. The names come from configuration: this repo's room.toml (login, host path,
+# worktree path, the folder projects live in) and the room home's project registry (each project's name and path).
+# OTHER_NAMES adds only what no config lists: role names that belong to one project. Add one here when it joins.
+OTHER_NAMES = ("art-tech",)
+# Today's violations, each counted (commonroom#218 cleared them).
+EXCEPTIONS = {}
 ISSUE_REF = re.compile(r"[\w./-]+#\d+")
 
 
-def project_tokens(root: Path = ROOT) -> set[str]:
+def registry_tokens(reg) -> set[str]:
+    """Each registered project's name and path (and its path's folder name)."""
+    tokens = set()
+    for project in reg.projects.values():
+        path = project.path.replace("\\", "/").rstrip("/").lower()
+        tokens |= {project.name.lower(), path, path.rsplit("/", 1)[-1]}
+    return tokens
+
+
+def project_tokens(root: Path = ROOT, reg=None) -> set[str]:
     cfg = tomllib.loads((root / "room.toml").read_text(encoding="utf-8"))
-    tokens = {t.lower() for t in OTHER_PROJECTS}
+    tokens = {t.lower() for t in OTHER_NAMES}
+    tokens |= registry_tokens(registry.load(check=False) if reg is None else reg)
     tokens.add(cfg["project"]["repo"].split("/")[0].lower())
     worktrees = cfg["project"].get("worktrees")
     if worktrees:
@@ -230,6 +238,8 @@ def code_texts(source: str) -> list[str]:
             texts.append(node.arg)
         elif isinstance(node, ast.keyword) and node.arg:
             texts.append(node.arg)
+        elif isinstance(node, ast.ImportFrom):
+            texts.append(node.module or "")
         elif isinstance(node, ast.alias):
             texts += [node.name, node.asname or ""]
     return texts
@@ -275,6 +285,15 @@ class RoomKnowsNoProject(unittest.TestCase):
                   '    return f"{B}/magazine"\n')
         found = count_tokens(code_texts(source), {"gamemirage", "magazine", "art-tech", "d:/dev"})
         self.assertEqual(found, {"gamemirage": 1, "magazine": 1, "art-tech": 1, "d:/dev": 1})
+
+    def test_the_scan_reads_the_module_of_a_from_import(self):
+        found = count_tokens(code_texts("from gamemirage.tools import x"), {"gamemirage"})
+        self.assertEqual(found, {"gamemirage": 1})
+
+    def test_the_tokens_include_every_registered_project(self):
+        reg = registry.parse('[projects.shop]' + chr(10) + 'path = "E:/work/shop-app"' + chr(10) + 'share = 50')
+        tokens = project_tokens(ROOT, reg)
+        self.assertTrue({"shop", "e:/work/shop-app", "shop-app"} <= tokens)
 
     def test_the_tokens_come_from_room_toml(self):
         with tempfile.TemporaryDirectory() as tmp:

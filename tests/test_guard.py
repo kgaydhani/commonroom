@@ -3,6 +3,7 @@ import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -105,6 +106,10 @@ class GuardHookTests(unittest.TestCase):
         self.assertIn("taskkill", done.stderr)
 
 
+NL = chr(10)
+FM = "---" + NL + "model: opus" + NL
+
+
 class ClaudeCommandTests(unittest.TestCase):
     def test_every_claude_worker_gets_the_guard_hook(self):
         for name in ("builder", "art-tech"):   # game and room roles alike
@@ -118,6 +123,24 @@ class ClaudeCommandTests(unittest.TestCase):
             self.assertTrue(command.endswith("guard-command"))
             # Only hooks: --settings adds to the user's and the project's settings, it must not override anything else.
             self.assertEqual(list(settings), ["hooks"])
+
+    def test_only_a_role_that_asks_keeps_the_connectors(self):
+        mcp = ["--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
+        for name in ("builder", "art-tech"):   # no role is special by name
+            cmd = workers.claude_command(workers.Role(name, None, [], "p"), None, "sid", Path("p.md"), None)
+            self.assertEqual(cmd[-3:], mcp, name)
+        keeps = workers.claude_command(workers.Role("art-tech", None, [], "p", connectors=True), None, "sid",
+                                       Path("p.md"), None)
+        self.assertNotIn("--strict-mcp-config", keeps)
+
+    def test_the_role_file_frontmatter_sets_connectors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agents = Path(tmp) / ".claude" / "agents"
+            agents.mkdir(parents=True)
+            (agents / "a.md").write_text(FM + "connectors: true" + NL + "---" + NL + "body", encoding="utf8")
+            (agents / "b.md").write_text(FM + "---" + NL + "body", encoding="utf8")
+            self.assertTrue(workers.load_role(tmp, "a").connectors)
+            self.assertFalse(workers.load_role(tmp, "b").connectors)
 
     def test_headless_note_says_stop_only_your_own_processes(self):
         self.assertIn("Stop only processes you started, by PID.", dispatch.HEADLESS_NOTE)
