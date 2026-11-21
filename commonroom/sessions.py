@@ -13,8 +13,9 @@ because the owner's work elsewhere must share a meter step by time with the proj
 work is his, not whichever project also had a session open); only files modified since the span began are read.
 Lines of room workers (their folder or session id is in the ledger) are left out: those are runs already.
 
-Read-only and text-free: of each line it reads only the timestamp, the session id, the `cwd`, the message id and the
-usage numbers. It never returns or stores message text.
+Read-only and text-free: of each line it reads only the timestamp, the session id, the `cwd`, the message id, the
+model and the usage numbers. It never returns or stores message text. The model of each call says which weekly window a
+session spends (commonroom#256): a plan's top model has its own, smaller one.
 """
 from __future__ import annotations
 
@@ -32,6 +33,8 @@ GAP = 15 * 60
 LEAD = 60
 _ASSISTANT = re.compile(rb'"type"\s*:\s*"assistant"')
 TOKEN_KEYS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+# What a call sent the model: its context. Every call of a long session re-reads it.
+CONTEXT_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 
 
 def default_dir() -> Path:
@@ -71,8 +74,9 @@ def _transcripts(projects_dir: Path, since: float):
 
 
 def _parse(raw: bytes):
-    """(timestamp, session id, cwd, message id, tokens) of one transcript line, or None when it is not an assistant line
-    that reports usage, is malformed, or lacks any of these."""
+    """(timestamp, session id, cwd, message id, tokens, model, context tokens) of one transcript line, or None when it
+    is not an assistant line that reports usage, is malformed, or lacks any of the first five. The model is None when
+    the line names none."""
     if not _ASSISTANT.search(raw):
         return None
     try:
@@ -82,12 +86,14 @@ def _parse(raw: bytes):
         message = line["message"]
         counts = message["usage"]
         tokens = sum(int(counts.get(key) or 0) for key in TOKEN_KEYS)
+        context = sum(int(counts.get(key) or 0) for key in CONTEXT_KEYS)
         at = datetime.fromisoformat(line["timestamp"]).timestamp()
         session, cwd = line["sessionId"], line["cwd"]
         if not (isinstance(session, str) and isinstance(cwd, str) and session and cwd):
             return None
-        mid = message.get("id")
-        return at, session, cwd, mid if isinstance(mid, str) else None, tokens
+        mid, model = message.get("id"), message.get("model")
+        return (at, session, cwd, mid if isinstance(mid, str) else None, tokens,
+                model if isinstance(model, str) and model else None, context)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return None
 
@@ -115,7 +121,7 @@ def _read_from(path: Path, offset: int):
 
 
 # --- the cache: per transcript, how far it was read and the parsed calls so far (never any text) ---------------------
-CACHE_VERSION = 1
+CACHE_VERSION = 2          # 2: each call also holds its model and context (commonroom#256)
 # Bytes read from transcripts by the last `spans` call; for timing and tests.
 stats = {"bytes": 0, "files": 0}
 
@@ -128,15 +134,16 @@ def _valid(entry) -> bool:
     """Whether a cached file entry has the shape this reader wrote. Anything else means the cache is not trusted."""
     try:
         return (isinstance(entry["size"], int) and isinstance(entry["mtime"], float) and isinstance(entry["offset"], int)
-                and all(isinstance(m, list) and len(m) == 5 and isinstance(m[0], float) and isinstance(m[1], str)
+                and all(isinstance(m, list) and len(m) == 7 and isinstance(m[0], float) and isinstance(m[1], str)
                         and isinstance(m[2], str) and (m[3] is None or isinstance(m[3], str)) and isinstance(m[4], int)
+                        and (m[5] is None or isinstance(m[5], str)) and isinstance(m[6], int)
                         for m in entry["calls"]))
     except (KeyError, TypeError):
         return False
 
 
 def _load_cache(path: Path) -> dict:
-    """path key -> {"size", "mtime", "offset", "calls": [[at, session, cwd, message id, tokens], ...]}. A missing or
+    """path key -> {"size", "mtime", "offset", "calls": [[at, session, cwd, message id, tokens, model, context], ...]}. A missing or
     corrupt cache is an empty one: the reader then reads in full and rebuilds it."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -193,9 +200,11 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
 
     `projects` maps a project's key to its folder. `exclude_dirs` are folders where room workers ran and
     `exclude_sessions` their session ids: their lines are left out. Each span is {"project", "session_id",
-    "started_at", "ended_at", "messages", "tokens"}: one session's (and its subagents') assistant messages in one
+    "started_at", "ended_at", "messages", "tokens", "models", "context", "folder"}: one session's (and its subagents') assistant messages in one
     project, each less than `gap` seconds after the one before. The project is None for the owner's sessions in no
-    registered project's folder. Oldest first. With no project, nothing is read.
+    registered project's folder. `models` maps each model the span's calls named to their tokens (a call that names none
+is under None), `context` is the largest context one call sent, and `folder` is the `cwd` of its latest call. Oldest
+first. With no project, nothing is read.
 
     Only the bytes added to each transcript since the last call are read: what was parsed so far is kept in `cache`
     (default: sessions-cache.json in the room home). The answer is the same as a full read."""
@@ -214,7 +223,7 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
         key = path_key(path)
         if key in before:
             files[key] = before[key]
-        for at, session, cwd, message_id, tokens in _messages(path, files, key):
+        for at, session, cwd, message_id, tokens, model, context in _messages(path, files, key):
             if not start <= at <= end or session in skip:
                 continue
             if cwd not in owners:
@@ -224,25 +233,29 @@ def spans(projects: dict, start: float, end: float, exclude_dirs=(), exclude_ses
             if worker:
                 continue
             times, calls = found.setdefault((project, session), ([], {}))
-            times.append(at)
+            times.append((at, cwd))
             call = message_id if message_id is not None else len(calls)   # one call is written once per content block
-            first_at, most = calls.get(call, (at, 0))
-            calls[call] = (min(first_at, at), max(most, tokens))
+            first_at, most, _, widest = calls.get(call, (at, 0, None, 0))
+            calls[call] = (min(first_at, at), max(most, tokens), model, max(widest, context))
     if files != before:
         _save_cache(cache, files)
     result = []
     for (project, session), (times, calls) in sorted(found.items(), key=lambda item: (item[0][0] or "", item[0][1])):
         times.sort()
-        runs, first, last = [], times[0], times[0]
-        for at in times[1:]:
+        runs, first, (last, folder) = [], times[0][0], times[0]
+        for at, cwd in times[1:]:
             if at - last >= gap:
-                runs.append((first, last))
+                runs.append((first, last, folder))
                 first = at
-            last = at
-        runs.append((first, last))
-        for first, last in runs:
-            inside = [tokens for at, tokens in calls.values() if first <= at <= last]
+            last, folder = at, cwd
+        runs.append((first, last, folder))
+        for first, last, folder in runs:
+            inside = [call for call in calls.values() if first <= call[0] <= last]
+            models: dict = {}
+            for _, tokens, model, _ in inside:
+                models[model] = models.get(model, 0) + tokens
             result.append({"project": project, "session_id": session, "started_at": max(start, first - LEAD),
-                           "ended_at": last, "messages": len(inside), "tokens": sum(inside)})
+                           "ended_at": last, "messages": len(inside), "tokens": sum(c[1] for c in inside),
+                           "models": models, "context": max((c[3] for c in inside), default=0), "folder": folder})
     result.sort(key=lambda s: (s["started_at"], s["project"] or "", s["session_id"]))
     return result
