@@ -67,8 +67,12 @@ class Base(unittest.TestCase):
         self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
         self._owner = usage.owner_active
         usage.owner_active = lambda *a, **k: None   # this machine's real Claude sessions mustn't sway the tests
+        # A no-CI project's dispatcher runs the suite on main (commonroom#303); tests must never start a real one.
+        self._suite_on_main = dispatch.Dispatcher.suite_on_main
+        dispatch.Dispatcher.suite_on_main = lambda d: False
 
     def tearDown(self):
+        dispatch.Dispatcher.suite_on_main = self._suite_on_main
         usage.owner_active = self._owner
         self.ledger.close(); self.tmp.cleanup()
 
