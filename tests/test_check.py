@@ -209,7 +209,7 @@ class CheckPrompts(unittest.TestCase):
         room_py = (Path(d.room_root) / "room.py").as_posix()
         for text in (build, review):
             self.assertIn(f'python "{room_py}" check', text)
-            self.assertIn("exit 3 means `TESTS: INCOMPLETE` / `REVIEW: INCOMPLETE`, never FAIL", text)
+            self.assertIn("means unfinished: `TESTS: INCOMPLETE` / `REVIEW: INCOMPLETE`, never FAIL", text)
         self.assertIn(f"`TESTS: PASS <sha> {self.TEST}: ", review)
         self.assertTrue(dispatch.tested_on_head(f"[agent:reviewer] REVIEW: APPROVE\nTESTS: PASS abc1234 {self.TEST}: Ran 3 tests ... OK",
                                                 "abc1234", self.TEST))
