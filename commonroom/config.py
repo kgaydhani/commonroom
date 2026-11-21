@@ -62,6 +62,10 @@ DEFAULTS = {
     # `commands`: argv lists `room tick` runs in the project folder on every heartbeat; "{python}" is the room's
     # interpreter (commonroom#151). Empty: nothing runs.
     "heartbeat": {},
+    # `landed`: an argv list run in the project folder ("{python}", "{since}" = UTC ISO start of the 24 h window); each
+    # non-empty line it prints is one thing that landed. The progress breaker counts those instead of merges
+    # (commonroom#246). Unset: a merge is what landed.
+    "progress": {},
     # Per-merge targets the dashboard and digest measure against (commonroom#211). Only reported: nothing is gated on them.
     "targets": {"review_runs_per_merge": 2, "input_tokens_per_merge": 4000000},
 }

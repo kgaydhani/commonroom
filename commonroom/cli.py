@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import owner_reserve, pie_notice, raises, sessions, standings, weekly
+from commonroom import owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
@@ -207,6 +207,11 @@ def cmd_status(args) -> int:
         for r in runs:
             outputs = ", ".join(o.get("ref", o.get("kind", "?")) for o in r["outputs"]) or "no output"
             print(f"  {_clock(r['started_at'])} {r['role']}/{r['provider']} {r['task'] or '-'} {r['status']} -> {outputs}")
+    answer = progress_mod.landed(cfg, now - 86400)
+    if progress_mod.declared(cfg):
+        print(f"Landed in 24h: {answer.count if answer.count is not None else 'no answer (' + answer.why + '); merges count'}")
+        for line in answer.lines[-3:]:
+            print(f"  {line}")
     for b in ledger.open_breakers(project.get("name")):
         print(f"BREAKER {b['kind']}: {b['detail']}  (clear with: room breaker reset)")
     ledger.close()
@@ -452,6 +457,9 @@ def digest(cfg: dict, hours: float) -> dict:
         "usage": {p: {"verdict": vars(v), "windows": ledger.latest_usage(p)} for p, v in verdicts(ledger, cfg, now).items()},
         "breakers": ledger.open_breakers(project),
     }
+    if progress_mod.declared(cfg):
+        answer = progress_mod.landed(cfg, since if hours == 24 else now - 86400)
+        result["landed"] = {"count": answer.count, "last_lines": answer.lines[-5:], "why": answer.why}
     running = ledger.running_runs(project)
     ledger.close()
     if repo:
