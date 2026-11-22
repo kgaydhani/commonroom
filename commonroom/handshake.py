@@ -284,6 +284,9 @@ def _notes(where: Path) -> str:
     return "\n".join(parts)
 
 
+LANDED_SHOWN = 10   # newest landings the digest lists; the rest are counted, so the digest stays small (A10)
+
+
 def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
     rows = ledger.runs_since(ledger_name(p), now - WEEK)
     runs, landed = metrics.model_runs(rows, now - WEEK, now), metrics.landings(rows, now - WEEK, now)
@@ -307,14 +310,12 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
         answer = progress_mod.landed(own, now - 86400)
         lines.append("Landed by the project's own count in 24 h: "
                      + (str(answer.count) if answer.count is not None else f"no answer ({answer.why}); merges count") + ".")
-    for r in sorted(landed, key=lambda r: r["started_at"], reverse=True):
+    for r in sorted(landed, key=lambda r: r["started_at"], reverse=True)[:LANDED_SHOWN]:
         refs = ", ".join(o.get("ref") for o in r["outputs"] if o.get("ref"))
         lines.append(f"- {_when(r['started_at'])}: {r['task'] or 'no item'}{f' ({refs})' if refs else ''}")
+    if len(landed) > LANDED_SHOWN:
+        lines.append(f"{len(landed) - LANDED_SHOWN} older landings in the last 7 days; the ledger has them.")
     return "\n".join(lines)
-
-
-BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
-BOARD_FIRST = {"owner-overdue": 0, "blocked-on-nothing": 1}   # these lead; the rest follow in the order found
 
 
 BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
