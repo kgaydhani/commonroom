@@ -27,7 +27,13 @@ GLOBAL_ONLY = {"prompt_max_tokens": "because it limits the room's own text (axio
                "pie_own_active_minutes": "because every project's dispatcher must judge the owner's activity alike "
                                          "(commonroom#243)",
                "owner_floor_weekly": "because it keeps the owner's own use first against every project alike "
-                                     "(axiom A5, commonroom#241)"}
+                                     "(axiom A5, commonroom#241)",
+               "cold_return_minutes": "because it shapes the owner's own sessions alike in every project "
+                                      "(commonroom#367)",
+               "cold_return_context": "because it shapes the owner's own sessions alike in every project "
+                                      "(commonroom#367)",
+               "handoff_offer_hours": "because it shapes the owner's own sessions alike in every project "
+                                      "(commonroom#384)"}
 
 
 def check(name: str, value, where: str, low: int = 0, high: int | None = None) -> int:

@@ -161,6 +161,10 @@ class ProjectOverride(unittest.TestCase):
             self.dispatcher("a", {"pie_idle_minutes": 30})
         with self.assertRaisesRegex(ValueError, "owner_floor_weekly is room-wide only because it keeps the owner's"):
             self.dispatcher("a", {"owner_floor_weekly": 1})
+        for name in ("cold_return_minutes", "cold_return_context", "handoff_offer_hours"):
+            self.assertIn(name, policy.GLOBAL_ONLY)
+            with self.assertRaisesRegex(ValueError, f"{name} is room-wide only because it shapes the owner's own"):
+                self.dispatcher("a", {name: policy.DEFAULTS[name]})
         with self.assertRaisesRegex(ValueError, "review_rounds must be a whole number"):
             self.dispatcher("a", {"review_rounds": True})
 
