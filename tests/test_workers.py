@@ -113,5 +113,52 @@ class WorkerProcessTreeTest(unittest.TestCase):
         self.assertIsNone(tree.job)
 
 
+# A fake `claude -p` stream: an init event naming the credential, then a result (commonroom#391).
+CLAUDE = r"""
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "system", "subtype": "init", "apiKeySource": sys.argv[1]}), flush=True)
+print(json.dumps({"type": "result", "usage": {"input_tokens": 3, "output_tokens": 2}, "result": "done",
+                  "is_error": False}), flush=True)
+"""
+
+
+class ClaudeCredentialTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.base = Path(self.tmp.name)
+        self.ledger = Ledger(self.base / "room.sqlite3", synchronous="OFF")
+        self.wt = self.base / "i391-x"
+        self.wt.mkdir()
+        self.script = self.base / "claude.py"
+        self.script.write_text(CLAUDE, encoding="utf8")
+        self.orig = workers.claude_command
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        workers.claude_command = self.orig
+        shutil.rmtree(workers.worker_tmp(self.wt), ignore_errors=True)
+        self.ledger.close()
+        self.tmp.cleanup()
+
+    def run_claude(self, source):
+        workers.claude_command = lambda *a, **k: [sys.executable, str(self.script), source]
+        return workers.run_worker("claude", workers.Role("builder", None, [], "x"), "y", self.wt, self.ledger,
+                                  self.base / "logs")
+
+    def test_an_api_key_run_stops_at_its_init_event(self):
+        result = self.run_claude("ANTHROPIC_API_KEY")
+        self.assertFalse(result.ok)
+        self.assertTrue(any("API key (apiKeySource=ANTHROPIC_API_KEY)" in e for e in result.errors), result.errors)
+        self.assertEqual(result.final_text, "")       # the result event after init was never processed
+        self.assertIsNone(result.output_tokens)
+
+    def test_a_subscription_run_reaches_its_result_as_before(self):
+        result = self.run_claude("none")
+        self.assertTrue(result.ok, result.errors)
+        self.assertEqual((result.final_text, result.input_tokens, result.output_tokens), ("done", 3, 2))
+        self.assertEqual(result.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()
