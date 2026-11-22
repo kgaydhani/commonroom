@@ -757,10 +757,10 @@ def take_handoff(p: registry.Project, ledger: Ledger, name: str, session: str, n
     fields = _fields(path)
     now = time.time() if now is None else now
     if not ledger.record_lineage(p.name, path.name, fields.get("from_session", ""), session, fields.get("reason", ""),
-                                 fields.get("context", ""), fields.get("branch", ""), fields.get("commit", ""), at=now):
+                                 fields.get("context", ""), fields.get("branch", ""), fields.get("commit", ""), at=now,
+                                 mark=TOOK + path.name):
         by = ledger.lineage(p.name, path.name)[0]
         raise HandshakeError(f"refused: {path.name} was already taken by session {by['new_session']} ({_when(by['at'])}).")
-    ledger.mark(p.name, TOOK + path.name, at=now)
     return path
 
 
