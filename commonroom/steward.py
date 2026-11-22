@@ -82,6 +82,14 @@ def owner_overdue(issues: list[dict], now: float) -> list[dict]:
     return found
 
 
+def trial_final(reports: list, ) -> list[dict]:
+    """A finding for each active trial whose verdict is final and which has no `ended` date: the director adopts or
+    reverts it (commonroom#353). `reports` is `trials.report(...)`; a running trial gives none."""
+    return [finding("trial-final", n, f"Trial {t.name} has a final verdict, {res['verdict']}, and no ended date: "
+                    "adopt or revert it, then set `ended` in trials.toml.")
+            for n, (t, res) in enumerate(reports, 1) if res["verdict"] != "running" and t.ended is None]
+
+
 def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
           milestone: str | None = None) -> list[dict]:
     """Every invariant over one snapshot; an empty list means the board is clean."""

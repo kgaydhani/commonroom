@@ -106,7 +106,7 @@ def fenced(text: str) -> str:
     return f"```\n{text}\n```"
 
 
-STEWARD_FIXABLE = {"unplaced", "blocked-on-nothing", "orphan-pr"}   # findings that wake the director; the rest only report
+STEWARD_FIXABLE = {"unplaced", "blocked-on-nothing", "orphan-pr", "trial-final"}   # findings that wake the director; the rest only report
 
 WAYS = load_ways(WAYS_DIR)
 COMMENTS = load_comments(WAYS_DIR)
@@ -3060,6 +3060,9 @@ class Dispatcher:
         try:
             found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                    self.milestone)
+            now = time.time()
+            found += steward.trial_final(trials_mod.report(
+                TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
             for f in found:
                 self.log(f"   steward: {f['invariant']}: {f['detail']}")
             self.ledger.record_findings(self.project, found)

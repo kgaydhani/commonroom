@@ -15,7 +15,7 @@ from commonroom import beat as beat_mod, board, config as config_mod, gate, guar
 from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, GitHubBoard, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
-from commonroom import handshake, hook
+from commonroom import handshake, hook, trials
 from commonroom.ledger import Ledger
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
@@ -489,6 +489,31 @@ def cmd_digest(args) -> int:
     if args.hours is None:   # no --hours: the project's own digest, for any agent (commonroom#253)
         return handshake.cmd_digest(args)
     print(json.dumps(digest(config_mod.load(), args.hours), indent=1, default=str))
+    return 0
+
+
+def cmd_trials(args) -> int:
+    """Each declared trial's arms, figures and verdict (commonroom#353). No model call, no GitHub call."""
+    try:
+        reg, p = handshake._start(args)
+    except handshake.HandshakeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    try:
+        declared = trials.load(trials.FILE, None, None)
+    except (OSError, ValueError) as exc:
+        print(f"refused: the trials file can't be read: {exc}", file=sys.stderr)
+        return 1
+    ledger = Ledger()
+    try:
+        rows = ledger.runs_since(handshake.ledger_name(p), 0)
+    finally:
+        ledger.close()
+    now = time.time()
+    for t in declared:
+        print(f"{trials.line(t, trials.result(t, rows, now))}" + (f" (ended {t.ended})" if t.ended else ""))
+    if not declared:
+        print(f"no trials declared for {p.name}")
     return 0
 
 
@@ -971,6 +996,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("digest", help="rebuild and print the project's digest; --hours N: JSON summary for the auditor"); g = p.add_mutually_exclusive_group(); g.add_argument("--hours", type=float); g.add_argument("--project"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.set_defaults(func=cmd_digest)
     p = sub.add_parser("attach", help="join a project: make its room folder, record who attached, print the digest (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.add_argument("--as", dest="who"); p.set_defaults(func=handshake.cmd_attach)
     p = sub.add_parser("note", help="leave a note in a project's inbox ('-' reads the text from standard input)"); p.add_argument("words", nargs="+", metavar="[project] text"); p.add_argument("--project"); p.add_argument("--from", dest="sender"); p.add_argument("--to"); p.add_argument("--direction", action="store_true", help="mark the note as a change of direction and record it in the ledger"); p.set_defaults(func=handshake.cmd_note)
+    p = sub.add_parser("trials", help="each declared trial's arms, figures and verdict (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=cmd_trials)
     p = sub.add_parser("reconcile", help="after a direction: keep, park or cancel one open issue, with a reason"); p.add_argument("name", metavar="project"); p.add_argument("issue", type=int); p.add_argument("verdict"); p.add_argument("reason", nargs="?"); p.set_defaults(func=cmd_reconcile)
     p = sub.add_parser("findings", help="every finding of a project's latest steward sweep"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_findings)
     p = sub.add_parser("artifact", help="`artifact published <name>`: record that a published artifact was republished"); p.add_argument("action", choices=["published"]); p.add_argument("artifact"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_artifact)

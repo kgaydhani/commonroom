@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry
+from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry, trials
 from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -362,6 +362,12 @@ def _measure(ledger: Ledger, p: registry.Project) -> str | None:
     return "\n".join(lines)
 
 
+def _trials(ledger: Ledger, p: registry.Project, now: float) -> str | None:
+    """One line per active trial with its verdict (commonroom#353); None when none is declared."""
+    reports = trials.report(trials.FILE, ledger.runs_since(ledger_name(p), 0), now, only_active=True)
+    return "\n".join(f"- {trials.line(t, res)}" for t, res in reports) or None
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
@@ -374,6 +380,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     shown = _measure(ledger, p)
     if shown:
         text = text + "\n" + f"## Measure\n{shown}" + "\n"
+    running = _trials(ledger, p, now)
+    if running:
+        text = text + "\n" + f"## Trials\n{running}" + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
