@@ -1276,7 +1276,8 @@ class Dispatcher:
         self.carry = bool((cfg.get("merge") or {}).get("carry_tested_approval")) and not self.ci
         self.clean_merges = {}   # (tested sha, head sha) -> only clean merges of main between them; per pass
         # Run the tests on a PR head in code before any reviewer starts (commonroom#210). Opt-in, never with CI.
-        self.pre_test = bool((cfg.get("checks") or {}).get("test_before_review")) and not self.ci             and bool((cfg.get("checks") or {}).get("test"))
+        self.pre_test = (bool((cfg.get("checks") or {}).get("test_before_review")) and not self.ci
+                         and bool((cfg.get("checks") or {}).get("test")))
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
         # Pushes owner notifications to a phone (`[notify]`, commonroom#151). None: nothing is sent.
         self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
@@ -2290,7 +2291,7 @@ class Dispatcher:
         for c in detail.get("comments") or []:   # only trusted authors' comments reach here (TrustedBoard)
             parsed = carry_mod.parse(c.get("body"))
             if parsed and head and head.startswith(parsed["head"]) and (c.get("createdAt") or "") >= last_commit:
-                found = parsed
+                found = dict(parsed, pre_review=carry_mod.PRE_REVIEW in (c.get("body") or ""))
         return found
 
     def carried_test(self, detail: dict) -> bool:
@@ -2405,7 +2406,8 @@ class Dispatcher:
         if not self.pre_test:
             return False
         result = self.room_result(detail)
-        return result is None or result["result"] == "FAIL"
+        # only the pre-review run's own FAIL holds; a carry FAIL goes back to review
+        return result is None or (result["result"] == "FAIL" and result["pre_review"])
 
     def pre_review_run(self, pr: dict, detail: dict, issue_no: int) -> list[str]:
         """Run the tests on the head before any reviewer (commonroom#210) and say so on the PR: a provider-none ledger

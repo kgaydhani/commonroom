@@ -4,7 +4,7 @@ import copy
 import unittest
 from pathlib import Path
 
-from commonroom import carry, dispatch, gate
+from commonroom import carry, config, dispatch, gate
 from test_dispatch import issue, owned
 from test_self_serve import Base, MergeBoard, project_cfg
 
@@ -110,6 +110,13 @@ class PreReview(Base):
         d.housekeeping()
         self.assertEqual(len(self.calls), 1)
 
+    def test_a_carry_fail_goes_back_to_review_not_held(self):
+        body = "[room] " + carry.comment("FAIL", HEAD, CMD, "exit 1", "2026-11-20T13:00:00Z", "b" * 40)
+        d, board = self.make(detail=pr_detail(comments=[{"createdAt": "2026-11-21T00:00:00Z", "body": body}]))
+        d.housekeeping()
+        self.assertEqual(self.calls, [])
+        self.assertIsNotNone(d.pick_review(ALLOWED))
+
     def test_room_fails_at_different_heads_escalate_like_changes_verdicts(self):
         rounds = dispatch.POLICY["review_rounds"]
         d, board = self.make()
@@ -148,7 +155,6 @@ class PreReview(Base):
         self.ledger.finish_run(run, "done")
 
     def test_this_repo_turns_it_on_and_only_in_checks(self):
-        from commonroom import config
         cfg = config.load(Path(__file__).resolve().parent.parent / "room.toml", follow_host=False)
         self.assertTrue(cfg["checks"]["test_before_review"])
 
