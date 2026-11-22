@@ -24,9 +24,10 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
-from commonroom import carry as carry_mod, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
+from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, weekly
 from commonroom.ledger import Ledger
+from commonroom.waytext import PLACEHOLDER, fill_way, read_way   # moved there so handshake can import them (commonroom#345)
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
 from commonroom import measure, owner_reserve, steward
 from commonroom.lock import acquire_lock, suite_lock
@@ -63,13 +64,6 @@ PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-
 COMMENTS_NAMES = ("assess-escalate", "assess-retry", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
                   "merge-main-changes", "merge-stands-approve", "merge-stands-review", "preserved", "rescue", "timeout",
                   "timeout-kept", "timeout-lost")
-PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
-
-
-def read_way(path: Path) -> str:
-    """One template's text, without the final newline an editor adds (no prompt ends in one)."""
-    text = path.read_text(encoding="utf-8-sig")
-    return text[:-1] if text.endswith("\n") else text
 
 
 def load_ways(folder: Path) -> dict[str, str]:
@@ -106,11 +100,6 @@ def ways_for(cfg: dict) -> dict[str, str]:
 def fenced(text: str) -> str:
     """`text` as a code block."""
     return f"```\n{text}\n```"
-
-
-def fill_way(template: str, **values) -> str:
-    """`template` with each `{{name}}` replaced by its value, in one pass: a value is never expanded again."""
-    return PLACEHOLDER.sub(lambda m: str(values[m.group(1)]), template)
 
 
 STEWARD_FIXABLE = {"unplaced", "blocked-on-nothing", "orphan-pr"}   # findings that wake the director; the rest only report
@@ -3585,7 +3574,32 @@ class Dispatcher:
             room_py = Path(__file__).resolve().parent.parent / "room.py"
             return fill_way(ways["audit"], repo=repo, reason=job.reason, room_py=room_py, hours=max(1, hours),
                             report=self.report_path())
-        return fill_way(ways["director"], repo=repo, milestone=self.milestone, reason=job.reason)
+        return fill_way(ways["director"], repo=repo, milestone=self.milestone, reason=job.reason) + self.digest_section()
+
+    def digest_section(self) -> str:
+        """The director prompt's tail: this project's code-built digest, cut to `[director] digest_chars` (commonroom#345).
+        Empty when the key is unset or 0, or when the project, the registry or the build fails (one log line)."""
+        try:
+            limit = int((self.cfg.get("director") or {}).get("digest_chars") or 0)
+        except (TypeError, ValueError):
+            return ""
+        if limit <= 0:
+            return ""
+        try:
+            reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME)
+            root = self.cfg.get("_root")
+            proj = next((p for p in reg.projects.values() if root and sessions.path_key(p.path) == sessions.path_key(root)), None)
+            if proj is None:
+                self.log(f"   director digest skipped: {root or 'this folder'} is not in the project registry")
+                return ""
+            text = handshake.build_digest(reg, proj, self.ledger)
+        except Exception as exc:   # the digest is a saving; it never stops a director run
+            self.log(f"   director digest skipped: {type(exc).__name__}: {str(exc)[:120]}")
+            return ""
+        out = text[:limit]
+        if len(text) > limit:
+            out += f"\n\n({len(text) - limit} characters left out; `room.py digest {proj.name}` prints all of it.)"
+        return "\n\n## Project digest (built in code, no model call)\n" + out
 
     # Worktrees -------------------------------------------------------------------------------------
     def prepare_worktree(self, job: Job, provider: str | None = None) -> tuple[Path, str | None]:

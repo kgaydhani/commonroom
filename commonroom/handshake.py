@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry
-from commonroom.dispatch import fill_way, read_way
+from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
