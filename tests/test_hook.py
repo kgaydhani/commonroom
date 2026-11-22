@@ -319,11 +319,32 @@ class ColdReturn(Hook):
         self.assertEqual((code, err.getvalue()), (0, ""))
         return out.getvalue()
 
-    def brief(self):
+    def brief(self, name="20260101-000000-000000-s0.md", taken=False):
         p = registry.load().projects["alpha"]
         folder = handshake.prepare(p) / "handoffs"
         folder.mkdir(exist_ok=True)
-        (folder / "20260101-000000-000000-s0.md").write_text("---\nfrom_session: s0\n---\nx\n", encoding="utf-8")
+        (folder / name).write_text("---\nfrom_session: s0\n---\nx\n", encoding="utf-8")
+        if taken:
+            ledger = Ledger()
+            try:
+                ledger.mark("alpha", handshake.TOOK + name, at=self.NOW - 3600)
+            finally:
+                ledger.close()
+
+    def test_a_taken_brief_is_not_named(self):
+        self.register()
+        self.brief(taken=True)
+        text = json.loads(self.prompt(self.transcript(90, 300000)))["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("20260101-000000-000000-s0.md", text)
+        self.assertIn("room handoff alpha", text)
+
+    def test_the_newest_untaken_brief_is_named_when_a_newer_one_was_taken(self):
+        self.register()
+        self.brief("20260101-000000-000000-old.md")
+        self.brief("20260102-000000-000000-new.md", taken=True)
+        text = json.loads(self.prompt(self.transcript(90, 300000)))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("handoffs/20260101-000000-000000-old.md", text)
+        self.assertNotIn("20260102-000000-000000-new.md", text)
 
     def test_a_cold_return_to_a_large_context_adds_a_paragraph_naming_the_brief(self):
         self.register()

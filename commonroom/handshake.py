@@ -403,13 +403,6 @@ def _fields(path: Path) -> dict:
     return dict((k.strip().lower(), v.strip()) for k, sep, v in (line.partition(":") for line in lines[1:ends[1]]) if sep)
 
 
-def newest_handoff_file(where: Path) -> str | None:
-    """`handoffs/<name>` of the newest brief in the project's room folder, or None (#367)."""
-    folder = where / "handoffs"
-    found = sorted(f for f in folder.glob("*.md") if f.is_file()) if folder.is_dir() else []
-    return f"handoffs/{found[-1].name}" if found else None
-
-
 def _newest_handoff(where: Path) -> str | None:
     """The digest's one line naming the newest file in `handoffs/` (#363); None when there is none."""
     folder = where / "handoffs"

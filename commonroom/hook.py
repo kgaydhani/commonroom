@@ -95,14 +95,15 @@ def cold_return(data: dict, now: float | None = None) -> str:
     ledger = Ledger.reader()
     try:
         p = _project(data, now, ledger)
+        if p is None:
+            return ""
+        brief = next((path for path in reversed(handshake.handoffs(p))
+                      if ledger is None or ledger.marked(p.name, handshake.TOOK + path.name) is None), None)
     finally:
         if ledger is not None:
             ledger.close()
-    if p is None:
-        return ""
-    brief = handshake.newest_handoff_file(handshake.folder_of(p))
     if brief:
-        named = f"The project's newest handoff brief is `{brief}`."
+        named = f"The project's newest untaken handoff brief is `handoffs/{brief.name}`."
     else:
         named = f"None is written: `room handoff {p.name} --session <id> --reason <text>` writes one."
     return fill_way(COLD_RETURN, gap=_ago(now - turn[0]), context=f"{turn[1] // 1000}k", brief=named)
