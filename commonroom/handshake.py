@@ -37,7 +37,7 @@ NEWEST = 5                 # notes shown in the digest; `room notes` shows them 
 DECISIONS_SHOWN = 10       # standing decisions and bounds listed in the digest, however old (#365)
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
-KINDS = ("outcome", "bound", "decision", "suggestion")   # what an owner statement can be (design-v3); `direction` is separate
+KINDS = ("outcome", "bound", "decision", "suggestion", "correction")   # what an owner statement can be (design-v3); `direction` is separate
 DIRECTION = "direction"   # ledger mark key: when the owner last changed a project's direction (`note --direction`)
 READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
 HAND_MARK, HANDED_MARK = "hand:", "handed:"   # ledger mark key prefixes: hand:<id> when a hand was written, handed:<id> when it was answered (#368)
@@ -448,6 +448,25 @@ def _hands(where: Path, ledger: Ledger, p: registry.Project, now: float) -> str:
     return fill_way(HANDS, waiting=chr(10).join(lines) or "None.", results=chr(10).join(results) or "None yet.")
 
 
+def corrections(where: Path, now: float) -> tuple[int, int, str | None]:
+    """(corrections in the last 7 days, in the 7 days before, first line of the newest) from `kind: correction` notes
+    (commonroom#399): how often the owner had to correct, redirect or repeat himself."""
+    found = [n for n in read_notes(where) if n["kind"] == "correction" and n["at"] <= now]
+    week = 7 * 86400
+    last = [n for n in found if n["at"] > now - week]
+    before = [n for n in found if now - 2 * week < n["at"] <= now - week]
+    newest = _first_line(found[0]["text"]) if (last or before) else None
+    return len(last), len(before), newest
+
+
+def _corrections(where: Path, now: float) -> str:
+    """The digest's one correction line; empty when there is none in the last 14 days."""
+    last, before, newest = corrections(where, now)
+    if newest is None:
+        return ""
+    return f"Owner corrections: {last} in the last 7 days, {before} in the 7 days before. Newest: {newest}"
+
+
 def _age(seconds: float) -> str:
     seconds = max(0, seconds)
     return f"{int(seconds // 86400)}d" if seconds >= 86400 else f"{int(seconds // 3600)}h" if seconds >= 3600 else f"{int(seconds // 60)}m"
@@ -474,6 +493,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     handed = _hands(where, ledger, p, now)
     if handed:
         text = text + "\n" + handed + "\n"
+    said = _corrections(where, now)
+    if said:
+        text = text + "\n" + said + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
