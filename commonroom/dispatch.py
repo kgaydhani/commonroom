@@ -1611,6 +1611,10 @@ class Dispatcher:
         if any(a.startswith("merged") for a in actions) and not self.dry_run:
             actions += self.deploy()
             actions += self.update_live_checkout()
+        elif self.suite_on_main() and not self.dry_run:
+            # Without CI the live checkout moves only once main's suite has passed, which is a pass after the merge
+            # (commonroom#396): every pass catches it up to the newest tested, passing main.
+            actions += self.update_live_checkout()
         self.count_finished_prs(everything, prs, state)
         for issue in everything:
             names = labels(issue)
@@ -2190,19 +2194,44 @@ class Dispatcher:
         """After merging the room's own PRs, fast-forward the checkout the room runs from (`git pull --ff-only`; never
         a reset or a force). Safe while room processes run: python processes keep the modules they loaded at start
         (dispatch imports every room module up front), workers never run from this checkout, and heartbeat.cmd is one
-        block that cmd.exe reads whole before running. New code takes effect as each process restarts."""
+        block that cmd.exe reads whole before running. New code takes effect as each process restarts.
+        A project whose suite the room runs on main itself (no CI) moves only to a main its suite passed on, in code."""
         if not self.is_room_repo():
             return []
         try:
             branch = git(["rev-parse", "--abbrev-ref", "HEAD"], self.root)
             if branch != "main":
                 return [f"live checkout not updated: it is on {branch}, not main"]
+            if self.suite_on_main():
+                return self.fast_forward_to_tested()
             before = git(["rev-parse", "--short", "HEAD"], self.root)
             git(["pull", "--ff-only", "--quiet"], self.root)
             after = git(["rev-parse", "--short", "HEAD"], self.root)
             return [f"live checkout fast-forwarded {before}..{after}; room processes pick it up when they restart"]
         except Exception as exc:
             return [f"live checkout update FAILED, left as it was: {str(exc)[:160]}"]
+
+    def fast_forward_to_tested(self) -> list[str]:
+        """Fast-forward the live checkout to the newest main whose suite passed in code (`main-suite:<sha>` marked,
+        `main-suite-red:<sha>` not), never past it to a newer untested main (commonroom#396). The newest tested sha
+        ahead of the checkout decides: red holds it, untested everywhere waits. `git merge --ff-only`: never a reset."""
+        git(["fetch", "--quiet", "origin", "main"], self.root)
+        main = git(["rev-parse", "origin/main"], self.root).strip().lower()
+        ahead = [s.strip().lower() for s in git(["rev-list", "--first-parent", "HEAD..origin/main"], self.root).split()]
+        if not ahead:
+            return []
+        for sha in ahead:                                     # newest first
+            if self.ledger.marked(self.project, f"main-suite:{sha}") is None:
+                continue
+            if self.ledger.marked(self.project, f"main-suite-red:{sha}") is not None:
+                return [f"live checkout held: main is red on {sha[:7]}"]
+            before = git(["rev-parse", "--short", "HEAD"], self.root)
+            git(["merge", "--ff-only", "--quiet", sha], self.root)
+            after = git(["rev-parse", "--short", "HEAD"], self.root)
+            note = "" if sha == main else f"; main's suite on {main[:7]} not run yet"
+            return [f"live checkout fast-forwarded {before}..{after} (suite passed){note}; "
+                    f"room processes pick it up when they restart"]
+        return [f"live checkout waits for main's suite on {main[:7]}"]
 
     def playtest_after_merge(self, pr: dict, detail: dict, everything: list[dict]) -> list[str]:
         """A merged PR that changes a file matching `[playtester] paths` gets the game played (commonroom#53): it joins

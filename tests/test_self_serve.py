@@ -577,7 +577,7 @@ class NeedsDirectorLabel(Base):
             self.assertIn("another project's `room.toml`", text, doc.name)
 
 
-class LiveCheckout(Base):
+class LiveRepo(Base):
     def setUp(self):
         super().setUp()
         root = Path(self.tmp.name)
@@ -600,6 +600,8 @@ class LiveCheckout(Base):
     def head(self, repo):
         return self.git("rev-parse", "HEAD", cwd=repo)
 
+
+class LiveCheckout(LiveRepo):
     def test_fast_forwards_the_rooms_own_checkout_after_a_merge(self):
         self.commit(self.dev, "b.txt"); self.git("push", "-q", "origin", "main", cwd=self.dev)
         board = MergeBoard([pr(5, 40)], {5: detail(approve())})
@@ -619,6 +621,89 @@ class LiveCheckout(Base):
         self.assertEqual(self.head(self.live), local)
         self.git("checkout", "-qb", "experiment", cwd=self.live)
         self.assertIn("not main", self.d.update_live_checkout()[0])
+
+
+
+class LiveCheckoutAfterSuite(LiveRepo):
+    """commonroom#396: without CI the live checkout moves only to a main whose suite passed in code."""
+    def setUp(self):
+        super().setUp()
+        dispatch.Dispatcher.suite_on_main = self._suite_on_main          # the real rule: no CI and a test command
+        self.d.main_red = lambda everything, actions: False             # never run a real suite on main here
+        self.assertTrue(self.d.suite_on_main())
+
+    def push(self, name):
+        self.commit(self.dev, name); self.git("push", "-q", "origin", "main", cwd=self.dev)
+        return self.head(self.dev).lower()
+
+    def mark_tested(self, sha, red=False):
+        self.ledger.mark("commonroom", f"main-suite:{sha}")
+        if red:
+            self.ledger.mark("commonroom", f"main-suite-red:{sha}")
+
+    def test_an_untested_main_waits(self):
+        before, sha = self.head(self.live), self.push("b.txt")
+        self.assertEqual(self.d.update_live_checkout(), [f"live checkout waits for main's suite on {sha[:7]}"])
+        self.assertEqual(self.head(self.live), before)
+
+    def test_a_red_main_holds_it(self):
+        before, sha = self.head(self.live), self.push("b.txt")
+        self.mark_tested(sha, red=True)
+        self.assertEqual(self.d.update_live_checkout(), [f"live checkout held: main is red on {sha[:7]}"])
+        self.assertEqual(self.head(self.live), before)
+
+    def test_moves_to_the_passing_sha_never_past_it(self):
+        passing = self.push("b.txt")
+        newer = self.push("c.txt")
+        self.mark_tested(passing)
+        actions = self.d.update_live_checkout()
+        self.assertIn("fast-forwarded", actions[0])
+        self.assertIn(f"main's suite on {newer[:7]} not run yet", actions[0])
+        self.assertEqual(self.head(self.live).lower(), passing)
+        self.assertEqual(self.d.update_live_checkout(), [f"live checkout waits for main's suite on {newer[:7]}"])
+        self.mark_tested(newer)
+        self.d.update_live_checkout()
+        self.assertEqual(self.head(self.live).lower(), newer)
+        self.assertEqual(self.d.update_live_checkout(), [])              # up to date: nothing to say
+
+    def test_a_merge_pass_waits_and_a_pass_with_no_merge_catches_up(self):
+        sha = self.push("b.txt")
+        before = self.head(self.live)
+        board = MergeBoard([pr(5, 40)], {5: detail(approve())})
+        self.d.board = board
+        actions = self.d.housekeeping()
+        self.assertEqual(board.merged, [5])
+        self.assertIn(f"live checkout waits for main's suite on {sha[:7]}", actions)
+        self.assertEqual(self.head(self.live), before)
+        board.prs = []
+        self.mark_tested(sha)                                                  # main_suite_red's mark on the next pass
+        actions = self.d.housekeeping()
+        self.assertEqual(board.merged, [5])
+        self.assertTrue(any("live checkout fast-forwarded" in a for a in actions), actions)
+        self.assertEqual(self.head(self.live).lower(), sha)
+
+    def test_a_ci_project_pulls_after_a_merge_as_before(self):
+        cfg = project_cfg(self.live, ci=True)
+        d = self.dispatcher(cfg, MergeBoard([], {}))
+        d.room_root, d.main_red = self.live, (lambda everything, actions: False)
+        self.assertFalse(d.suite_on_main())
+        sha = self.push("b.txt")
+        self.assertFalse([a for a in d.housekeeping() if "live checkout" in a])   # no merge: untouched
+        self.assertNotEqual(self.head(self.live).lower(), sha)
+        self.assertIn("fast-forwarded", d.update_live_checkout()[0])     # untested, but CI's rule: pull on merge
+        self.assertEqual(self.head(self.live).lower(), sha)
+
+    def test_never_resets_a_diverged_checkout(self):
+        self.mark_tested(self.push("b.txt"))
+        self.commit(self.live, "local.txt")                            # a local commit: ff impossible
+        local = self.head(self.live)
+        self.assertIn("FAILED", self.d.update_live_checkout()[0])
+        self.assertEqual(self.head(self.live), local)
+
+    def test_someone_elses_checkout_is_never_touched(self):
+        self.push("b.txt")
+        self.d.room_root = self.dev
+        self.assertEqual(self.d.update_live_checkout(), [])
 
 
 class PullSafety(unittest.TestCase):
