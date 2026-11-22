@@ -1,5 +1,5 @@
 {
-  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only.",
+  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only (session start; a cold return to a large context, #367).",
   "hooks": {
     "SessionStart": [
       {
@@ -8,6 +8,18 @@
             "type": "command",
             "command": "python",
             "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "prompt-submit"],
             "timeout": 5
           }
         ]
