@@ -3198,3 +3198,20 @@ class IncompleteReview(unittest.TestCase):
         self.assertIn("REVIEW: INCOMPLETE", text)
         fake, d = self.setup_board([], ci=True)
         self.assertNotIn("INCOMPLETE", d.prompt(job, None))
+
+
+class GitRetries(unittest.TestCase):
+    def test_a_folder_that_is_not_a_repository_fails_without_sleeping(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dispatch.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError):
+                dispatch.git(["fetch", "--quiet", "origin", "main"], Path(tmp))
+        sleep.assert_not_called()
+
+    def test_a_transient_network_failure_is_still_tried_three_times(self):
+        failed = mock.Mock(returncode=128, stderr="fatal: unable to access: connection reset", stdout="")
+        with mock.patch.object(dispatch.subprocess, "run", return_value=failed) as run, \
+                mock.patch.object(dispatch.time, "sleep") as sleep:
+            with self.assertRaises(RuntimeError):
+                dispatch.git(["fetch", "origin"], Path("."))
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [5, 20])

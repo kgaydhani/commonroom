@@ -358,7 +358,7 @@ def find_bash() -> str | None:
 
 NETWORK_GIT = {"push", "fetch", "clone", "ls-remote"}
 GIT_REJECTED = ("non-fast-forward", "fetch first", "[rejected]", "Authentication failed", "not found",
-                "does not appear to be a git repository")
+                "does not appear to be a git repository", "not a git repository")
 
 
 def git_env(cwd) -> dict:
