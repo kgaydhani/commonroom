@@ -83,9 +83,6 @@ class Invariants(unittest.TestCase):
         boom.assert_not_called()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 DIR = calendar.timegm((2026, 11, 10, 0, 0, 0))
 
@@ -118,3 +115,7 @@ class Unreconciled(unittest.TestCase):
         self.assertEqual(slugs(steward.check(board, [], [], NOW, "M")), [("unplaced", 2)])
         self.assertEqual(slugs(steward.check(board, [], [], NOW, "M", None, {})), [("unplaced", 2)])
         self.assertEqual(slugs(steward.check(board, [], [], NOW, "M", DIR, {})), [("unplaced", 2), ("unreconciled", 1)])
+
+
+if __name__ == "__main__":
+    unittest.main()
