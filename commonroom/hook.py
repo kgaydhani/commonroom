@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 
 from commonroom import handshake, policy, registry, sessions
@@ -32,6 +33,7 @@ COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
+HEAD = 4194304         # bytes: the most of a rollout's first line that is read to see what it is
 LIMIT = 2.0             # seconds: a hook still working after this adds nothing
 WORKER_WINDOW = 86400   # a folder a room worker ran in within the last day is a worker's folder
 SENDER_CHARS = 40
@@ -58,9 +60,41 @@ def _project(data: dict, now: float, ledger: Ledger | None):
         return None
 
 
+def _is_rollout(path) -> bool:
+    """True when the file's first line is a Codex `session_meta` line (detected from its content, not its path)."""
+    try:
+        with open(path, "rb") as handle:
+            first = json.loads(handle.readline(HEAD))
+        return isinstance(first, dict) and first.get("type") == "session_meta"
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def codex_turn(raw: bytes) -> tuple[float, int] | None:
+    """(time, context tokens) of one Codex rollout line if it is a `token_count` line with usage, else None. The
+    context is `last_token_usage.input_tokens`, which already includes cached input. No message text is read
+    (commonroom#398)."""
+    try:
+        line = json.loads(raw)
+        payload = line["payload"]
+        if line["type"] != "event_msg" or payload["type"] != "token_count":
+            return None
+        tokens = payload["info"]["last_token_usage"]["input_tokens"]
+        at = datetime.fromisoformat(line["timestamp"].replace("Z", "+00:00"))
+        if isinstance(tokens, bool) or not isinstance(tokens, int):
+            return None
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return at.timestamp(), tokens
+    except (KeyError, TypeError, ValueError, AttributeError):
+        return None
+
+
 def last_turn(path, size: int = TAIL) -> tuple[float, int] | None:
     """(time, context tokens) of the last assistant turn in the tail of the transcript at `path`, or None. No message
-    text is kept: it reads sessions._parse's fields only (commonroom#367)."""
+    text is kept: it reads sessions._parse's fields only (commonroom#367), or for a Codex rollout the last
+    `token_count` line's (commonroom#398)."""
+    codex = _is_rollout(path)
     try:
         with open(path, "rb") as handle:
             handle.seek(0, 2)
@@ -70,6 +104,11 @@ def last_turn(path, size: int = TAIL) -> tuple[float, int] | None:
     except (OSError, TypeError, ValueError):
         return None
     for raw in reversed(lines):
+        if codex:
+            turn = codex_turn(raw)
+            if turn is not None:
+                return turn
+            continue
         parsed = sessions._parse(raw)
         if parsed is not None:
             return parsed[0], parsed[6]
