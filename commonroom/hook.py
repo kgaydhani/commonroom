@@ -57,6 +57,7 @@ def context(data: dict, now: float | None = None) -> str:
         except handshake.HandshakeError:
             return ""
         unread = handshake.unread(handshake.read_notes(handshake.folder_of(p)), p, ledger)
+        brief = handshake.offer(p, ledger, data.get("session_id"))
     finally:
         if ledger is not None:
             ledger.close()
@@ -66,8 +67,8 @@ def context(data: dict, now: float | None = None) -> str:
     text = fill_way(SESSION_START, project=p.name, digest=str(where / "digest.md"), notes=count,
                     reply=handshake.reply_line(p))
     if not unread and not handshake.charter_written(where, p.name):
-        return text.split("\n", 1)[0]
-    return text
+        text = text.split("\n", 1)[0]
+    return f"{text}\n{brief}" if brief else text
 
 
 def main(stdin=None, stdout=None, limit: float | None = None) -> int:
