@@ -13,7 +13,7 @@ Built by the room at {{built}} from its ledger and this folder. No model wrote i
 ## Attached
 {{attached}}
 
-## Newest notes
+{{decisions}}## Newest notes
 {{notes}}
 
 ## Ran and landed, last 7 days

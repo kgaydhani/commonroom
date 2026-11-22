@@ -383,6 +383,57 @@ class Kinds(Room):
         self.assertNotIn("owner2 (", digest)
 
 
+class Decisions(Room):
+    def digest(self):
+        self.room("attach", "alpha")
+        return (self.folder("alpha") / "digest.md").read_text(encoding="utf-8")
+
+    def test_an_old_decision_stays_in_the_digest_past_the_newest_five(self):
+        self.register()
+        self.room("note", "alpha", "never use X\nbecause Y", "--from", "owner", "--kind", "decision")
+        self.room("note", "alpha", "stay under 5 GB", "--from", "owner", "--kind", "bound")
+        for i in range(6):
+            self.room("note", "alpha", f"chatter {i}", "--from", "x")
+        digest = self.digest()
+        section = digest.split("## Decisions and bounds\n")[1].split("## Newest notes")[0]
+        self.assertIn("owner (decision): never use X\n", section)
+        self.assertNotIn("because Y", section)
+        self.assertIn("owner (bound): stay under 5 GB", section)
+        self.assertLess(digest.index("## What the owner wants"), digest.index("## Decisions and bounds"))
+        self.assertNotIn("never use X", digest.split("## Newest notes")[1])
+
+    def test_other_kinds_are_not_in_the_section(self):
+        self.register()
+        self.room("note", "alpha", "plain one", "--from", "o")
+        self.room("note", "alpha", "maybe B", "--from", "o", "--kind", "suggestion")
+        self.assertNotIn("## Decisions and bounds", self.digest())
+
+    def test_twelve_decisions_give_ten_entries_and_a_left_out_line(self):
+        self.register()
+        for i in range(12):
+            self.room("note", "alpha", f"decided {i}", "--from", "o", "--kind", "decision")
+        section = self.digest().split("## Decisions and bounds\n")[1].split("## Newest notes")[0]
+        self.assertEqual(section.count("(decision): decided"), 10)
+        self.assertIn("decided 11", section)
+        self.assertNotIn("decided 1\n", section)
+        self.assertIn("- 2 more: `room notes alpha --kind decision`", section)
+
+    def test_without_decisions_the_digest_has_no_section_and_is_unchanged(self):
+        self.register()
+        self.room("note", "alpha", "plain", "--from", "o")
+        reg, p = handshake.load_registry(), handshake.load_registry().projects["alpha"]
+        ledger = Ledger()
+        try:
+            now = datetime.now().timestamp()
+            with mock.patch.object(handshake, "_decisions", return_value=""):
+                before = handshake.build_digest(reg, p, ledger, now)
+            self.assertEqual(handshake.build_digest(reg, p, ledger, now), before)
+            self.assertNotIn("Decisions and bounds", before)
+            self.assertIn("\n\n## Newest notes\n", before)
+        finally:
+            ledger.close()
+
+
 class Direction(Room):
     def test_direction_note_reads_back_and_marks_the_ledger(self):
         self.register()
