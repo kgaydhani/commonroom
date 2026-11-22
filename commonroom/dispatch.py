@@ -3039,6 +3039,7 @@ class Dispatcher:
     def director_trigger(self) -> str | None:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
+        self.stamp_only = False
         if time.time() - since < self.policy("director_cooldown_seconds"):
             return None
         reasons = []
@@ -3076,7 +3077,6 @@ class Dispatcher:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
         stamps = self.ready_for_director()
         reasons += stamps
-        self.stamp_only = bool(stamps) and len(stamps) == len(reasons) and not interactive
         steward_reason = self.steward_reason(since)
         if steward_reason:
             reasons.append(steward_reason)
@@ -3088,6 +3088,7 @@ class Dispatcher:
         if steer and time.time() - since >= steer * 3600:
             reasons.append(steer_reason(self.cfg, self.ways))
             reasons += interactive
+        self.stamp_only = bool(stamps) and len(reasons) == len(stamps)   # every reason, steer and bulletin included (#342)
         return "; ".join(reasons) or None
 
     def bulletin_missed(self, last_director: float, now: float | None = None) -> str | None:

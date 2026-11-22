@@ -3115,6 +3115,24 @@ class StampEffort(unittest.TestCase):
         self.assertIn("#9 escalated to the director", job.reason)
         self.assertIsNone(job.effort)
 
+    def test_a_due_steer_alongside_a_stamp_keeps_normal_effort(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["director"].update({"steer_every_hours": 1, "stamp_effort": "medium"})
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([issue(1, ["status:ready", "role:builder"])]), log=lambda *_: None)
+        d.ready_for_director = lambda: [self.STAMP]
+        job, _, _ = d.pick(self.ALLOWED)
+        self.assertIn(self.STAMP, job.reason)
+        self.assertGreater(len(job.reason), len(self.STAMP))
+        self.assertIsNone(job.effort)
+
+    def test_a_missed_bulletin_alongside_a_stamp_keeps_normal_effort(self):
+        d, _ = self.pick("medium")
+        d.bulletin_missed = lambda since: "the bulletin is due"
+        d.cfg["director"]["stamp_effort"] = "medium"
+        job, _, _ = d.pick(self.ALLOWED)
+        self.assertIn("bulletin", job.reason)
+        self.assertIsNone(job.effort)
+
     def test_an_empty_ready_queue_alongside_a_stamp_keeps_normal_effort(self):
         _, job = self.pick("medium", [issue(2, ["status:blocked", "role:builder"], body="Depends on #99")])
         self.assertIn("nothing is ready", job.reason)
