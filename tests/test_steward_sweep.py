@@ -90,6 +90,20 @@ class Sweep(unittest.TestCase):
         d.housekeeping()                                  # unchanged finding: not repeated
         self.assertIsNone(d.director_trigger())
 
+    def test_an_unreconciled_issue_wakes_the_director_and_a_mark_clears_it(self):
+        old = issue(5, ["status:ready", "role:builder"])
+        old["createdAt"] = "2020-01-01T00:00:00Z"
+        board = FakeBoard([old])
+        d = self.dispatcher(board)
+        d.housekeeping()
+        self.assertEqual(self.ledger.findings("t"), [])   # no direction mark: nothing new
+        self.ledger.mark("t", handshake.DIRECTION, 1_700_000_000)
+        d.housekeeping()
+        self.assertIn("#5 was opened before", d.director_trigger())
+        self.ledger.mark("t", "reconciled:5", 1_700_000_100)
+        d.housekeeping()
+        self.assertEqual(self.ledger.findings("t"), [])
+
     def test_overdue_and_stale_findings_do_not_wake_the_director(self):
         board = FakeBoard([issue(7, ["owner:human"], body="Due: 2020-01-01")])
         d = self.dispatcher(board)

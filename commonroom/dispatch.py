@@ -106,7 +106,7 @@ def fenced(text: str) -> str:
     return f"```\n{text}\n```"
 
 
-STEWARD_FIXABLE = {"unplaced", "blocked-on-nothing", "orphan-pr", "trial-final"}   # findings that wake the director; the rest only report
+STEWARD_FIXABLE = {"unplaced", "blocked-on-nothing", "orphan-pr", "trial-final", "unreconciled"}   # findings that wake the director; the rest only report
 
 WAYS = load_ways(WAYS_DIR)
 COMMENTS = load_comments(WAYS_DIR)
@@ -404,7 +404,7 @@ class GitHubBoard:
 
     def all_issues(self) -> list[dict]:
         return board_mod.gh(["issue", "list", "--repo", self.repo, "--state", "all", "--limit", "500",
-                             "--json", "number,state,labels,title,body,comments,updatedAt,closedAt,milestone,author"],
+                             "--json", "number,state,labels,title,body,comments,createdAt,updatedAt,closedAt,milestone,author"],
                             # 2 MB of JSON: 16 s on a quiet PC, over the 30 s default when the runner is loaded.
                             timeout=120) or []
 
@@ -3058,8 +3058,13 @@ class Dispatcher:
         if self.dry_run:
             return
         try:
+            direction_at = self.ledger.marked(self.project, handshake.DIRECTION)
+            reconciled = {}
+            for key, at in self.ledger.marks(self.project, "reconciled:"):
+                if key.isdigit():
+                    reconciled[int(key)] = at
             found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time(),
-                                   self.milestone)
+                                   self.milestone, direction_at, reconciled)
             now = time.time()
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))

@@ -34,6 +34,26 @@ def unplaced(issues: list[dict], milestone: str | None = None) -> list[dict]:
             and not dispatch.labels(i) & PLACED]
 
 
+def _epoch(stamp: str | None) -> float | None:
+    try:
+        return datetime.datetime.fromisoformat((stamp or "").replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def unreconciled(issues: list[dict], direction_at: float, reconciled: dict[int, float],
+                 milestone: str | None = None) -> list[dict]:
+    """Open goal-milestone issues created before the latest direction with no `reconciled:<n>` mark at or after it
+    (`reconciled` maps issue number to the mark's time): the owner changed course and nobody ruled on them (commonroom#355)."""
+    if not milestone:
+        return []
+    return [finding("unreconciled", i["number"], f"#{i['number']} was opened before the latest change of direction "
+                    "and has no verdict since: keep, park or cancel it with `room reconcile`.")
+            for i in issues if _open(i) and (i.get("milestone") or {}).get("title") == milestone
+            and (c := _epoch(i.get("createdAt"))) is not None and c < direction_at
+            and reconciled.get(i["number"], float("-inf")) < direction_at]
+
+
 def blocked_on_nothing(issues: list[dict]) -> list[dict]:
     """`status:blocked` with no director or owner hold, and no dependency still open (or none named)."""
     state = {i["number"]: i.get("state", "OPEN") for i in issues}
@@ -91,7 +111,12 @@ def trial_final(reports: list, ) -> list[dict]:
 
 
 def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
-          milestone: str | None = None) -> list[dict]:
-    """Every invariant over one snapshot; an empty list means the board is clean."""
-    return (unplaced(issues, milestone) + blocked_on_nothing(issues) + orphan_prs(issues, prs)
-            + stale_claim_findings(issues, prs, running_runs, now) + owner_overdue(issues, now))
+          milestone: str | None = None, direction_at: float | None = None,
+          reconciled: dict[int, float] | None = None) -> list[dict]:
+    """Every invariant over one snapshot; an empty list means the board is clean. `direction_at` is the project's
+    latest direction mark, None when it has none (then nothing about directions is checked)."""
+    found = (unplaced(issues, milestone) + blocked_on_nothing(issues) + orphan_prs(issues, prs)
+             + stale_claim_findings(issues, prs, running_runs, now) + owner_overdue(issues, now))
+    if direction_at is not None:
+        found += unreconciled(issues, direction_at, reconciled or {}, milestone)
+    return found
