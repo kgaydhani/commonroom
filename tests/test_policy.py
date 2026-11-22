@@ -33,7 +33,7 @@ PINNED = {
 
 
 # Values added to the table since the move, with the value each was added at.
-NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3024,   # commonroom#231; 2530: #262; 2914: #223; 3024: #316
+NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3080,   # commonroom#231; 2530: #262; 2914: #223; 3024: #316; 3080: #208
        "pie_idle_minutes": 60,                                    # commonroom#240: today's [share] idle_minutes
        "pie_notice_margin": 1, "pie_own_active_minutes": 20,      # commonroom#243
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
@@ -57,6 +57,7 @@ class PinnedValues(unittest.TestCase):
                  "room_error_backoff_seconds": ("ROOM_ERROR_BACKOFF", 600),
                  "room_error_escalate": ("ROOM_ERROR_ESCALATE", 3),
                  "resume_window_seconds": ("RESUME_WINDOW", 12 * 3600),
+                 "rework_resume_seconds": ("REWORK_RESUME", 3300),
                  "progress_min_work_seconds": ("PROGRESS_MIN_WORK", 6 * 3600), "notify_max": ("NOTIFY_MAX", 5),
                  "run_timeout_seconds": ("RUN_TIMEOUT", 3600)}
         with open(REPO / "commonroom" / "ways" / "policy.toml", "rb") as f:
