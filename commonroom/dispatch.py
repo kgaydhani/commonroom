@@ -57,7 +57,7 @@ WAYS_DIR = Path(__file__).resolve().parent / "ways"
 PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
-           "review", "review-no-ci", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
+           "review", "review-no-ci", "review-room-tested", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
            "why-milestone", "why-mission")
 # The text the room posts as issue comments, in ways/comments (commonroom#223).
 COMMENTS_NAMES = ("assess-escalate", "assess-retry", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
@@ -810,6 +810,12 @@ def tested_on_head(body: str, head: str, command: str | None) -> bool:
     return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
 
 
+def own_test_block(body: str | None) -> bool:
+    """The comment carries a `TESTS: FAIL` or `TESTS: INCOMPLETE` line of its own (code quotes don't count)."""
+    body = carry_mod.without_code(body)
+    return any(m.group(1).upper() == "FAIL" for m in TESTS_LINE.finditer(body)) or bool(INCOMPLETE_LINE.search(body))
+
+
 def approved_at(detail: dict) -> str:
     """When the newest REVIEW verdict was posted, if it is an APPROVE (whatever commits followed), else ''."""
     verdict, at = None, ""
@@ -952,7 +958,7 @@ def changes_rounds(detail: dict, since: str = "", merge_only=None) -> int:
         if room and room == base:
             continue
         head = room or (reviewed_oid(detail, c.get("createdAt") or "") if merge_only else "")
-        if base and head and head != base:
+        if merge_only and base and head and head != base:
             try:
                 if merge_only(base, head):
                     continue
@@ -2273,7 +2279,20 @@ class Dispatcher:
         """No CI: the approving review states a passing run of the project's test command on the PR head."""
         c = review_comment(self.reviewer_view(detail))
         return ((bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test")))
-                or self.carried_test(detail))
+                or self.room_tested(detail, c) or self.carried_test(detail))
+
+    def room_pass(self, detail: dict) -> dict | None:
+        """The room's own PASS (no approval carried) of the project's test command on the PR head, when the room runs the
+        tests before review (commonroom#335), else None."""
+        result, command = self.room_result(detail) if self.pre_test else None, (self.cfg.get("checks") or {}).get("test")
+        return result if (result and command and result["result"] == "PASS" and not result["approval_at"]
+                          and result["line"].startswith(f"{command}:")) else None
+
+    def room_tested(self, detail: dict, c: dict | None) -> bool:
+        """A reviewer APPROVE after the last commit with no failing or unfinished `TESTS:` line of its own, and the room's
+        PASS on this head: the room's run is the test proof (commonroom#335)."""
+        return bool(c and verdict_of(c.get("body")) == "APPROVE" and self.room_pass(detail)
+                    and not own_test_block(c.get("body")))
 
     # Carrying a tested approval across clean merges of main (commonroom#226) --------------------------------------
     def approval(self, detail: dict) -> dict | None:
@@ -2301,7 +2320,28 @@ class Dispatcher:
         command = (self.cfg.get("checks") or {}).get("test")
         return bool(result and approval and command and result["result"] == "PASS"
                     and result["line"].startswith(f"{command}:") and result["approval_at"] == approval.get("createdAt")
-                    and tested_on_head(approval.get("body") or "", result["tested"], command))
+                    and (tested_on_head(approval.get("body") or "", result["tested"], command)
+                         or (result["tested"] and self.approval_tested(detail, approval) == result["tested"])))
+
+    def approval_tested(self, detail: dict, approval: dict) -> str:
+        """The PR commit an approval's test proof is for: the one its own `TESTS: PASS` line names, or, when the room runs
+        the tests before review and the approval has no failing `TESTS:` line, the head of the room's newest PASS posted
+        before it (commonroom#335). '' when it has none."""
+        command, body = (self.cfg.get("checks") or {}).get("test"), approval.get("body") or ""
+        oids = [(c.get("oid") or "").lower() for c in detail.get("commits") or []]
+        own = carry_mod.tested_sha(body, oids)
+        if own and tested_on_head(body, own, command):
+            return own
+        if not self.pre_test or not command or own_test_block(body):
+            return ""
+        found = ""
+        for c in detail.get("comments") or []:
+            parsed = carry_mod.parse(c.get("body"))
+            if (parsed and parsed["result"] == "PASS" and not parsed["approval_at"] and parsed["line"].startswith(f"{command}:")
+                    and (c.get("createdAt") or "") <= (approval.get("createdAt") or "")):
+                match = [o for o in oids if o.startswith(parsed["head"])]
+                found = match[0] if len(match) == 1 else found
+        return found
 
     def carry_reason(self, detail: dict) -> str:
         """Why the approval can't be carried to this head by running the tests in code, or '' if it can: the reviewer
@@ -2313,8 +2353,8 @@ class Dispatcher:
         if not approval:
             return "no approval to carry"
         oids = [(c.get("oid") or "").lower() for c in detail.get("commits") or []]
-        tested = carry_mod.tested_sha(approval.get("body"), oids)
-        if not tested or not tested_on_head(approval.get("body") or "", tested, command):
+        tested = self.approval_tested(detail, approval)
+        if not tested:
             return "the approval names no tested commit of this PR"
         later = oids[oids.index(tested) + 1:]
         if not later or not all(later):
@@ -2438,7 +2478,7 @@ class Dispatcher:
         with no model (provider none), like a merge."""
         n, head, approval = pr["number"], head_sha(detail).lower(), self.approval(detail)
         checks = self.cfg.get("checks") or {}
-        tested = carry_mod.tested_sha(approval.get("body"), [(c.get("oid") or "") for c in detail.get("commits") or []])
+        tested = self.approval_tested(detail, approval)
         started = time.time()
         result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
                                            suite_lock(Path(self.ledger.path).parent, self.project),
@@ -3527,7 +3567,9 @@ class Dispatcher:
         if job.kind == "review":
             p = job.pr
             m = BRANCH.match(p["headRefName"])
-            no_ci = "" if self.ci else "\n" + fill_way(ways["review-no-ci"], test=test, suite_note=self.suite_note())
+            room = self.room_pass(job.pr)   # the room's own passing run on this head (commonroom#335)
+            no_ci = ("" if self.ci else "\n" + (fill_way(ways["review-room-tested"], sha=room["head"], result=room["line"]) if room
+                     else fill_way(ways["review-no-ci"], test=test, suite_note=self.suite_note())))
             codex_note = (f"\n{self.codex_note().rstrip()}" if self._provider == "codex" and self.codex_note() else "")
             return fill_way(ways["review"], pr=p["number"], repo=repo, issue=m.group(1) if m else "?", no_ci=no_ci,
                             codex_note=codex_note)
