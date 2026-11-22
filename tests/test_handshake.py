@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import tomllib
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -583,6 +583,68 @@ class Corrections(Room):
         self.assertEqual((summary["owner_corrections_7d"], summary["owner_corrections_prev_7d"]), (3, 1))
 
 
+class WaitingOnYou(Room):
+    """commonroom#409: the digest's `## Waiting on you` lists the project's open owner:human issues, overdue marked."""
+    NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc).timestamp()
+
+    def setUp(self):
+        super().setUp()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\nrepo = "me/alpha"\n', encoding="utf-8")
+        self.register()
+        self.found, self.calls = [], []
+
+    def digest(self, fake=None):
+        def gh(args, timeout=30):
+            self.calls.append((args, timeout))
+            return self.found
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            with mock.patch.object(handshake.board, "gh", fake or gh):
+                return handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+        finally:
+            ledger.close()
+
+    def task(self, number, title="t", body="", created=None):
+        self.found.append({"number": number, "title": title, "body": body, "createdAt": created or f"2026-11-{number:02d}T00:00:00Z"})
+
+    def test_two_tasks_are_listed_oldest_first_and_the_past_due_one_is_overdue(self):
+        self.task(9, "newer, no date")
+        self.task(3, "older", "Due: 2026-11-19\nmore")
+        text = self.digest()
+        section = text.split("## Waiting on you\n")[1]
+        self.assertEqual(section.strip().split("\n"), ["- #3 older, due 2026-11-19, overdue", "- #9 newer, no date"])
+        args, timeout = self.calls[0]
+        self.assertEqual((args[:2], "owner:human" in args, timeout), (["issue", "list"], True, handshake.TRAIL_TIMEOUT))
+        self.assertEqual(len(self.calls), 1)
+
+    def test_a_due_date_today_or_later_is_not_overdue(self):
+        self.task(1, "today", "Due: 2026-11-20")
+        self.assertNotIn("overdue", self.digest())
+
+    def test_no_owner_tasks_no_section(self):
+        self.assertNotIn("Waiting on you", self.digest())
+
+    def test_an_unreadable_board_gives_one_line_and_the_digest_is_still_built(self):
+        def boom(args, timeout=30):
+            raise RuntimeError("down")
+        text = self.digest(boom)
+        self.assertIn("## Waiting on you\nthe board could not be read\n", text)
+        self.assertIn("## Newest notes", text)
+
+    def test_twelve_tasks_list_ten_and_two_more(self):
+        for n in range(1, 13):
+            self.task(n)
+        lines = self.digest().split("## Waiting on you\n")[1].strip().split("\n")
+        self.assertEqual((len(lines), lines[0], lines[-1]), (11, "- #1 t", "and 2 more"))
+
+    def test_a_project_with_no_repo_makes_no_board_call(self):
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n', encoding="utf-8")
+        self.task(1)
+        self.assertNotIn("Waiting on you", self.digest())
+        self.assertEqual(self.calls, [])
+
+
 class Trail(Room):
     """commonroom#400: `room trail` links each owner note to the issues filed from it; the digest counts notes with none."""
     NOW = datetime(2026, 11, 20, 12, 0).timestamp()
@@ -665,7 +727,11 @@ class Trail(Room):
         self.assertEqual([n["name"] for n in notes], [mine])
 
     def test_no_notes_or_no_repo_means_no_board_call_and_no_line(self):
-        self.gh = mock.Mock(side_effect=AssertionError("board read"))
+        def only_waiting(args, timeout=30):   # the one board call the digest makes for the owner's tasks (#409)
+            if "owner:human" not in args:
+                raise AssertionError("board read")
+            return []
+        self.gh = mock.Mock(side_effect=only_waiting)
         with mock.patch.object(handshake.board, "gh", self.gh):
             self.assertEqual(self.digest(), [])
             self.note(2, "x")

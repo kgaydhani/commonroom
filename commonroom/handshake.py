@@ -21,10 +21,10 @@ import time
 import tomllib
 import uuid
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from commonroom import artifacts, board, config as config_mod, ledger as ledger_mod, measure, metrics, policy, progress as progress_mod, registry, trials
+from commonroom import artifacts, board, config as config_mod, ledger as ledger_mod, measure, metrics, policy, progress as progress_mod, registry, steward, trials
 from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -525,6 +525,31 @@ def _age(seconds: float) -> str:
     return f"{int(seconds // 86400)}d" if seconds >= 86400 else f"{int(seconds // 3600)}h" if seconds >= 3600 else f"{int(seconds // 60)}m"
 
 
+WAITING_MAX = 10
+
+
+def _waiting(p: registry.Project, now: float) -> str:
+    """The `## Waiting on you` section body: the project's open `owner:human` issues, oldest first, with their `Due:` date
+    and `overdue` when it is past (UTC). Empty when there are none or the project has no repo."""
+    repo = (room_toml(p).get("project") or {}).get("repo")
+    if not repo:
+        return ""
+    try:
+        found = board.gh(["issue", "list", "--repo", repo, "--label", "owner:human", "--state", "open", "--limit", "100",
+                          "--json", "number,title,body,createdAt"], timeout=TRAIL_TIMEOUT) or []
+    except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return "the board could not be read"
+    today = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
+    lines = []
+    for i in sorted(found, key=lambda i: (i.get("createdAt") or "", i["number"])):
+        due = steward.DUE.search(i.get("body") or "")
+        due_text = f", due {due.group(1)}" + (", overdue" if due.group(1) < today else "") if due else ""
+        lines.append(f"- #{i['number']} {_one_line(i.get('title') or '')}{due_text}")
+    if len(lines) > WAITING_MAX:
+        lines = lines[:WAITING_MAX] + [f"and {len(lines) - WAITING_MAX} more"]
+    return "\n".join(lines)
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
@@ -552,6 +577,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     unlinked_line = _unlinked(reg, p, now)
     if unlinked_line:
         text = text + "\n" + unlinked_line + "\n"
+    waiting = _waiting(p, now)
+    if waiting:
+        text = text + "\n" + f"## Waiting on you\n{waiting}" + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
