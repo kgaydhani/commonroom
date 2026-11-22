@@ -441,6 +441,50 @@ class ColdReturn(Hook):
         self.assertEqual(hook.last_turn(path, 400)[1], 300001)
         self.assertIsNone(hook.last_turn(path, 5))
 
+    def rollout(self, minutes_ago, context, name="r.jsonl", extra=()):
+        """A synthetic Codex rollout (cli_version 0.167) whose last token_count is `minutes_ago` old."""
+        def stamp(ago):
+            return datetime.fromtimestamp(self.NOW - ago * 60, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        def count(ago, ctx):
+            return {"timestamp": stamp(ago), "type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": 999999}, "last_token_usage": {
+                    "input_tokens": ctx, "cached_input_tokens": ctx // 2, "output_tokens": 5, "total_tokens": ctx + 5},
+                "model_context_window": 475000}}}
+        lines = [{"timestamp": stamp(minutes_ago + 9), "type": "session_meta",
+                  "payload": {"id": "x", "cwd": "/nowhere", "cli_version": "0.167.0-alpha.4.1"}},
+                 {"timestamp": stamp(minutes_ago + 8), "type": "response_item",
+                  "payload": {"type": "message", "content": [{"text": "SECRET"}]}},
+                 count(minutes_ago + 5, 10), count(minutes_ago, context), *extra]
+        path = self.tmp / name
+        path.write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
+        return path
+
+    def test_a_codex_rollout_gives_the_same_paragraph_as_a_claude_transcript(self):
+        self.register()
+        self.brief()
+        claude = self.prompt(self.transcript(90, 300000))
+        codex = self.prompt(self.rollout(90, 300000))
+        self.assertNotEqual(codex, "")
+        self.assertEqual(codex, claude)   # same time and context -> same paragraph
+        self.assertEqual(hook.last_turn(self.rollout(90, 123456)), (self.NOW - 90 * 60, 123456))
+        self.assertNotIn("SECRET", codex)
+
+    def test_a_rollout_is_told_by_its_lines_not_its_path(self):
+        path = self.rollout(90, 300000, name="transcript.jsonl")
+        self.assertEqual(hook.last_turn(path)[1], 300000)
+        self.assertEqual(hook.last_turn(path, 600)[1], 300000)   # the head is not in the tail
+
+    def test_a_rollout_with_no_usable_token_count_adds_nothing(self):
+        self.register()
+        head = {"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta", "payload": {"cli_version": "0.167.0"}}
+        odd = [{"type": "future_thing", "payload": {}}, {"type": "event_msg", "payload": {"type": "token_count", "info": None}},
+               {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {}}}}]
+        for name, lines in (("a.jsonl", [head]), ("b.jsonl", [head, *odd])):
+            path = self.tmp / name
+            path.write_text("".join(json.dumps(x) + "\n" for x in lines) + "garbage\n", encoding="utf-8")
+            self.assertIsNone(hook.last_turn(path))
+            self.assertEqual(self.prompt(path), "")
+
     def test_the_text_has_no_method_words(self):
         template = (ROOT / "commonroom/ways/handshake/cold-return.md").read_text(encoding="utf-8")
         self.assertIsNone(HandshakeOnly.METHOD.search(template), template)
