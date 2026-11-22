@@ -3090,6 +3090,8 @@ class Dispatcher:
         """The earlier Claude run of this build, review, on-demand role or audit to continue instead of starting a fresh
         session (commonroom#142, #143), or None. The director never resumes: its triggers change between runs. It must have been stopped or limited, less than 12 h ago, in this same working folder, with its
         session file still on disk, and nothing may have run since; after two resumes in a row the third try starts fresh."""
+        if provider != "claude" and job.kind == "build" and task and job.issue and "needs:changes" in labels(job.issue):
+            self.log("   rework starts fresh: the provider is not Claude")
         if provider != "claude" or job.kind not in ("build", "review", "role", "audit") or (not task and job.kind != "audit"):
             return None
         runs = (self.ledger.task_runs(self.project, task, 3, exclude=run_id) if task
@@ -3118,8 +3120,13 @@ class Dispatcher:
             return no("rework_resume_seconds is 0")
         builds = [r for r in self.ledger.task_runs(self.project, task, 12, exclude=run_id) if r["role"] == job.role]
         last = builds[0] if builds else None
+        if last and last["status"] in ("stopped", "limited"):
+            return None   # the older stopped/limited path takes over
         if not last or last["status"] != "done":
             return no("the task's newest builder run did not end done")
+        room = [c for c in job.issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
+        if room and (merge_main_only(job.issue) or conflicts_main(job.issue) or "CI is red" in (room[-1].get("body") or "")):
+            return no("sent back for merge-main/CI, not a review")
         if last["provider"] != "claude":
             return no("the last build was not Claude")
         if not last["session_id"] or not last["ended_at"]:

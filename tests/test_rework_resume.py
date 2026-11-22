@@ -65,6 +65,29 @@ class ReworkResume(test_resume.Resume):
     def test_fresh_for_codex(self):
         self.assert_fresh_because(lambda d: self.done(d, provider="codex"), "not Claude")
 
+    def test_a_codex_job_logs_why(self):
+        self.run_job(self.done, provider="codex")
+        self.assertTrue(any("rework starts fresh" in m and "not Claude" in m for m in self.logs), self.logs)
+
+    def room_comment(self, body):
+        self.issue["comments"] = [{"body": "[room] " + body, "createdAt": "2030-01-01T00:00:00Z"}]
+
+    def test_fresh_when_sent_back_for_merge_main(self):
+        self.room_comment(f"PR #9 {dispatch.MERGE_MAIN}")
+        self.assert_fresh_because(self.done, "merge-main/CI")
+
+    def test_fresh_when_sent_back_for_conflicts(self):
+        self.room_comment(f"PR #9 {dispatch.CONFLICTS_MAIN}")
+        self.assert_fresh_because(self.done, "merge-main/CI")
+
+    def test_fresh_when_sent_back_for_red_ci(self):
+        self.room_comment("CI is red on PR #9: test.")
+        self.assert_fresh_because(self.done, "merge-main/CI")
+
+    def test_a_stopped_run_does_not_log_a_fresh_start(self):
+        self.run_job(lambda d: self.earlier(d, "#7", status="stopped", ago=300))
+        self.assertFalse(any("rework starts fresh" in m for m in self.logs), self.logs)
+
     def test_fresh_when_the_policy_is_zero(self):
         orig = dispatch.REWORK_RESUME
         dispatch.REWORK_RESUME = 0

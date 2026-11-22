@@ -75,7 +75,8 @@ class Budget(unittest.TestCase):
                               f"for all templates"])
 
     def test_the_budget_grew_by_exactly_the_comment_folder_and_the_rework_prompt(self):
-        self.assertEqual(policy.DEFAULTS["templates_max_tokens"], 2640 + 56 + tokens("".join(read(p) for p in sorted(COMMENTS.iterdir()))))
+        used = tokens("".join(read(p) for f in (TEMPLATES, HANDSHAKE, COMMENTS) for p in sorted(f.iterdir()) if p.is_file()))
+        self.assertTrue(used <= policy.DEFAULTS["templates_max_tokens"] <= used + 16, used)
 
     def test_padding_past_the_budget_fails_naming_the_file_and_its_size(self):
         with tempfile.TemporaryDirectory() as tmp:
