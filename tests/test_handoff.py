@@ -18,9 +18,34 @@ class Handoff(Room):
         ceiling = mock.patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(self.tmp)})
         ceiling.start()   # the temporary folder is never inside some other repository
         self.addCleanup(ceiling.stop)
+        session = mock.patch.dict(os.environ)   # the real session's id must not leak in (#377)
+        session.start()
+        self.addCleanup(session.stop)
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n\n[goal]\nmilestone = "First release"\n',
                                               encoding="utf-8")
         self.register()
+
+    def test_session_comes_from_the_environment_when_no_flag(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "env-sess-1"}):
+            code, _, err = self.room("handoff", "--reason", "done", stdin=TEXT, cwd=self.alpha)
+        self.assertEqual(code, 0, err)
+        [path] = self.handoffs()
+        self.assertEqual(self.fields(path)["from_session"], "env-sess-1")
+
+    def test_the_flag_wins_over_the_environment(self):
+        with mock.patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "env-sess-1"}):
+            self.room("handoff", "--session", "flag-1", "--reason", "done", stdin=TEXT, cwd=self.alpha)
+        [path] = self.handoffs()
+        self.assertEqual(self.fields(path)["from_session"], "flag-1")
+
+    def test_neither_refuses_and_names_the_variable(self):
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDE_CODE_SESSION_ID"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            code, _, err = self.room("handoff", "--reason", "done", stdin=TEXT, cwd=self.alpha)
+        self.assertNotEqual(code, 0)
+        self.assertIn("CLAUDE_CODE_SESSION_ID", err)
+        self.assertEqual(self.handoffs(), [])
 
     def handoffs(self, name="alpha"):
         folder = self.folder(name) / "handoffs"
