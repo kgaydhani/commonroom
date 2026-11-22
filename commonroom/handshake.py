@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,8 +29,8 @@ from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
-README, CHARTER, DIGEST, REPLY, HANDOFF, DECISIONS, DECISIONS_MORE = (
-    read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply", "handoff", "decisions", "decisions-more"))
+README, CHARTER, DIGEST, REPLY, HANDOFF, DECISIONS, DECISIONS_MORE, HANDS = (
+    read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply", "handoff", "decisions", "decisions-more", "hands"))
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 DECISIONS_SHOWN = 10       # standing decisions and bounds listed in the digest, however old (#365)
@@ -38,6 +39,8 @@ ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
 KINDS = ("outcome", "bound", "decision", "suggestion")   # what an owner statement can be (design-v3); `direction` is separate
 DIRECTION = "direction"   # ledger mark key: when the owner last changed a project's direction (`note --direction`)
 READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
+HAND_MARK, HANDED_MARK = "hand:", "handed:"   # ledger mark key prefixes: hand:<id> when a hand was written, handed:<id> when it was answered (#368)
+HANDS_SHOWN = 5            # newest results the digest lists
 HANDOFF_MARK = "handoff:"  # ledger mark key prefix: handoff:<session>, set when that session wrote a handoff (#363)
 ADD = "`room projects add <name> <folder> --share <percent>`"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": WEEK}
@@ -139,12 +142,13 @@ def _one_line(value: str) -> str:
 
 
 def write_note(where: Path, text: str, sender: str, to: str | None = None, now: float | None = None,
-               kind: str | None = None) -> Path:
+               kind: str | None = None, extra: dict | None = None) -> Path:
     """One new file in `inbox/`, never an existing one: a name taken (two notes in one instant) moves on a microsecond,
     so names still sort by time."""
     stamp = datetime.fromtimestamp(time.time() if now is None else now)
     head = ["---", f"from: {_one_line(sender)}", *([f"to: {_one_line(to)}"] if to else []),
-            f"at: {stamp:%Y-%m-%dT%H:%M:%S}", *([f"kind: {_one_line(kind)}"] if kind else []), "---", ""]
+            f"at: {stamp:%Y-%m-%dT%H:%M:%S}", *([f"kind: {_one_line(kind)}"] if kind else []),
+            *(f"{k}: {_one_line(v)}" for k, v in (extra or {}).items()), "---", ""]
     body = "\n".join(head) + "\n" + text.replace("\r\n", "\n").strip("\n") + "\n"
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", sender).strip("-")[:40] or "note"
     inbox = where / "inbox"
@@ -168,7 +172,7 @@ def read_notes(where: Path) -> list[dict]:
     for path in inbox.iterdir():
         if not path.is_file() or path.name.startswith("."):
             continue
-        note = {"name": path.name, "at": path.stat().st_mtime, "from": None, "to": None, "text": None, "dated": False, "kind": None}
+        note = {"name": path.name, "at": path.stat().st_mtime, "from": None, "to": None, "text": None, "dated": False, "kind": None, "hand": None, "re": None}
         notes.append(note)
         try:
             text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
@@ -181,6 +185,7 @@ def read_notes(where: Path) -> list[dict]:
                           (line.partition(":") for line in lines[1:ends[1]]) if sep)
             note["from"], note["to"] = fields.get("from") or None, fields.get("to") or None
             note["kind"] = fields.get("kind") or None
+            note["hand"], note["re"] = fields.get("hand") or None, fields.get("re") or None
             try:
                 note["at"], note["dated"] = datetime.fromisoformat(fields.get("at", "")).timestamp(), True
             except ValueError:
@@ -415,6 +420,37 @@ def _newest_handoff(where: Path) -> str | None:
     return f"- `handoffs/{found[-1].name}`, {at}, from session {fields.get('from_session') or '(not named)'}"
 
 
+def _first_line(text: str | None) -> str:
+    first = next((_one_line(line) for line in (text or "").split("\n") if line.strip()), "(not readable as text)")
+    return first if len(first) <= NOTE_CHARS else first[:NOTE_CHARS].rstrip() + " [cut: see the file]"
+
+
+def hands(where: Path, ledger: Ledger, p: registry.Project) -> tuple[list[dict], list[dict], set[str], set[str]]:
+    """(open hands, results newest first, ids known, ids done) for a project. A hand is done when the ledger has `handed:<id>` or
+    any note in `inbox/` says `re: <id>`, so an agent with no room installed can answer by writing a file."""
+    notes = read_notes(where)
+    answers = [n for n in notes if n["re"]]
+    done = {n["re"] for n in answers} | {k for k, _ in ledger.marks(p.name, HANDED_MARK)}
+    given = [n for n in notes if n["kind"] == "hand" and n["hand"]]
+    known = {n["hand"] for n in given} | {k for k, _ in ledger.marks(p.name, HAND_MARK)}
+    return [n for n in reversed(given) if n["hand"] not in done], answers, known, done
+
+
+def _hands(where: Path, ledger: Ledger, p: registry.Project, now: float) -> str:
+    """The digest's "Handed, waiting" section; empty (no section at all) when no hand was ever given."""
+    waiting, answers, _, _ = hands(where, ledger, p)
+    if not waiting and not answers:
+        return ""
+    lines = [f"- `{n['hand']}`, to {n['to'] or 'anyone'}, {_age(now - n['at'])} ago: {_first_line(n['text'])}" for n in waiting]
+    results = [f"- `{n['re']}`, {n['from'] or 'unknown sender'}: {_first_line(n['text'])}" for n in answers[:HANDS_SHOWN]]
+    return fill_way(HANDS, waiting=chr(10).join(lines) or "None.", results=chr(10).join(results) or "None yet.")
+
+
+def _age(seconds: float) -> str:
+    seconds = max(0, seconds)
+    return f"{int(seconds // 86400)}d" if seconds >= 86400 else f"{int(seconds // 3600)}h" if seconds >= 3600 else f"{int(seconds // 60)}m"
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
@@ -433,6 +469,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     newest = _newest_handoff(where)
     if newest:
         text = text + "\n" + f"## Newest handoff\n{newest}" + "\n"
+    handed = _hands(where, ledger, p, now)
+    if handed:
+        text = text + "\n" + handed + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
@@ -696,4 +735,57 @@ def cmd_handoff(args) -> int:
         ledger.close()
     refresh(reg, p)
     print(f"handoff for {p.name} from session {_one_line(args.session)}: {path}")
+    return 0
+
+
+def _sender(reg: registry.Registry, p: registry.Project, given: str | None) -> str:
+    if given:
+        return given
+    try:
+        here = find(reg)
+    except HandshakeError:
+        here = None
+    return here.name if here is not None and here.name != p.name else _user()
+
+
+@_run
+def cmd_hand(args) -> int:
+    """`hand [project] --to WHO "brief"` gives a piece of work; `hand done ID "result"` answers it (#368)."""
+    words = list(args.words)
+    answering = len(words) == 3 and words[0] == "done"
+    if answering:
+        _, hand_id, text = words
+        args.name = None
+    else:
+        *named, text = words
+        if len(named) > 1:
+            raise HandshakeError("refused: give the text as one argument, in quotes.")
+        args.name = named[0] if named else None
+    text = sys.stdin.read() if text == "-" else text
+    if not answering and not args.to:
+        raise HandshakeError("refused: say who it is for with --to.")
+    if not text.strip():
+        raise HandshakeError(f"refused: the {'result' if answering else 'brief'} is empty.")
+    reg, p = _start(args)
+    where, now = prepare(p), time.time()
+    sender = _sender(reg, p, args.sender)
+    ledger = Ledger()
+    try:
+        if answering:
+            _, _, known, done = hands(where, ledger, p)
+            if hand_id not in known:
+                raise HandshakeError(f"refused: no hand {hand_id} in {p.name}. Nothing written.")
+            if hand_id in done:
+                raise HandshakeError(f"refused: hand {hand_id} is already done. Nothing written.")
+            path = write_note(where, text, sender, None, now, "result", {"re": hand_id})
+            ledger.mark(p.name, HANDED_MARK + hand_id, now)
+            print(f"hand {hand_id} done for {p.name}: {path}")
+        else:
+            hand_id = uuid.uuid4().hex[:6]
+            path = write_note(where, text, sender, args.to, now, "hand", {"hand": hand_id})
+            ledger.mark(p.name, HAND_MARK + hand_id, now)
+            print(hand_id)
+    finally:
+        ledger.close()
+    refresh(reg, p)
     return 0
