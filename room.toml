@@ -70,3 +70,5 @@ claude_slots = 1
 # Director 2026-10-15 (#122): at 12 h it was still 44% of this project's spend ($4.27 of $9.75 in 72 h, 6 runs) while
 # builders and reviewers made all 8 merges. Events still wake it at once. Back to 12 if the ready queue sits empty > 6 h.
 steer_every_hours = 24
+# A run that only stamps director-path PRs judges a few lines after a reviewer approved: medium effort (commonroom#342).
+stamp_effort = "medium"

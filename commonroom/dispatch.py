@@ -1256,6 +1256,7 @@ class Job:
     issue: dict | None = None
     pr: dict | None = None
     reason: str = ""
+    effort: str | None = None   # overrides `[effort] <role>` for this run (commonroom#342)
 
 
 class Dispatcher:
@@ -1275,6 +1276,7 @@ class Dispatcher:
         self._provider = None
         self.ci = config_mod.has_ci(cfg)
         # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
+        self.stamp_only = False   # set by director_trigger: every reason came from ready_for_director (commonroom#342)
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
         self.carry_cache = {}   # (stamp sha, head sha) -> may the stamp be carried; one compare per pair per pass
         # Run the tests in code to carry an approval across clean merges of main (commonroom#226). Off unless the
@@ -2834,7 +2836,9 @@ class Dispatcher:
         if trigger:
             choice = self.choose(self.roles.get("director", ["claude:opus"]), allowed)
             if choice:
-                return Job("direct", "director", reason=trigger), *choice
+                # A run for director-path stamps only judges those lines: a lower effort when `[director] stamp_effort` says so (#342).
+                stamp = (self.cfg.get("director") or {}).get("stamp_effort") if self.stamp_only else None
+                return Job("direct", "director", reason=trigger, effort=stamp or None), *choice
         # The periodic audit: the frontier model steps back, judges everything, acts, and reports to the owner.
         audit = self.audit_due()
         if audit:
@@ -3035,6 +3039,7 @@ class Dispatcher:
     def director_trigger(self) -> str | None:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
+        self.stamp_only = False
         if time.time() - since < self.policy("director_cooldown_seconds"):
             return None
         reasons = []
@@ -3070,7 +3075,8 @@ class Dispatcher:
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
-        reasons += self.ready_for_director()
+        stamps = self.ready_for_director()
+        reasons += stamps
         steward_reason = self.steward_reason(since)
         if steward_reason:
             reasons.append(steward_reason)
@@ -3082,6 +3088,7 @@ class Dispatcher:
         if steer and time.time() - since >= steer * 3600:
             reasons.append(steer_reason(self.cfg, self.ways))
             reasons += interactive
+        self.stamp_only = bool(stamps) and len(reasons) == len(stamps)   # every reason, steer and bulletin included (#342)
         return "; ".join(reasons) or None
 
     def bulletin_missed(self, last_director: float, now: float | None = None) -> str | None:
@@ -3118,7 +3125,7 @@ class Dispatcher:
         if self.dry_run:
             return {"status": "dry-run"}
         # Claim first, atomically: parallel dispatchers must never work the same task twice.
-        effort = (self.cfg.get("effort") or {}).get(job.role)
+        effort = job.effort or (self.cfg.get("effort") or {}).get(job.role)
         run_id = self.ledger.start_run(self.project, task, job.role, provider,
                                        model or (role.model if provider == "claude" else "default"),
                                        effort=effort or "default", exclusive=bool(task))
