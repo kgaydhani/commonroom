@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from commonroom import config as config_mod, pie, registry as registry_mod, standings
+from commonroom import config as config_mod, handshake, pie, registry as registry_mod, standings
 from commonroom.dispatch import pie_active, pie_holds, verdicts
 from commonroom.liveness import orphaned
 
@@ -66,8 +66,35 @@ def _project(ledger, name, now: float, row, ok: bool, win, slack: float) -> dict
             "breakers": breakers}
 
 
-def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts: Path | None = None) -> dict:
-    """The page as data. `reg`: the registry (default: the room home's); `queue(repo)`: the owner's open tasks there."""
+def _trail(reg, key: str, now: float, board_trail) -> dict:
+    """One project's trail (commonroom#408): the owner's notes of the last `TRAIL_DAYS`, newest first, each with the issues
+    filed from it. A board that can't be read leaves the notes with no items and says why in `trail_error`."""
+    p = reg.projects[key]
+    try:
+        notes = sorted(handshake.owner_notes(reg, p, now - handshake.TRAIL_DAYS * 86400, now), key=lambda n: -n["at"])
+    except Exception as exc:
+        return {"trail": [], "trail_error": f"the notes can't be read: {str(exc)[:120]}"}
+    error, linked = None, {}
+    if not notes:
+        pass
+    elif not (handshake.room_toml(p).get("project") or {}).get("repo"):
+        error = "no [project] repo in its room.toml"
+    else:
+        try:
+            linked = board_trail(p, notes)
+            if isinstance(linked.get("error"), str):   # the dashboard's cache hands back a failure as {"error": ...}
+                error, linked = linked["error"][:120], {}
+        except Exception as exc:
+            error = f"the board can't be read: {str(exc)[:120]}"
+    out = [{"name": n["name"], "at": n["at"], "first_line": handshake._first_line(n["text"]),
+            "items": [{k: i[k] for k in ("number", "title", "state", "merged")} for i in linked.get(n["name"]) or []]}
+           for n in notes]
+    return {"trail": out, **({"trail_error": error} if error else {})}
+
+
+def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts: Path | None = None, trail=None) -> dict:
+    """The page as data. `reg`: the registry (default: the room home's); `queue(repo)`: the owner's open tasks there;
+    `trail(project, notes)`: the board's issues for those notes (`handshake.trail`; without it sections carry no trail)."""
     problem = None
     try:
         reg = reg if reg is not None else registry_mod.load(registry_mod.default_path())
@@ -106,7 +133,8 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
             rows.append({"name": s.name, "share": s.share, "spent_est": s.spent, "room_est": report.room(s.name),
                          "own_sessions_est": report.own.get(s.name, 0.0), "line": s.allowed, "state": _state_word(s, ok),
                          "when": s.when})
-            sections.append({"name": s.name, **_project(ledger, names[s.name], now, s, ok, win, slack)})
+            sections.append({"name": s.name, **_project(ledger, names[s.name], now, s, ok, win, slack),
+                             **(_trail(reg, s.name, now, trail) if trail and s.name in reg.projects else {})})
         rows.append({"name": "you (unassigned)", "share": report.owner_share, "spent_est": report.owner_use,
                      "room_est": None, "own_sessions_est": None, "line": report.owner_share * win.elapsed, "state": "yours",
                      "when": None})
