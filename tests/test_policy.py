@@ -37,6 +37,7 @@ NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3282,   # commonroom#23
        "pie_idle_minutes": 60,                                    # commonroom#240: today's [share] idle_minutes
        "pie_notice_margin": 1, "pie_own_active_minutes": 20,      # commonroom#243
        "cold_return_minutes": 60, "cold_return_context": 150000,   # commonroom#367
+       "handoff_offer_hours": 72,       # commonroom#384
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
 
 

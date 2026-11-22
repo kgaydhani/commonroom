@@ -263,3 +263,32 @@ class Take(Handoff):
         self.brief()
         with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": "1"}):
             self.assertEqual(self.start(), "")
+
+
+class OfferLimits(Take):
+    """commonroom#384: an old brief is not offered, and a newer brief replaces every older one."""
+
+    def offered(self, now=None):
+        ledger = Ledger()
+        try:
+            return handshake.offer(registry.load().projects["alpha"], ledger, "sess", now=now)
+        finally:
+            ledger.close()
+
+    def test_a_brief_older_than_the_limit_is_not_offered_but_still_listed(self):
+        import time
+        from commonroom import policy
+        path = self.brief()
+        hours = policy.DEFAULTS["handoff_offer_hours"]
+        self.assertIn(path.name, self.offered(time.time() + (hours - 1) * 3600))
+        self.assertIsNone(self.offered(time.time() + (hours + 1) * 3600))
+        code, out, _ = self.room("handoff", "list", "alpha", cwd=self.alpha)
+        self.assertIn(path.name, out)
+
+    def test_taking_the_newer_of_two_briefs_offers_nothing(self):
+        self.brief("one")
+        newer = self.brief("two")
+        self.assertIn(newer.name, self.offered())
+        self.assertEqual(self.room("handoff", "take", newer.name, "--session", "new1", cwd=self.alpha)[0], 0)
+        self.assertIsNone(self.offered())
+        self.assertNotIn("Untaken handoff", self.start())

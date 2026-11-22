@@ -24,7 +24,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry, trials
+from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, policy, progress as progress_mod, registry, trials
 from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -733,15 +733,29 @@ def _stamp(fields: dict, path: Path) -> str:
         return _when(path.stat().st_mtime) + " (file time)"
 
 
-def offer(p: registry.Project, ledger: Ledger | None, session) -> str | None:
-    """The one line telling a session about the newest handoff brief nobody has taken (#366); None when there is none.
+def _written(fields: dict, path: Path) -> float:
+    try:
+        return datetime.fromisoformat(fields.get("at", "")).timestamp()
+    except ValueError:
+        return path.stat().st_mtime
+
+
+def offer(p: registry.Project, ledger: Ledger | None, session, now: float | None = None) -> str | None:
+    """The one line telling a session about the project's newest handoff brief, if nobody has taken it and it is no older
+    than `handoff_offer_hours` (#366, #384); None otherwise. A newer brief replaces every older one, taken or not.
     Reads only: marks and files."""
-    for path in reversed(handoffs(p)):
-        if ledger is None or ledger.marked(p.name, TOOK + path.name) is None:
-            fields = _fields(path)
-            return fill_way(HANDOFF_OFFER, file=str(path), session=fields.get("from_session") or "(not named)",
-                            at=_stamp(fields, path), me=_one_line(str(session or "")) or "<this session's id>")
-    return None
+    found = handoffs(p)
+    if not found:
+        return None
+    path = found[-1]
+    if ledger is not None and ledger.marked(p.name, TOOK + path.name) is not None:
+        return None
+    fields = _fields(path)
+    now = time.time() if now is None else now
+    if now - _written(fields, path) > policy.DEFAULTS["handoff_offer_hours"] * 3600:
+        return None
+    return fill_way(HANDOFF_OFFER, file=str(path), session=fields.get("from_session") or "(not named)",
+                    at=_stamp(fields, path), me=_one_line(str(session or "")) or "<this session's id>")
 
 
 def take_handoff(p: registry.Project, ledger: Ledger, name: str, session: str, now: float | None = None) -> Path:
