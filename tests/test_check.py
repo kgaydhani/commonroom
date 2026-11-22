@@ -162,6 +162,40 @@ class CheckCommand(unittest.TestCase):
             time.sleep(0.1)
         self.assertFalse(alive(pid))
 
+    def test_timeout_kills_the_whole_tree_even_when_taskkill_is_refused(self):
+        pids = self.project / "pids.txt"
+        script = self.project / "slow.py"
+        script.write_text(
+            "import subprocess, sys, time\n"
+            "pids = sys.argv[1]\n"
+            "if len(sys.argv) > 2:\n"
+            "    c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "else:\n"
+            "    c = subprocess.Popen([sys.executable, __file__, pids, 'child'])\n"
+            "open(pids, 'a').write(str(c.pid) + ' ')\n"
+            "time.sleep(60)\n")
+        (self.project / "room.toml").write_text(
+            "[project]\nname = \"demo\"\nrepo = \"o/demo\"\n[goal]\nmilestone = \"M\"\n[checks]\n"
+            f"test = '\"{sys.executable}\" \"{script}\" \"{pids}\"'\nmax_minutes = 0.15\n")
+        refused = subprocess.CompletedProcess([], 1, b"", b"Access is denied")
+        real_run = subprocess.run
+        with self.local_check() as out, mock.patch.object(
+                cli.subprocess, "run",
+                side_effect=lambda cmd, *a, **k: refused if cmd[0] == "taskkill" else real_run(cmd, *a, **k)):
+            self.assertEqual(cli.cmd_check(None), 3)
+        self.assertIn("report TESTS: INCOMPLETE", out.getvalue())
+        self.assertFalse(self.lock.exists())
+        self.assertIsNone(claim_lock(self.lock))   # a second claim succeeds at once
+        release_lock(self.lock)
+        found = [int(x) for x in pids.read_text().split()]
+        self.assertEqual(len(found), 2)
+        for pid in found:
+            for _ in range(50):
+                if not alive(pid):
+                    break
+                time.sleep(0.1)
+            self.assertFalse(alive(pid), pid)
+
     def test_suite_inside_the_limit_passes_its_code(self):
         self.project_with(f"\"{self.project / 'log.txt'}\" 0 5", "max_minutes = 1\n")
         self.assertEqual(self.run_check()[0], 5)
@@ -170,10 +204,11 @@ class CheckCommand(unittest.TestCase):
         self.project_with(f"\"{self.project / 'log.txt'}\" 0 7")
         with self.local_check(), mock.patch.object(cli.time, "monotonic", return_value=100), \
                 mock.patch.object(cli.time, "time", side_effect=AssertionError("wall clock used")), \
-                mock.patch.object(cli.subprocess, "Popen") as start:
-            start.return_value.wait.return_value = 7
+                mock.patch.object(cli.jobtree, "start") as start:
+            start.return_value = (mock.Mock(), None)
+            start.return_value[0].wait.return_value = 7
             self.assertEqual(cli.cmd_check(None), 7)
-        start.return_value.wait.assert_called_once_with(timeout=540)
+        start.return_value[0].wait.assert_called_once_with(timeout=540)
         self.assertFalse(self.lock.exists())
 
     def test_waiting_leaves_only_the_remaining_time_for_the_suite(self):
@@ -189,10 +224,11 @@ class CheckCommand(unittest.TestCase):
 
         with self.local_check(), mock.patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                 mock.patch.object(cli.time, "sleep", side_effect=sleep), \
-                mock.patch.object(cli.subprocess, "Popen") as start:
-            start.return_value.wait.return_value = 7
+                mock.patch.object(cli.jobtree, "start") as start:
+            start.return_value = (mock.Mock(), None)
+            start.return_value[0].wait.return_value = 7
             self.assertEqual(cli.cmd_check(None), 7)
-        start.return_value.wait.assert_called_once_with(timeout=2)
+        start.return_value[0].wait.assert_called_once_with(timeout=2)
         self.assertFalse(self.lock.exists())
 
     def test_lock_poll_does_not_exceed_either_deadline_or_start_the_suite(self):
@@ -212,7 +248,7 @@ class CheckCommand(unittest.TestCase):
                 with self.local_check() as out, \
                         mock.patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                         mock.patch.object(cli.time, "sleep", side_effect=sleep) as poll, \
-                        mock.patch.object(cli.subprocess, "Popen") as start:
+                        mock.patch.object(cli.jobtree, "start") as start:
                     self.assertEqual(cli.cmd_check(None), 3)
                 poll.assert_called_once_with(seconds)
                 start.assert_not_called()
@@ -220,13 +256,13 @@ class CheckCommand(unittest.TestCase):
 
     def test_expired_allowance_never_starts_a_process(self):
         with mock.patch.object(cli.time, "monotonic", return_value=100), \
-                mock.patch.object(cli.subprocess, "Popen") as start:
+                mock.patch.object(cli.jobtree, "start") as start:
             self.assertIsNone(cli._run_limited("unused", 100))
         start.assert_not_called()
 
     def test_start_failure_releases_the_lock(self):
         self.project_with(f"\"{self.project / 'log.txt'}\" 0 0")
-        with self.local_check(), mock.patch.object(cli.subprocess, "Popen", side_effect=OSError("cannot start")):
+        with self.local_check(), mock.patch.object(cli.jobtree, "start", side_effect=OSError("cannot start")):
             with self.assertRaisesRegex(OSError, "cannot start"):
                 cli.cmd_check(None)
         self.assertFalse(self.lock.exists())
