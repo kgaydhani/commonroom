@@ -1,11 +1,13 @@
 """commonroom#214: the digest says when a published artifact is behind main, and `artifact published` clears it."""
 import subprocess
+import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from commonroom import artifacts, handshake
+from tests.gitenv import outside_any_repository
 from tests.test_handshake import Room
 
 HEADING = "## Artifacts to republish"
@@ -113,9 +115,25 @@ class Artifacts(Room):
         self.declare()
         led = handshake.Ledger()
         try:
-            got = artifacts.stale(led, "alpha", {"artifacts": {"reader": ["x"]}}, self.tmp)
+            with outside_any_repository(self.tmp):
+                got = artifacts.stale(led, "alpha", {"artifacts": {"reader": ["x"]}}, self.tmp)
         finally:
             led.close()
+        self.assertIn("could not read git history", got)
+
+    def test_not_a_repo_holds_when_temp_is_inside_a_repository(self):
+        outer = self.tmp / "outer"
+        outer.mkdir()
+        subprocess.run(["git", "init", "-q", str(outer)], check=True, capture_output=True)
+        (outer / "tmp").mkdir()
+        self.declare()
+        with mock.patch.object(tempfile, "tempdir", str(outer / "tmp")),                 tempfile.TemporaryDirectory() as bare:
+            led = handshake.Ledger()
+            try:
+                with outside_any_repository(bare):
+                    got = artifacts.stale(led, "alpha", {"artifacts": {"reader": ["x"]}}, Path(bare))
+            finally:
+                led.close()
         self.assertIn("could not read git history", got)
 
 
