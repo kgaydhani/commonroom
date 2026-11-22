@@ -3051,6 +3051,76 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class StampEffort(unittest.TestCase):
+    """`[director] stamp_effort`: a run woken only by director-path stamps uses it (commonroom#342)."""
+    STAMP = "PR #7 touches director paths (room.toml) and waits for the director's approval"
+    ALLOWED = {"claude": gate.Verdict(True, "ok")}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
+
+    def tearDown(self):
+        self.ledger.close(); self.tmp.cleanup()
+
+    def pick(self, stamp_effort, issues=(), stamps=True):
+        cfg = cfg_with(self.tmp.name)
+        cfg["effort"]["director"] = "high"
+        if stamp_effort:
+            cfg["director"]["stamp_effort"] = stamp_effort
+        issues = list(issues) or [issue(1, ["status:ready", "role:builder"])]
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        d.ready_for_director = lambda: [self.STAMP] if stamps else []
+        job, _, _ = d.pick(self.ALLOWED)
+        return d, job
+
+    def test_unset_changes_nothing(self):
+        d, job = self.pick(None)
+        self.assertEqual((job.kind, job.reason, job.effort), ("direct", self.STAMP, None))
+
+    def test_set_with_only_stamps_uses_it_in_the_ledger_row(self):
+        root = Path(self.tmp.name)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "director.md").write_text("---\nmodel: opus\n---\nDirect.\n")
+        d, job = self.pick("medium")
+        self.assertEqual((job.reason, job.effort), (self.STAMP, "medium"))
+        d.prepare_worktree = lambda j, provider=None: (_ for _ in ()).throw(RuntimeError("stop"))
+        orig = dispatch.git
+        dispatch.git = lambda args, cwd: ""
+        try:
+            with self.assertRaises(RuntimeError):
+                d.run_job(job, "claude", "opus")
+        finally:
+            dispatch.git = orig
+        row = self.ledger.db.execute("SELECT effort FROM runs WHERE role='director'").fetchone()
+        self.assertEqual(row["effort"], "medium")
+
+    def test_normal_effort_without_the_override(self):
+        root = Path(self.tmp.name)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        (root / ".claude" / "agents" / "director.md").write_text("---\nmodel: opus\n---\nDirect.\n")
+        d, job = self.pick(None)
+        d.prepare_worktree = lambda j, provider=None: (_ for _ in ()).throw(RuntimeError("stop"))
+        orig = dispatch.git
+        dispatch.git = lambda args, cwd: ""
+        try:
+            with self.assertRaises(RuntimeError):
+                d.run_job(job, "claude", "opus")
+        finally:
+            dispatch.git = orig
+        self.assertEqual(self.ledger.db.execute("SELECT effort FROM runs WHERE role='director'").fetchone()["effort"], "high")
+
+    def test_an_escalation_alongside_a_stamp_keeps_normal_effort(self):
+        _, job = self.pick("medium", [issue(9, ["needs:director"], milestone=None)])
+        self.assertIn("#9 escalated to the director", job.reason)
+        self.assertIsNone(job.effort)
+
+    def test_an_empty_ready_queue_alongside_a_stamp_keeps_normal_effort(self):
+        _, job = self.pick("medium", [issue(2, ["status:blocked", "role:builder"], body="Depends on #99")])
+        self.assertIn("nothing is ready", job.reason)
+        self.assertIsNone(job.effort)
+
+
 class BouncedPrOrder(unittest.TestCase):
     @staticmethod
     def order(*specs):
