@@ -58,6 +58,28 @@ class DirectorDigest(unittest.TestCase):
         self.assertIn(SHARE, text)
         self.assertNotIn("left out", text)
 
+    def test_stamp_only_skips_the_digest_without_a_log_line(self):
+        self.register()
+        d = self.dispatcher(4000)
+        d.stamp_only = True
+        with mock.patch.object(handshake, "build_digest", side_effect=AssertionError("not called")):
+            self.assertEqual(self.prompt(d), self.plain(d))
+        self.assertEqual(self.logged, [])
+        d.stamp_only = False
+        with mock.patch.object(handshake, "build_digest", return_value=SHARE):
+            self.assertIn(SHARE, self.prompt(d))
+
+    def test_the_real_digest_reaches_the_prompt(self):
+        self.register()
+        d = self.dispatcher(4000)
+        home = Path(self.tmp.name) / "home"
+        with mock.patch.object(registry, "default_path", return_value=Path(self.tmp.name) / registry.FILENAME),                 mock.patch.dict("os.environ", {"HOME": str(home), "USERPROFILE": str(home)}):
+            text = self.prompt(d)
+        self.assertEqual(self.logged, [])
+        self.assertIn("## Project digest (built in code, no model call)", text)
+        self.assertIn("alpha", text.split("## Project digest", 1)[1])
+        self.assertIn("30%", text)
+
     def test_a_long_digest_is_cut_with_a_closing_line(self):
         self.register()
         d = self.dispatcher(100)
