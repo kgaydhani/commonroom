@@ -56,7 +56,7 @@ DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 WAYS_DIR = Path(__file__).resolve().parent / "ways"
 PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
-           "continue-board", "continue-branch", "continue-review", "deadline", "default-test", "director", "headless",
+           "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
            "review", "review-no-ci", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
            "why-milestone", "why-mission")
 # The text the room posts as issue comments, in ways/comments (commonroom#223).
@@ -1214,6 +1214,7 @@ def check_progress(ledger: Ledger, project: str | None, now: float, spend_limit:
 
 # The dispatcher ----------------------------------------------------------------------------------
 RESUME_WINDOW = POLICY["resume_window_seconds"]
+REWORK_RESUME = POLICY["rework_resume_seconds"]
 # Name in policy.toml -> the module and constant holding the room's value. `Dispatcher.policy` reads the constant
 # when asked, so a test that sets one (as tests/test_timeout.py sets workers.RUN_TIMEOUT) is still seen.
 POLICY_CONSTANTS = {"review_rounds": "REVIEW_ROUNDS", "incomplete_rounds": "INCOMPLETE_ROUNDS", "ci_bounces": "CI_BOUNCES",
@@ -1221,7 +1222,7 @@ POLICY_CONSTANTS = {"review_rounds": "REVIEW_ROUNDS", "incomplete_rounds": "INCO
                     "scout_interleave_seconds": "SCOUT_INTERLEAVE", "director_cooldown_seconds": "DIRECTOR_COOLDOWN",
                     "owner_cooldown_seconds": "OWNER_COOLDOWN", "stale_claim_minutes": "STALE_CLAIM_MINUTES",
                     "room_error_backoff_seconds": "ROOM_ERROR_BACKOFF", "room_error_escalate": "ROOM_ERROR_ESCALATE",
-                    "resume_window_seconds": "RESUME_WINDOW", "progress_min_work_seconds": "PROGRESS_MIN_WORK",
+                    "resume_window_seconds": "RESUME_WINDOW", "rework_resume_seconds": "REWORK_RESUME", "progress_min_work_seconds": "PROGRESS_MIN_WORK",
                     "notify_max": "NOTIFY_MAX", "run_timeout_seconds": "RUN_TIMEOUT"}
 
 
@@ -3094,6 +3095,10 @@ class Dispatcher:
         runs = (self.ledger.task_runs(self.project, task, 3, exclude=run_id) if task
                 else self.ledger.role_runs(self.project, job.role, 3, exclude=run_id))
         last = runs[0] if runs else None
+        if job.kind == "build" and job.issue and "needs:changes" in labels(job.issue):
+            rework = self.rework_resume(job, task, worktree, run_id)
+            if rework:
+                return rework
         if (not last or last["role"] != job.role or last["provider"] != "claude" or last["status"] not in ("stopped", "limited")
                 or not last["session_id"] or not last["ended_at"] or time.time() - last["ended_at"] > self.policy("resume_window_seconds")
                 or str(last.get("worktree") or "").lower() != str(Path(os.path.abspath(worktree))).lower()
@@ -3103,8 +3108,40 @@ class Dispatcher:
             return None
         return last
 
+    def rework_resume(self, job: Job, task: str, worktree: Path, run_id: str) -> dict | None:
+        """The builder's own finished run to resume when a review sent its PR back, while the prompt cache is warm
+        (commonroom#208), or None, with the failing condition in the log."""
+        def no(why):
+            self.log(f"   rework starts fresh: {why}")
+        window = self.policy("rework_resume_seconds")
+        if window <= 0:
+            return no("rework_resume_seconds is 0")
+        builds = [r for r in self.ledger.task_runs(self.project, task, 12, exclude=run_id) if r["role"] == job.role]
+        last = builds[0] if builds else None
+        if not last or last["status"] != "done":
+            return no("the task's newest builder run did not end done")
+        if last["provider"] != "claude":
+            return no("the last build was not Claude")
+        if not last["session_id"] or not last["ended_at"]:
+            return no("the last build has no session")
+        if time.time() - last["ended_at"] >= window:
+            return no(f"the last build ended more than {window}s ago")
+        if str(last.get("worktree") or "").lower() != str(Path(os.path.abspath(worktree))).lower():
+            return no("the worktree differs from the last build's")
+        if not session_file(worktree, last["session_id"], self.claude_projects).exists():
+            return no("the session file is gone")
+        if all(str(r.get("note") or "").startswith("resumed session") for r in builds[:2]) and len(builds) >= 2:
+            return no("two resumes in a row already")
+        return last
+
     def continuation_prompt(self, job: Job, branch: str | None, earlier: dict) -> str:
         """What a resumed session is told: why it stopped, where its work is, and to look again before carrying on."""
+        if earlier["status"] == "done":
+            pr = self.board.pr_for_branch(branch) if branch else None
+            if not pr:
+                return self.ways["continue-board"]
+            return fill_way(self.ways["continue-rework"], pr=pr["number"], sha=self.remote_head(branch) or "unknown",
+                            repo=self.cfg["project"]["repo"])
         why = earlier.get("note") or earlier["status"]
         if job.kind == "review":
             sha = (job.pr or {}).get("headRefOid") or self.remote_head(branch) or "unknown"
