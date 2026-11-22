@@ -15,6 +15,18 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PROJECT_DIR}/room.py", "hook", "prompt-submit"],
+            "timeout": 5
+          }
+        ]
+      }
     ]
   },
   "permissions": {

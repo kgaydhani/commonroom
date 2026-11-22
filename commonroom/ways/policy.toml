@@ -70,6 +70,14 @@ pie_own_active_minutes = { value = 20, min = 1 }
 # Room-wide only: every project keeps back the same.
 owner_floor_weekly = { value = 5, min = 1, max = 50 }
 
+# The desk ------------------------------------------------------------------------------------------------------------
+
+# Minutes (the prompt cache's hour): a prompt to an owner's session this long after its last answer finds the cache
+# expired, so continuing rewrites the whole context (commonroom#367).
+cold_return_minutes = { value = 60, min = 1 }
+# Tokens: below this much context a cold return is cheap, and the hook says nothing (commonroom#367).
+cold_return_context = { value = 150000, min = 1 }
+
 # The room's own text (axiom A9) -------------------------------------------------------------------------------------
 # Tokens count as characters divided by four, rounded up; tests/test_prompt_budget.py holds the text to them. Both are
 # room-wide only: they limit the room's own text, which is the same for every project.
@@ -77,4 +85,4 @@ owner_floor_weekly = { value = 5, min = 1, max = 50 }
 # The most tokens one rendered prompt may have: the room hands over the task and leaves the method to the model.
 prompt_max_tokens = 700
 # The most tokens commonroom/ways/prompts/, handshake/ and comments/ may have together, so new text replaces old instead of piling up.
-templates_max_tokens = 3180   # 3180: handoff.md (#363); 3122: review-room-tested.md (#335); 2640 + the 384 of comments/ (commonroom#223); 2640: the public-repo rule (#316); 3080: continue-rework.md (#208)
+templates_max_tokens = 3240   # 3240: cold-return.md (#367); 3180: handoff.md (#363); 3122: review-room-tested.md (#335); 2640 + the 384 of comments/ (commonroom#223); 2640: the public-repo rule (#316); 3080: continue-rework.md (#208)

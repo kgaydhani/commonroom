@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -277,8 +278,11 @@ class Beside(Hook):
         settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(json.loads((ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
                          ["name"], "commonroom")
-        self.assertEqual(list(plugin["hooks"]), ["SessionStart"])
-        self.assertEqual(list(settings["hooks"]), ["SessionStart"])
+        self.assertEqual(list(plugin["hooks"]), ["SessionStart", "UserPromptSubmit"])
+        self.assertEqual(list(settings["hooks"]), ["SessionStart", "UserPromptSubmit"])
+        [prompt] = plugin["hooks"]["UserPromptSubmit"]
+        self.assertEqual(prompt["hooks"], [{"type": "command", "command": "python", "timeout": 5,
+                                            "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "prompt-submit"]}])
         [group] = plugin["hooks"]["SessionStart"]
         self.assertEqual(list(group), ["hooks"])   # no matcher: every start, resume, clear and compaction
         [command] = group["hooks"]
@@ -286,6 +290,93 @@ class Beside(Hook):
                                    "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"]})
         mine = json.loads(json.dumps(settings["hooks"]).replace("${CLAUDE_PROJECT_DIR}", "${CLAUDE_PLUGIN_ROOT}/.."))
         self.assertEqual(mine, plugin["hooks"])
+
+
+class ColdReturn(Hook):
+    """commonroom#367: a UserPromptSubmit hook that, at a cold return to a large context, says what continuing costs."""
+
+    NOW = 1_800_000_000.0
+
+    def transcript(self, minutes_ago, context, name="t.jsonl"):
+        """A fixture transcript whose last assistant turn is `minutes_ago` old with `context` tokens in context."""
+        def line(ago, ctx):
+            at = datetime.fromtimestamp(self.NOW - ago * 60, timezone.utc).isoformat()
+            return json.dumps({"type": "assistant", "timestamp": at, "sessionId": "s1", "cwd": str(self.alpha),
+                               "message": {"id": f"m{ago}", "model": "m", "content": [{"type": "text", "text": "SECRET"}],
+                                           "usage": {"input_tokens": 1, "output_tokens": 5,
+                                                     "cache_creation_input_tokens": 0, "cache_read_input_tokens": ctx}}})
+        path = self.tmp / name
+        path.write_text(json.dumps({"type": "user"}) + "\n" + line(minutes_ago + 5, 10) + "\n"
+                        + line(minutes_ago, context) + "\n", encoding="utf-8")
+        return path
+
+    def prompt(self, transcript, cwd=None, event="UserPromptSubmit"):
+        data = {"session_id": "s1", "cwd": str(cwd or self.alpha), "hook_event_name": event,
+                "transcript_path": str(transcript), "prompt": "hi"}
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err),                 mock.patch("sys.stdin", io.StringIO(json.dumps(data))),                 mock.patch.object(hook.time, "time", return_value=self.NOW):
+            code = cli.main(["hook", "prompt-submit"])
+        self.assertEqual((code, err.getvalue()), (0, ""))
+        return out.getvalue()
+
+    def brief(self):
+        p = registry.load().projects["alpha"]
+        folder = handshake.prepare(p) / "handoffs"
+        folder.mkdir(exist_ok=True)
+        (folder / "20260101-000000-000000-s0.md").write_text("---\nfrom_session: s0\n---\nx\n", encoding="utf-8")
+
+    def test_a_cold_return_to_a_large_context_adds_a_paragraph_naming_the_brief(self):
+        self.register()
+        self.brief()
+        out = json.loads(self.prompt(self.transcript(90, 300000)))
+        self.assertEqual(list(out), ["hookSpecificOutput"])   # context only: never a decision or a block (A0)
+        self.assertEqual(sorted(out["hookSpecificOutput"]), ["additionalContext", "hookEventName"])
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        text = out["hookSpecificOutput"]["additionalContext"]
+        for part in ("90 minutes", "300k", "handoffs/20260101-000000-000000-s0.md", "fresh session"):
+            self.assertIn(part, text)
+        self.assertNotIn("SECRET", text)
+
+    def test_with_no_brief_it_names_the_handoff_command(self):
+        self.register()
+        text = json.loads(self.prompt(self.transcript(90, 300000)))["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("room handoff alpha", text)
+
+    def test_a_warm_return_or_a_small_context_adds_nothing(self):
+        self.register()
+        self.assertEqual(self.prompt(self.transcript(10, 300000)), "")
+        self.assertEqual(self.prompt(self.transcript(90, 40000)), "")
+
+    def test_a_missing_or_malformed_transcript_adds_nothing(self):
+        self.register()
+        bad = self.tmp / "bad.jsonl"
+        bad.write_text("not json\n{\n", encoding="utf-8")
+        for path in (self.tmp / "none.jsonl", bad):
+            self.assertEqual(self.prompt(path), "")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch("sys.stdin", io.StringIO('{"hook_event_name": "UserPromptSubmit"}')):
+            self.assertEqual(cli.main(["hook", "prompt-submit"]), 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_a_worker_a_foreign_folder_or_another_event_adds_nothing(self):
+        self.register()
+        path = self.transcript(90, 300000)
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        self.assertEqual(self.prompt(path, event="SessionStart"), "")
+        with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": "1"}):
+            self.assertEqual(self.prompt(path), "")
+        self.assertNotEqual(self.prompt(path), "")
+
+    def test_only_the_tail_is_read(self):
+        self.register()
+        path = self.transcript(90, 300000)
+        path.write_bytes(b"x" * 2000 + b"\n" + path.read_bytes())
+        self.assertEqual(hook.last_turn(path, 400)[1], 300001)
+        self.assertIsNone(hook.last_turn(path, 5))
+
+    def test_the_text_has_no_method_words(self):
+        template = (ROOT / "commonroom/ways/handshake/cold-return.md").read_text(encoding="utf-8")
+        self.assertIsNone(HandshakeOnly.METHOD.search(template), template)
 
 
 class HandshakeOnly(Hook):
