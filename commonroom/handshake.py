@@ -671,6 +671,9 @@ def _git(cwd, *argv) -> str | None:
     return done.stdout.rstrip() if done.returncode == 0 else None
 
 
+SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
+
+
 def write_handoff(reg: registry.Registry, p: registry.Project, ledger: Ledger, text: str, session: str, reason: str,
                   context: int | None = None, cwd=None, now: float | None = None) -> Path:
     """One new file `handoffs/<stamp>-<session>.md` in the project's room folder, never an existing one (#363). The part
@@ -745,7 +748,7 @@ def take_handoff(p: registry.Project, ledger: Ledger, name: str, session: str, n
     """Record that `session` took the brief `name`: the mark `took:<file>` and the lineage from the brief's front matter."""
     session = _one_line(session or "")
     if not session:
-        raise HandshakeError("refused: taking a handoff needs --session <id>.")
+        raise HandshakeError(f"refused: taking a handoff needs --session <id> (or {SESSION_ENV} in the environment).")
     path = Path(name)
     if not path.is_file():
         path = folder_of(p) / "handoffs" / path.name
@@ -801,12 +804,14 @@ def _handoff_sub(args) -> int:
 @_run
 def cmd_handoff(args) -> int:
     """`room handoff [project] --session <id> --reason <text> [--context <tokens>] [--file PATH|-]` (#363)."""
+    if not _one_line(args.session or ""):
+        args.session = os.environ.get(SESSION_ENV)   # Claude Code sets it in every session (#377)
     if args.name in ("take", "list"):
         return _handoff_sub(args)
     if args.rest:
         raise HandshakeError(f"refused: unexpected {' '.join(args.rest)}. Name one project.")
     if not _one_line(args.session or "") or not _one_line(args.reason or ""):
-        raise HandshakeError("refused: a handoff needs --session <id> and --reason <text>.")
+        raise HandshakeError(f"refused: a handoff needs --session <id> (or {SESSION_ENV} in the environment) and --reason <text>.")
     reg, p = _start(args)
     if args.file in (None, "-"):
         text = sys.stdin.read()
