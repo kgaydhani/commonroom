@@ -77,6 +77,8 @@ owner_floor_weekly = { value = 5, min = 1, max = 50 }
 cold_return_minutes = { value = 60, min = 1 }
 # Tokens: below this much context a cold return is cheap, and the hook says nothing (commonroom#367).
 cold_return_context = { value = 150000, min = 1 }
+# Hours: a handoff brief older than this is no longer offered to a new session; `room handoff list` still shows it (commonroom#384).
+handoff_offer_hours = { value = 72, min = 1 }
 
 # The room's own text (axiom A9) -------------------------------------------------------------------------------------
 # Tokens count as characters divided by four, rounded up; tests/test_prompt_budget.py holds the text to them. Both are
