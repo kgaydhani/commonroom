@@ -8,6 +8,7 @@
             "type": "command",
             "command": "python",
             "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"],
+            "commandWindows": "if exist \"%PLUGIN_ROOT%\\..\\room.py\" python \"%PLUGIN_ROOT%\\..\\room.py\" hook session-start",
             "timeout": 5
           }
         ]
@@ -20,6 +21,7 @@
             "type": "command",
             "command": "python",
             "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "prompt-submit"],
+            "commandWindows": "if exist \"%PLUGIN_ROOT%\\..\\room.py\" python \"%PLUGIN_ROOT%\\..\\room.py\" hook prompt-submit",
             "timeout": 5
           }
         ]
