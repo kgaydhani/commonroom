@@ -15,7 +15,7 @@ from commonroom import beat as beat_mod, board, config as config_mod, gate, guar
 from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, GitHubBoard, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
-from commonroom import handshake, hook, trials
+from commonroom import handshake, hook, jobtree, trials
 from commonroom.ledger import Ledger
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
@@ -653,7 +653,7 @@ def _run_limited(test: str, deadline: float) -> int | None:
     if time.monotonic() >= deadline:
         return None   # waiting for the lock may have used the whole allowance
     posix = os.name != "nt"
-    process = subprocess.Popen(test, shell=True, cwd=os.getcwd(), start_new_session=posix)
+    process, job = jobtree.start(test, os.getcwd())
     try:
         return process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
@@ -663,6 +663,7 @@ def _run_limited(test: str, deadline: float) -> int | None:
             except OSError:
                 pass
         else:
+            jobtree.kill(job)   # the whole tree, even where taskkill is refused
             subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)], capture_output=True)
         process.kill()
         process.wait()
