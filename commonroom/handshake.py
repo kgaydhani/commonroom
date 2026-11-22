@@ -33,6 +33,7 @@ WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
+DIRECTION = "direction"   # ledger mark key: when the owner last changed a project's direction (`note --direction`)
 READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
 ADD = "`room projects add <name> <folder> --share <percent>`"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": WEEK}
@@ -133,12 +134,13 @@ def _one_line(value: str) -> str:
     return " ".join(str(value).split())
 
 
-def write_note(where: Path, text: str, sender: str, to: str | None = None, now: float | None = None) -> Path:
+def write_note(where: Path, text: str, sender: str, to: str | None = None, now: float | None = None,
+               kind: str | None = None) -> Path:
     """One new file in `inbox/`, never an existing one: a name taken (two notes in one instant) moves on a microsecond,
     so names still sort by time."""
     stamp = datetime.fromtimestamp(time.time() if now is None else now)
     head = ["---", f"from: {_one_line(sender)}", *([f"to: {_one_line(to)}"] if to else []),
-            f"at: {stamp:%Y-%m-%dT%H:%M:%S}", "---", ""]
+            f"at: {stamp:%Y-%m-%dT%H:%M:%S}", *([f"kind: {_one_line(kind)}"] if kind else []), "---", ""]
     body = "\n".join(head) + "\n" + text.replace("\r\n", "\n").strip("\n") + "\n"
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", sender).strip("-")[:40] or "note"
     inbox = where / "inbox"
@@ -162,7 +164,7 @@ def read_notes(where: Path) -> list[dict]:
     for path in inbox.iterdir():
         if not path.is_file() or path.name.startswith("."):
             continue
-        note = {"name": path.name, "at": path.stat().st_mtime, "from": None, "to": None, "text": None, "dated": False}
+        note = {"name": path.name, "at": path.stat().st_mtime, "from": None, "to": None, "text": None, "dated": False, "kind": None}
         notes.append(note)
         try:
             text = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
@@ -174,6 +176,7 @@ def read_notes(where: Path) -> list[dict]:
             fields = dict((k.strip().lower(), v.strip()) for k, sep, v in
                           (line.partition(":") for line in lines[1:ends[1]]) if sep)
             note["from"], note["to"] = fields.get("from") or None, fields.get("to") or None
+            note["kind"] = fields.get("kind") or None
             try:
                 note["at"], note["dated"] = datetime.fromisoformat(fields.get("at", "")).timestamp(), True
             except ValueError:
@@ -269,6 +272,16 @@ def _attached(ledger: Ledger, p: registry.Project) -> str:
     return "\n".join(f"- {who}, last {_when(at)}" for who, at in marks) or "Nobody has run `room attach` here yet."
 
 
+def _direction(ledger: Ledger, p: registry.Project, where: Path) -> str:
+    """The digest's `Latest direction` line (with its blank line after): empty when no direction was ever recorded."""
+    at = ledger.marked(p.name, DIRECTION)
+    if at is None:
+        return ""
+    texts = [n for n in read_notes(where) if n["kind"] == "direction" and n["text"] and int(n["at"]) <= int(at) + 1]
+    text = _one_line(texts[0]["text"])[:200] if texts else "(the note file is gone)"
+    return f"Latest direction: {_when(at)}: {text}\n\n"
+
+
 def _notes(where: Path) -> str:
     notes = read_notes(where)
     if not notes:
@@ -352,7 +365,7 @@ def _measure(ledger: Ledger, p: registry.Project) -> str | None:
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
-    text = fill_way(DIGEST, project=p.name, reply=reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
+    text = fill_way(DIGEST, project=p.name, reply=_direction(ledger, p, where) + reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     notes=_notes(where), work=_work(ledger, p, now)) + "\n"
     board = _board(ledger, p)
@@ -465,7 +478,14 @@ def cmd_note(args) -> int:
         except HandshakeError:
             here = None
         sender = here.name if here is not None and here.name != p.name else _user()
-    path = write_note(prepare(p), text, sender, args.to)
+    now = time.time()
+    path = write_note(prepare(p), text, sender, args.to, now, "direction" if args.direction else None)
+    if args.direction:
+        ledger = Ledger()
+        try:
+            ledger.mark(p.name, DIRECTION, now)
+        finally:
+            ledger.close()
     refresh(reg, p)
     print(f"note for {p.name} from {_one_line(sender)}: {path}")
     return 0

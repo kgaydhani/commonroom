@@ -339,6 +339,47 @@ class Reply(Room):
         self.assertIn("please write the charter", digest.read_text(encoding="utf-8"))
 
 
+class Direction(Room):
+    def test_direction_note_reads_back_and_marks_the_ledger(self):
+        self.register()
+        before = datetime.now().timestamp()
+        self.assertEqual(self.room("note", "alpha", "Stop X, do Y", "--direction")[0], 0)
+        [note] = handshake.read_notes(self.folder("alpha"))
+        self.assertEqual((note["kind"], note["text"]), ("direction", "Stop X, do Y"))
+        ledger = Ledger()
+        self.addCleanup(ledger.close)
+        at = ledger.marked("alpha", "direction")
+        self.assertGreaterEqual(at, before)
+        self.assertEqual(int(at), int(note["at"]))
+
+    def test_a_plain_note_records_no_direction(self):
+        self.register()
+        self.room("note", "alpha", "just a note")
+        [note] = handshake.read_notes(self.folder("alpha"))
+        self.assertIsNone(note["kind"])
+        ledger = Ledger()
+        self.addCleanup(ledger.close)
+        self.assertIsNone(ledger.marked("alpha", "direction"))
+
+    def test_direction_reads_standard_input(self):
+        self.register()
+        self.room("note", "-", "--project", "alpha", "--direction", stdin="from stdin\n")
+        self.assertEqual(handshake.read_notes(self.folder("alpha"))[0]["kind"], "direction")
+
+    def test_digest_shows_the_latest_direction_only_when_there_is_one(self):
+        self.register()
+        digest = self.folder("alpha") / "digest.md"
+        self.room("attach", "alpha")
+        self.assertNotIn("Latest direction", digest.read_text(encoding="utf-8"))
+        self.room("note", "alpha", "old way", "--direction")
+        self.room("note", "alpha", "Stop X,\n do Y " + "z" * 300, "--direction")
+        text = digest.read_text(encoding="utf-8")
+        [line] = [l for l in text.split("\n") if l.startswith("Latest direction: ")]
+        self.assertIn("Stop X, do Y zzz", line)
+        self.assertNotIn("old way", line)
+        self.assertEqual(len(line.split(": ", 2)[2]), 200)
+
+
 class SharedKey(Room):
     LIVE = registry.HEADER + ('\n[projects.alpha]\npath = "D:\\\\Dev\\\\alpha"\nshare = 55\nwork = "open"\nwhen = "paced"\n'
                               'strict = false\n')
