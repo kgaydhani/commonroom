@@ -2363,8 +2363,10 @@ class WithLedger(unittest.TestCase):
         self.assertIn("#1 had status:ready while review: removed status:ready", actions)
         self.assertIn("#2 had status:ready while in-progress: removed status:ready", actions)
 
-    def _rounds_case(self, middle_parents, compare_raises=False):
-        """commonroom#205: CHANGES on head A, then head B (made of `middle_parents`-parent commits), then CHANGES on B."""
+    def _rounds_case(self, middle_parents, compare_raises=False, main_commit=False):
+        """commonroom#205: CHANGES on head A, then head B (made of `middle_parents`-parent commits), then CHANGES on B.
+        With `main_commit`, GitHub's compare also lists the one-parent commit main brought in, as it really does
+        (commonroom#385)."""
         def changes(t):
             return {"createdAt": t, "body": "[agent:reviewer] REVIEW: CHANGES - same findings"}
         work = issue(95, ["status:review"])
@@ -2377,7 +2379,8 @@ class WithLedger(unittest.TestCase):
         def compare_since(base, head):
             if compare_raises:
                 raise RuntimeError("compare is incomplete")
-            return {"commits": [{"sha": "b" * 40, "parents": ["p"] * middle_parents}], "files": []}
+            from_main = [{"sha": "m" * 40, "parents": ["z" * 40]}] if main_commit else []
+            return {"commits": from_main + [{"sha": "b" * 40, "parents": ["a" * 40, "m" * 40][:middle_parents]}], "files": []}
         fake.compare_since = compare_since
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
         d.housekeeping()
@@ -2387,6 +2390,16 @@ class WithLedger(unittest.TestCase):
         rounds, calls = self._rounds_case(2)
         self.assertEqual(rounds, 1)
         self.assertEqual(calls, [(95, ("status:ready", "needs:changes"), ("status:review", "status:in-progress"))])
+
+    def test_a_merge_of_main_is_one_round_even_when_main_gained_a_commit(self):
+        rounds, calls = self._rounds_case(2, main_commit=True)
+        self.assertEqual(rounds, 1)
+        self.assertNotIn(("status:blocked", "needs:director"), [c[1] for c in calls])
+
+    def test_a_real_commit_on_the_first_parent_chain_still_counts_beside_main_commits(self):
+        rounds, calls = self._rounds_case(1, main_commit=True)
+        self.assertEqual(rounds, 2)
+        self.assertEqual(calls[0][1], ("status:blocked", "needs:director"))
 
     def test_a_head_with_a_real_commit_between_two_changes_is_two_rounds(self):
         rounds, calls = self._rounds_case(1)

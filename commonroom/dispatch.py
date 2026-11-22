@@ -2266,11 +2266,10 @@ class Dispatcher:
         return self.needs_director(detail) and not director_approved(detail) and not self.carried_stamp(detail)
 
     def merge_only_between(self, base: str, head: str) -> bool:
-        """True when every commit after `base` up to `head` is a merge (read from parents, not messages). Raises when
-        GitHub can't say."""
-        found = self.board.compare_since(base, head)
-        commits = found["commits"]
-        return bool(commits) and all(len(c["parents"]) > 1 for c in commits)
+        """True when every commit on the first-parent chain from `head` back to `base` is a merge (read from parents,
+        not messages). The commits main brought in sit behind second parents and don't count (commonroom#385). Raises
+        when GitHub can't say."""
+        return merges_back_to(self.board.compare_since(base, head)["commits"], head.lower(), base.lower())
 
     def carried_stamp(self, detail: dict) -> str:
         """The director's stamp sha A that still counts for the PR head B, or ''. It does when every commit in A..B is
