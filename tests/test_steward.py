@@ -83,5 +83,39 @@ class Invariants(unittest.TestCase):
         boom.assert_not_called()
 
 
+
+DIR = calendar.timegm((2026, 11, 10, 0, 0, 0))
+
+
+def made(n, created, **kw):
+    d = issue(n, ["status:ready"], **kw)
+    d["createdAt"] = created
+    return d
+
+
+class Unreconciled(unittest.TestCase):
+    OLD, NEW = "2026-11-01T00:00:00Z", "2026-11-15T00:00:00Z"
+
+    def run_it(self, issues, reconciled=None):
+        return slugs(steward.unreconciled(issues, DIR, reconciled or {}, "M"))
+
+    def test_an_old_issue_with_no_mark_is_a_finding(self):
+        self.assertEqual(self.run_it([made(1, self.OLD)]), [("unreconciled", 1)])
+
+    def test_a_mark_after_the_direction_clears_it_and_one_before_does_not(self):
+        self.assertEqual(self.run_it([made(1, self.OLD)], {1: DIR + 5}), [])
+        self.assertEqual(self.run_it([made(1, self.OLD)], {1: DIR - 5}), [("unreconciled", 1)])
+
+    def test_new_closed_and_outside_milestone_issues_are_not_findings(self):
+        board = [made(1, self.NEW), made(2, self.OLD, state="CLOSED"), made(3, self.OLD, milestone="Other")]
+        self.assertEqual(self.run_it(board), [])
+
+    def test_check_is_unchanged_without_a_direction_mark(self):
+        board = [made(1, self.OLD), issue(2, ["bug"])]
+        self.assertEqual(slugs(steward.check(board, [], [], NOW, "M")), [("unplaced", 2)])
+        self.assertEqual(slugs(steward.check(board, [], [], NOW, "M", None, {})), [("unplaced", 2)])
+        self.assertEqual(slugs(steward.check(board, [], [], NOW, "M", DIR, {})), [("unplaced", 2), ("unreconciled", 1)])
+
+
 if __name__ == "__main__":
     unittest.main()
