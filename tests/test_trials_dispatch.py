@@ -122,6 +122,30 @@ class TrialRuns(test_resume.Resume):
         self.assertEqual(d.trial_refs, [])
         self.assertIs(d.ways, dispatch.WAYS)
 
+    def test_a_policy_number_read_outside_a_job_is_not_a_trial_number(self):
+        self.logs = []
+        body = POLICY.replace("rework_resume_seconds = 7", "review_rounds = 3")
+        text, outs = self.go(self.number_in("variant", body))
+        self.assertEqual(outs, [])
+        self.assertTrue(any("trials not applied" in m and "review_rounds" in m for m in self.logs), self.logs)
+
+
+class TrialOutputIsNotProduce(unittest.TestCase):
+    def test_failed_runs_under_a_trial_still_trip_no_output(self):
+        from commonroom import gate
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Ledger(Path(tmp) / "room.sqlite3", synchronous="OFF")
+            try:
+                for i in range(3):
+                    run = ledger.start_run("game", f"#{i}", "builder", "codex", now=100 + i)
+                    ledger.finish_run(run, "failed", outputs=[{"kind": "trial", "ref": "t1=variant"}], now=101 + i)
+                runs = ledger.recent_runs("game", limit=3, autonomous=True, finished=True)
+                verdict, trip = gate.breaker_verdict([], runs, 3)
+                self.assertFalse(verdict.allowed)
+                self.assertEqual(trip["kind"], "no_output")
+            finally:
+                ledger.close()
+
 
 if __name__ == "__main__":
     unittest.main()

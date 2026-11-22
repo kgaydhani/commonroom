@@ -446,7 +446,7 @@ def digest(cfg: dict, hours: float) -> dict:
         "summary": {"runs": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES]),
                     "merges": len([r for r in runs if r["role"] == "merge"]),
                     "failed": len([r for r in runs if r["status"] in ("failed", "blocked")]),
-                    "no_output": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES and not r["outputs"]
+                    "no_output": len([r for r in runs if r["role"] not in metrics.ROOM_ROLES and not metrics.produced(r)
                                       and r["status"] not in ("running", "room-error", "limited", "stopped")]),
                     "limited": len([r for r in runs if r["status"] == "limited"]),
                     # Cut short by the room (pause, reserve, breaker, dead dispatcher), not failed by the agent.

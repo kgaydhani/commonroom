@@ -27,6 +27,11 @@ def model_runs(rows: list[dict], since: float, until: float) -> list[dict]:
             and since <= r["started_at"] <= until]
 
 
+def produced(row: dict) -> bool:
+    """Did the run leave any output? A `trial` output only names the run's arm (commonroom#352), so it never counts."""
+    return any(o.get("kind") != "trial" for o in row.get("outputs") or [])
+
+
 def pr_of(row: dict) -> int | None:
     for text in [*(o.get("ref") or "" for o in row.get("outputs") or []), row.get("task") or ""]:
         match = PR_REF.search(text)

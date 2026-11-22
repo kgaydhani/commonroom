@@ -55,6 +55,9 @@ DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 # value the code fills in. The files are read once, at import: a running dispatcher keeps the text it started with
 # while the room pulls new files under it, and a missing file fails the import with its name.
 WAYS_DIR = Path(__file__).resolve().parent / "ways"
+# The policy numbers read while a job runs, so the only ones a trial can change: the rest are read in housekeeping and
+# selection, outside the job, where a variant would never apply (commonroom#352).
+TRIAL_POLICY = ("resume_window_seconds", "rework_resume_seconds", "run_timeout_seconds")
 TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at import (commonroom#352)
 PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
@@ -1312,13 +1315,13 @@ class Dispatcher:
         if number is None:
             return
         try:
-            declared = trials_mod.load(TRIALS_FILE, PROMPTS, policy_mod.BOUNDS)
+            declared = trials_mod.load(TRIALS_FILE, PROMPTS, {n: policy_mod.BOUNDS[n] for n in TRIAL_POLICY})
             ways, policy, refs = dict(self.base_ways), {}, []
             for trial in trials_mod.active(declared, datetime.date.today()):
                 arm = trials_mod.arm(trial, f"{self.project}#{number}")
                 applied = False
                 for name, rel in trial.prompts.items():
-                    if self.base_ways[name] != WAYS[name]:
+                    if self.base_ways[name] is not WAYS[name]:
                         continue   # the project replaced this template
                     if arm == "variant":
                         ways[name] = read_way(TRIALS_FILE.parent / str(rel))

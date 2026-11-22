@@ -105,7 +105,7 @@ def state(cfg: dict) -> dict:
         model_runs = [r for r in day if r["role"] not in metrics.ROOM_ROLES and r["status"] != "room-error"]
         merges = [r for r in day if r["role"] == "merge"]
         proof = {"merged_24h": len(merges), "runs_24h": len(model_runs),
-                 "productive_24h": sum(1 for r in model_runs if r["outputs"]),
+                 "productive_24h": sum(1 for r in model_runs if metrics.produced(r)),
                  "failed_24h": sum(1 for r in model_runs if r["status"] in ("failed", "blocked")),
                  "last_merge_at": max((r["started_at"] for r in merges), default=None),
                  "weekly_spent_24h": round(sum(max(0.0, (r.get("weekly_end") or 0) - (r.get("weekly_start") or 0))
