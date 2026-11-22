@@ -36,6 +36,14 @@ class UsageParsing(unittest.TestCase):
         self.assertAlmostEqual(obs["five_hour"]["used_pct"], 12.0)
         self.assertEqual(usage.from_claude_event({"type": "assistant"}), [])
 
+    def test_claude_api_billed_only_for_an_init_event_naming_an_api_key(self):
+        init = {"type": "system", "subtype": "init"}
+        self.assertFalse(usage.claude_api_billed({**init, "apiKeySource": "none"}))
+        self.assertFalse(usage.claude_api_billed(init))
+        self.assertFalse(usage.claude_api_billed({"type": "assistant", "apiKeySource": "ANTHROPIC_API_KEY"}))
+        self.assertFalse(usage.claude_api_billed({"type": "system", "subtype": "status", "apiKeySource": "x"}))
+        self.assertTrue(usage.claude_api_billed({**init, "apiKeySource": "ANTHROPIC_API_KEY"}))
+
     def test_codex_buckets(self):
         data = {"rateLimits": {"primary": {"usedPercent": 40, "resetsAt": 1791210000, "windowDurationMins": 300},
                                "secondary": {"usedPercent": 70, "resetsAt": 1791500000, "windowDurationMins": 10080}}}

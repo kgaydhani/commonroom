@@ -75,6 +75,12 @@ def claude_overage(event: dict) -> bool:
     return bool(info.get("isUsingOverage"))
 
 
+def claude_api_billed(event: dict) -> bool:
+    """True when Claude's init event says the run uses an API key rather than the subscription login (commonroom#391)."""
+    return (event.get("type") == "system" and event.get("subtype") == "init"
+            and "apiKeySource" in event and event["apiKeySource"] != "none")
+
+
 def _ui_reset(text: str, now: float) -> float:
     """Claude's /usage screen shows minute precision, e.g. 'Resets 2pm (Europe/London)'."""
     match = re.fullmatch(r"Resets (.+?) \(([^)]+)\)", text.strip())

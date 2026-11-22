@@ -260,6 +260,11 @@ def _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeo
                     result.errors.append("Claude reported extra-usage billing; worker stopped")
                     tree.end()
                     break
+                if usage.claude_api_billed(event):
+                    result.errors.append(f"Claude worker started on an API key (apiKeySource={event['apiKeySource']}), "
+                                         "not the subscription login; worker stopped")
+                    tree.end()
+                    break
                 if event.get("type") == "assistant":
                     for block in (event.get("message") or {}).get("content") or []:
                         if block.get("type") == "text":
