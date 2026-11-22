@@ -19,6 +19,7 @@ from commonroom.lock import claim_lock, release_lock
 RESULT = re.compile(r"\A\s*(?:\[room\]\s*)+TESTS: (PASS|FAIL|INCOMPLETE) ([0-9a-f]{7,40}) (.*)$", re.M)
 CARRIES = re.compile(r"^CARRIES: APPROVE (\S+) TESTED ([0-9a-f]{7,40})\s*$", re.M)
 HEX = re.compile(r"\b[0-9a-f]{7,40}\b", re.I)
+PRE_REVIEW = "The room ran the tests on this head before any reviewer (commonroom#210)."
 DEFAULT_MAX_MINUTES = 10   # a hung suite gives the housekeeping lock back after this; `[checks] max_minutes` overrides
 
 
@@ -84,6 +85,32 @@ def summary(output: str) -> str:
     return " ".join(lines[-2:])[:200] or "(no output)"
 
 
+FAILING = re.compile(r"^(?:FAIL|ERROR): .+$", re.M)
+MAX_FAILING = 10
+
+
+class Line(str):
+    """The result line, with the names of the failing tests (`FAIL:`/`ERROR:` lines of unittest's output, at most 10)
+    in `.failing`. A plain string where a caller or a test double has none."""
+    failing: tuple = ()
+
+
+def failing_tests(output: str) -> tuple:
+    seen = []
+    for found in FAILING.findall(output):
+        if found.strip() not in seen:
+            seen.append(found.strip())
+    return tuple(seen[:MAX_FAILING])
+
+
+def pre_review_comment(result: str, head: str, command: str, line: str) -> str:
+    """The room's comment after it ran the tests on a PR head before any reviewer (commonroom#210): no approval."""
+    first = f"TESTS: {result} {head} {command}: {line}"
+    if result == "FAIL":
+        return f"{first}\n\n{PRE_REVIEW} The tests failed on this head, so no reviewer runs: it goes back to its builder."
+    return f"{first}\n\n{PRE_REVIEW} A reviewer follows; this run doesn't approve the PR."
+
+
 def run_suite(root: Path, head: str, command: str, worktree: Path, lock: Path, max_minutes: float,
               env_for=workers_mod.worker_env) -> tuple[str, str]:
     """Run `command` on commit `head` in a temporary detached worktree, under the per-project suite lock `room.py
@@ -108,8 +135,11 @@ def run_suite(root: Path, head: str, command: str, worktree: Path, lock: Path, m
                 code = process.wait(timeout=max_minutes * 60)
             except subprocess.TimeoutExpired:
                 return "INCOMPLETE", f"still running after {max_minutes:g} min; stopped"
-        line = summary(log.read_text(encoding="utf-8", errors="replace"))
-        return ("PASS" if code == 0 else "FAIL"), (line if code == 0 else f"exit {code}: {line}")
+        output = log.read_text(encoding="utf-8", errors="replace")
+        line = summary(output)
+        found = Line(line if code == 0 else f"exit {code}: {line}")
+        found.failing = failing_tests(output) if code else ()
+        return ("PASS" if code == 0 else "FAIL"), found
     except OSError as exc:
         return "INCOMPLETE", f"{type(exc).__name__}: {str(exc)[:150]}"
     finally:
