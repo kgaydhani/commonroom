@@ -405,9 +405,13 @@ class Ledger:
     # issue), so it isn't done twice (commonroom#151).
     def mark(self, project: str | None, key: str, at: float | None = None):
         with self.db:
-            self.db.execute("INSERT INTO marks (project, key, at) VALUES (?,?,?) "
-                            "ON CONFLICT(project, key) DO UPDATE SET at=excluded.at",
-                            (project or "", key, time.time() if at is None else at))
+            self._put_mark(project, key, at)
+
+    def _put_mark(self, project: str | None, key: str, at: float | None = None):
+        """Write a mark inside the caller's transaction."""
+        self.db.execute("INSERT INTO marks (project, key, at) VALUES (?,?,?) "
+                        "ON CONFLICT(project, key) DO UPDATE SET at=excluded.at",
+                        (project or "", key, time.time() if at is None else at))
 
     def marked(self, project: str | None, key: str) -> float | None:
         row = self.db.execute("SELECT at FROM marks WHERE project=? AND key=?", (project or "", key)).fetchone()
@@ -445,14 +449,19 @@ class Ledger:
             (project or "",))]
 
     def record_lineage(self, project: str, file: str, old: str, new: str, reason: str = "", context: str = "",
-                       branch: str = "", commit: str = "", at: float | None = None) -> bool:
-        """Link a new session to the one whose handoff brief it took (#366). False, writing nothing, when the brief was taken."""
+                       branch: str = "", commit: str = "", at: float | None = None, mark: str | None = None) -> bool:
+        """Link a new session to the one whose handoff brief it took (#366). False, writing nothing, when the brief was taken.
+        With `mark`, that mark is written in the same transaction, so both land or neither (#382)."""
         with self.db:
             cur = self.db.execute("INSERT OR IGNORE INTO lineage (project, file, old_session, new_session, reason, context, "
                                   "branch, commit_id, at) VALUES (?,?,?,?,?,?,?,?,?)",
                                   (project, file, old, new, reason, context, branch, commit,
                                    time.time() if at is None else at))
-            return cur.rowcount == 1
+            if cur.rowcount != 1:
+                return False
+            if mark:
+                self._put_mark(project, mark, time.time() if at is None else at)
+            return True
 
     def lineage(self, project: str, file: str | None = None) -> list[dict]:
         """A project's lineage records (one brief's, with `file`), newest first."""

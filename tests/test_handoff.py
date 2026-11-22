@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 from unittest import mock
 
-from commonroom import handshake
+from commonroom import handshake, registry
 from commonroom.ledger import Ledger
 from tests.test_handshake import Room
 
@@ -178,7 +178,7 @@ class Take(Handoff):
 
     def brief(self, session="old"):
         self.room("handoff", "alpha", "--session", session, "--reason", "context is large", "--context", "9000",
-                  stdin=TEXT)
+                  stdin=TEXT, cwd=self.alpha)
         return self.handoffs()[-1]
 
     def start(self, session="new1", cwd=None, **extra):
@@ -201,8 +201,8 @@ class Take(Handoff):
         self.assertEqual(self.start(), before)
 
     def test_take_records_old_to_new_and_refuses_a_second_take(self):
+        commit = self.git_repo()
         path = self.brief()
-        self.git_repo()
         code, out, err = self.room("handoff", "take", path.name, "--session", "new1", cwd=self.alpha)
         self.assertEqual((code, err), (0, ""))
         ledger = Ledger()
@@ -213,6 +213,9 @@ class Take(Handoff):
             ledger.close()
         self.assertEqual((row["old_session"], row["new_session"], row["reason"], row["context"], row["file"]),
                          ("old", "new1", "context is large", "9000", path.name))
+        self.assertEqual((row["branch"], row["commit_id"]), ("feature", commit))
+        fields = self.fields(path)
+        self.assertEqual((row["branch"], row["commit_id"]), (fields["branch"], fields["commit"]))
         code, out, err = self.room("handoff", "take", path.name, "--session", "new2", cwd=self.alpha)
         self.assertEqual((code, out), (1, ""))
         self.assertIn("already taken by session new1", err)
@@ -221,6 +224,23 @@ class Take(Handoff):
             self.assertEqual([r["new_session"] for r in ledger.lineage("alpha")], ["new1"])
         finally:
             ledger.close()
+
+    def test_a_failed_mark_write_leaves_no_lineage_row_so_a_retry_succeeds(self):
+        path = self.brief()
+        with mock.patch.object(Ledger, "_put_mark", side_effect=RuntimeError("died")):
+            with self.assertRaises(RuntimeError):
+                ledger = Ledger()
+                try:
+                    handshake.take_handoff(registry.load().projects["alpha"], ledger, path.name, "new1")
+                finally:
+                    ledger.close()
+        ledger = Ledger()
+        try:
+            self.assertEqual(ledger.lineage("alpha"), [])
+            self.assertIsNone(ledger.marked("alpha", "took:" + path.name))
+        finally:
+            ledger.close()
+        self.assertEqual(self.room("handoff", "take", path.name, "--session", "new1", cwd=self.alpha)[0], 0)
 
     def test_take_refuses_what_is_not_a_brief_or_has_no_session(self):
         path = self.brief()
