@@ -280,6 +280,12 @@ class Beside(Hook):
                          ["name"], "commonroom")
         self.assertEqual(list(plugin["hooks"]), ["SessionStart", "UserPromptSubmit"])
         self.assertEqual(list(settings["hooks"]), ["SessionStart", "UserPromptSubmit"])
+        # the Codex form (`commandWindows`, commonroom#397) is checked in PluginHooksForCodex; Claude Code's form is unchanged
+        plugin = json.loads(json.dumps(plugin))
+        for groups in plugin["hooks"].values():
+            for group in groups:
+                for entry in group["hooks"]:
+                    entry.pop("commandWindows")
         [prompt] = plugin["hooks"]["UserPromptSubmit"]
         self.assertEqual(prompt["hooks"], [{"type": "command", "command": "python", "timeout": 5,
                                             "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "prompt-submit"]}])
@@ -290,6 +296,46 @@ class Beside(Hook):
                                    "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"]})
         mine = json.loads(json.dumps(settings["hooks"]).replace("${CLAUDE_PROJECT_DIR}", "${CLAUDE_PLUGIN_ROOT}/.."))
         self.assertEqual(mine, plugin["hooks"])
+
+
+class PluginHooksForCodex(unittest.TestCase):
+    """commonroom#397: one hooks.json that Claude Code (command + args) and Codex (commandWindows) both run."""
+
+    def test_every_entry_has_both_forms_naming_the_same_hook(self):
+        plugin = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        wanted = {"SessionStart": "session-start", "UserPromptSubmit": "prompt-submit"}
+        self.assertEqual(list(plugin["hooks"]), list(wanted))
+        for event, name in wanted.items():
+            entries = [e for g in plugin["hooks"][event] for e in g["hooks"]]
+            self.assertTrue(entries)
+            for entry in entries:
+                self.assertEqual(entry["args"][-2:], ["hook", name])
+                self.assertTrue(entry["commandWindows"].endswith(f" hook {name}"), entry["commandWindows"])
+                self.assertIn("room.py", entry["commandWindows"])
+                self.assertIn("%PLUGIN_ROOT%", entry["commandWindows"])
+                self.assertNotIn("${", entry["commandWindows"])   # cmd does not expand ${VAR}
+
+    def run_codex_form(self, cmd, plugin_root):
+        # as Codex does: one raw command line through `cmd /C "<command>"` (list form would escape the quotes as \\")
+        return subprocess.run(f'cmd /C "{cmd}"', env={**os.environ, "PLUGIN_ROOT": str(plugin_root)},
+                              capture_output=True, text=True, input='{"x":1}')
+
+    def test_codex_form_runs_room_py_beside_the_plugin_and_is_silent_without_it(self):
+        if os.name != "nt":
+            self.skipTest("cmd.exe only")
+        plugin = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "a root with space"
+            (root / "plugin").mkdir(parents=True)
+            (root / "room.py").write_text("import sys\nprint('ARGS', sys.argv[1:], sys.stdin.read())\n",
+                                          encoding="utf-8")
+            for event, name in (("SessionStart", "session-start"), ("UserPromptSubmit", "prompt-submit")):
+                cmd = plugin["hooks"][event][0]["hooks"][0]["commandWindows"]
+                done = self.run_codex_form(cmd, root / "plugin")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(done.stdout.strip(), f"ARGS ['hook', '{name}'] " + '{"x":1}')
+                done = self.run_codex_form(cmd, Path(d) / "cache" / "p")
+                self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""))
 
 
 class ColdReturn(Hook):
