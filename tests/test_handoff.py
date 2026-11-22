@@ -141,3 +141,80 @@ class Handoff(Room):
         finally:
             ledger.close()
         self.assertFalse((self.folder("alpha") / "digest.md").exists())
+
+
+class Take(Handoff):
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ)
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("COMMONROOM_WORKER", None)   # these tests run as a person's session, not a room worker's
+
+    def brief(self, session="old"):
+        self.room("handoff", "alpha", "--session", session, "--reason", "context is large", "--context", "9000",
+                  stdin=TEXT)
+        return self.handoffs()[-1]
+
+    def start(self, session="new1", cwd=None, **extra):
+        from commonroom import hook
+        return hook.context({"hook_event_name": "SessionStart", "session_id": session, "cwd": str(cwd or self.alpha),
+                             **extra})
+
+    def test_the_hook_names_an_untaken_brief_with_its_own_session_id(self):
+        path = self.brief()
+        text = self.start("sess-42")
+        self.assertIn(str(path), text)
+        self.assertIn("from session old", text)
+        self.assertIn(f"room handoff take {path} --session sess-42", text)
+
+    def test_a_taken_brief_is_not_offered_and_no_handoffs_changes_nothing(self):
+        before = self.start()
+        self.assertNotIn("Untaken handoff", before)
+        path = self.brief()
+        self.assertEqual(self.room("handoff", "take", str(path), "--session", "new1", cwd=self.alpha)[0], 0)
+        self.assertEqual(self.start(), before)
+
+    def test_take_records_old_to_new_and_refuses_a_second_take(self):
+        path = self.brief()
+        self.git_repo()
+        code, out, err = self.room("handoff", "take", path.name, "--session", "new1", cwd=self.alpha)
+        self.assertEqual((code, err), (0, ""))
+        ledger = Ledger()
+        try:
+            [row] = ledger.lineage("alpha")
+            self.assertIsNotNone(ledger.marked("alpha", "took:" + path.name))
+        finally:
+            ledger.close()
+        self.assertEqual((row["old_session"], row["new_session"], row["reason"], row["context"], row["file"]),
+                         ("old", "new1", "context is large", "9000", path.name))
+        code, out, err = self.room("handoff", "take", path.name, "--session", "new2", cwd=self.alpha)
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("already taken by session new1", err)
+        ledger = Ledger()
+        try:
+            self.assertEqual([r["new_session"] for r in ledger.lineage("alpha")], ["new1"])
+        finally:
+            ledger.close()
+
+    def test_take_refuses_what_is_not_a_brief_or_has_no_session(self):
+        path = self.brief()
+        for argv in (("take", "nope.md", "--session", "s"), ("take", path.name), ("take", str(self.alpha / "room.toml"), "--session", "s")):
+            code, out, err = self.room("handoff", *argv, cwd=self.alpha)
+            self.assertEqual((code, out), (1, ""))
+            self.assertTrue(err.startswith("refused: "))
+
+    def test_list_shows_taken_and_untaken_newest_first(self):
+        self.assertIn("no handoffs", self.room("handoff", "list", "alpha")[1])
+        first = self.brief("one")
+        second = self.brief("two")
+        self.room("handoff", "take", first.name, "--session", "three", cwd=self.alpha)
+        lines = self.room("handoff", "list", "alpha")[1].splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn(f"from two to not taken: context is large (`{second.name}`)", lines[0])
+        self.assertIn(f"from one to three: context is large (`{first.name}`)", lines[1])
+
+    def test_a_room_worker_is_offered_nothing(self):
+        self.brief()
+        with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": "1"}):
+            self.assertEqual(self.start(), "")
