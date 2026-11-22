@@ -15,4 +15,6 @@
 # [trial.variant]
 # prompts = { build = "trials/build-v2.md" }   # template name = file path under ways/; must use only the
 #                                              # {{placeholders}} the room's own template uses
-# policy = { review_rounds = 3 }               # policy name = whole number inside its bounds
+# policy = { rework_resume_seconds = 600 }      # policy name = whole number inside its bounds; only the numbers read
+#                                              # while a job runs: resume_window_seconds, rework_resume_seconds,
+#                                              # run_timeout_seconds

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from commonroom.metrics import produced
 from commonroom.usage import WINDOW_SECONDS
 
 REQUIRED = ("five_hour", "seven_day")
@@ -87,7 +88,7 @@ def breaker_verdict(open_breakers: list[dict], recent_finished_autonomous: list[
         b = next((x for x in open_breakers if stops_running(x["kind"])), open_breakers[0])
         return Verdict(False, f"breaker open: {b['kind']} - {b['detail']}", stop_running=stops_running(b["kind"])), None
     window = recent_finished_autonomous[:no_output_runs]
-    if no_output_runs and len(window) == no_output_runs and all(not r["outputs"] for r in window):
+    if no_output_runs and len(window) == no_output_runs and not any(produced(r) for r in window):
         detail = (f"last {no_output_runs} autonomous runs produced nothing: "
                   + ", ".join(f"{r['role']}/{r['task'] or '-'}:{r['status']}" for r in window))
         return Verdict(False, "breaker tripped: " + detail, stop_running=True), {"kind": "no_output", "detail": detail}
