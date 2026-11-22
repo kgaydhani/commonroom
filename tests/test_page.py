@@ -1,8 +1,10 @@
 """The dashboard's one page (commonroom#248): its state function on a temporary room home, never ~/.commonroom."""
 import json
 import unittest
+from pathlib import Path
+from unittest import mock
 
-from commonroom import dashboard, page
+from commonroom import dashboard, handshake, page, registry
 from tests.test_dispatch import cfg_with
 from tests.test_standings import H, Room
 
@@ -107,6 +109,82 @@ class PageState(Room):
         self.assertNotIn("https://fonts", html)
         self.assertIn("/api/page", html)
         self.assertNotIn("innerHTML", html)
+
+
+class Trail(Room):
+    """commonroom#408: each project's section carries the trail, from a fake board, never the network."""
+    def setUp(self):
+        super().setUp()
+        reg = self.register()
+        self.alpha = reg.projects["alpha"]
+        (Path(self.alpha.path) / "room.toml").write_text('[project]\nname = "alpha-site"\nrepo = "me/alpha"\n', encoding="utf-8")
+        self.calls = 0
+        self.week()
+
+    def note(self, text, sender="kieran", days_ago=1):
+        return handshake.write_note(handshake.prepare(self.alpha), text, sender, None, self.now - days_ago * 86400).name
+
+    def section(self, board):
+        def fake(p, notes):
+            self.calls += 1
+            return board(p, notes)
+        d = page.page_state(self.ledger, {**PageState.cfg(self), "project": {"name": "alpha-site"}}, self.now, trail=fake)
+        return next(s for s in d["projects"] if s["name"] == "alpha"), d
+
+    def test_a_note_with_an_open_and_a_landed_issue_shows_both_and_a_bare_note_has_none(self):
+        named, bare = self.note("speed up the page\nmore"), self.note("think about colours", days_ago=3)
+        sec, d = self.section(lambda p, notes: {n["name"]: [
+            {"number": 5, "title": "open one", "state": "open", "merged": False},
+            {"number": 6, "title": "done one", "state": "closed", "merged": True}] if n["name"] == named else [] for n in notes})
+        self.assertNotIn("trail_error", sec)
+        self.assertEqual([n["name"] for n in sec["trail"]], [named, bare])
+        self.assertEqual(sec["trail"][0]["first_line"], "speed up the page")
+        self.assertEqual([(i["number"], i["state"], i["merged"]) for i in sec["trail"][0]["items"]], [(5, "open", False), (6, "closed", True)])
+        self.assertEqual(sec["trail"][1]["items"], [])
+        json.dumps(d)
+
+    def test_an_agents_note_is_not_in_the_trail(self):
+        mine = self.note("mine")
+        self.note("from the director", sender="director")
+        sec, _ = self.section(lambda p, notes: {n["name"]: [] for n in notes})
+        self.assertEqual([n["name"] for n in sec["trail"]], [mine])
+
+    def test_a_board_that_raises_gives_trail_error_and_the_notes_with_no_items(self):
+        self.note("a thing")
+        def boom(p, notes):
+            raise RuntimeError("github is down")
+        sec, d = self.section(boom)
+        self.assertIn("github is down", sec["trail_error"])
+        self.assertEqual([n["items"] for n in sec["trail"]], [[]])
+        self.assertIn("status", sec)
+
+    def test_a_cached_failure_is_reported_as_an_error(self):
+        self.note("a thing")
+        sec, _ = self.section(lambda p, notes: {"error": "rate limited"})
+        self.assertEqual(sec["trail_error"], "rate limited")
+
+    def test_old_notes_and_no_notes_make_no_board_call(self):
+        self.note("ancient", days_ago=30)
+        sec, _ = self.section(lambda p, notes: {})
+        self.assertEqual((sec["trail"], self.calls), ([], 0))
+
+    def test_without_a_trail_function_sections_are_unchanged(self):
+        self.note("a thing")
+        d = page.page_state(self.ledger, PageState.cfg(self), self.now)
+        self.assertTrue(all("trail" not in s and "trail_error" not in s for s in d["projects"]))
+
+    def test_the_dashboard_caches_the_board_read_for_a_minute(self):
+        self.note("a thing")
+        notes = handshake.owner_notes(registry.load(), self.alpha, 0, self.now + 1)
+        dashboard._cache.clear()
+        with mock.patch.object(dashboard.handshake, "trail", return_value={notes[0]["name"]: []}) as t:
+            dashboard._cached_trail(self.alpha, notes)
+            dashboard._cached_trail(self.alpha, notes)
+        self.assertEqual(t.call_count, 1)
+
+    def test_the_page_renders_the_empty_case(self):
+        html = (Path(dashboard.__file__).parent / "static" / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("no item yet", html)
 
 
 if __name__ == "__main__":

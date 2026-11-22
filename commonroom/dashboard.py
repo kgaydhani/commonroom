@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from commonroom import board, config as config_mod, metrics, page, weekly
+from commonroom import board, config as config_mod, handshake, metrics, page, weekly
 from commonroom.dispatch import verdicts
 from commonroom.ledger import Ledger
 
@@ -78,13 +78,20 @@ def latest_report(ledger: Ledger, project: str | None) -> dict | None:
     return {"verdict": verdict, "headline": headline, "body": rest.strip(), "updated": path.stat().st_mtime}
 
 
+def _cached_trail(p, notes) -> dict:
+    """`handshake.trail` at most once a minute per project and set of notes, so a refresh doesn't call GitHub each time."""
+    key = "trail:" + p.name + ":" + "|".join(sorted(n["name"] for n in notes))
+    return cached(key, 60, lambda: handshake.trail(p, notes))
+
+
 def page_data(cfg: dict) -> dict:
     """The one page's data (commonroom#248): see `commonroom.page`."""
     ledger = Ledger()
     try:
         trusted = config_mod.trusted(cfg)
         return page.page_state(ledger, cfg, time.time(),
-                               queue=lambda repo: cached("owner:" + repo, 30, lambda: owner_queue(repo, trusted)))
+                               queue=lambda repo: cached("owner:" + repo, 30, lambda: owner_queue(repo, trusted)),
+                               trail=_cached_trail)
     finally:
         ledger.close()
 

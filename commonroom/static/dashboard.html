@@ -103,6 +103,18 @@ function render(d) {
     el("p", p.landed_7d ? `Landed in the last 7 days: ${p.landed_7d} (latest ${p.landed_recent.join(", ")}).` : "Nothing landed in the last 7 days.", null, det);
     if (p.breakers.length) for (const b of p.breakers) el("p", `Stopped since ${when(b.since)}: ${b.words}`, "bad", det);
     else el("p", "No open breakers.", "dim", det);
+    if (p.trail) {
+      const tr = el("details", null, null, det);
+      el("summary", `Trail (${p.trail.length})`, null, tr);
+      if (p.trail_error) el("p", `The board can't be read: ${p.trail_error}`, "bad", tr);
+      if (!p.trail.length) el("p", "No notes from you in the last 14 days.", "dim", tr);
+      for (const n of p.trail) {
+        el("p", `${when(n.at)}  ${n.first_line}`, null, tr);
+        const ul = el("ul", null, null, tr);
+        for (const i of n.items) el("li", `#${i.number} ${i.title}: ${i.state === "open" ? "open" : i.merged ? "landed" : "closed"}`, null, ul);
+        if (!n.items.length) el("li", p.trail_error ? "items unknown" : "no item yet", "dim", ul);
+      }
+    }
     el("a", "details", null, det).href = "/api/state";
   }
 }
