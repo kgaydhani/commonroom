@@ -156,6 +156,10 @@ class PureLogic(unittest.TestCase):
             "Depends on #165, #180, #65, #162": {65, 162, 165, 180},
             "Depends on issues #3 & #4; see #5": {3, 4},
             "Depends on the art pass in #40": set(),
+            "[agent:director] Depends on #363": {363},
+            "[room] Blocked by #4 and #5": {4, 5},
+            "See the note. Depends on #363": set(),
+            "[agent:director] See the note. Depends on #363": set(),
         }
         for line, expected in cases.items():
             self.assertEqual(dispatch.dependencies(line), expected, line)
