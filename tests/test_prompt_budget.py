@@ -49,7 +49,7 @@ class Budget(unittest.TestCase):
         self.assertEqual(problems, [], "; ".join(problems))
 
     def test_the_handshake_templates_count_toward_the_same_budget(self):
-        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "charter.md", "decisions-more.md", "decisions.md", "digest.md", "handoff-offer.md", "handoff.md", "reply.md",
+        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "charter.md", "decisions-more.md", "decisions.md", "digest.md", "handoff-offer.md", "handoff.md", "hands.md", "reply.md",
                                                                      "session-start.md"])
         with tempfile.TemporaryDirectory() as tmp:
             handshake = Path(tmp) / "handshake"
@@ -96,7 +96,7 @@ class Budget(unittest.TestCase):
         self.assertEqual([tokens("x" * n) for n in (0, 1, 4, 5, 2800, 2801)], [0, 1, 1, 2, 700, 701])
 
     def test_the_budgets_are_room_wide_only(self):
-        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 3209))
+        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 3222))
         for name in ("prompt_max_tokens", "templates_max_tokens"):
             with self.subTest(name=name):
                 self.assertIn(name, policy.GLOBAL_ONLY)
