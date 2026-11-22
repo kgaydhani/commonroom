@@ -34,6 +34,7 @@ WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
+KINDS = ("outcome", "bound", "decision", "suggestion")   # what an owner statement can be (design-v3); `direction` is separate
 DIRECTION = "direction"   # ledger mark key: when the owner last changed a project's direction (`note --direction`)
 READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
 HANDOFF_MARK = "handoff:"  # ledger mark key prefix: handoff:<session>, set when that session wrote a handoff (#363)
@@ -204,7 +205,8 @@ def _when(ts: float) -> str:
 
 
 def note_heading(n: dict) -> str:
-    who = (f", from {n['from']}" if n["from"] else "") + (f" to {n['to']}" if n["to"] else "")
+    kind = f" ({n['kind']})" if n["kind"] else ""
+    who = (f", from {n['from']}{kind}" if n["from"] else (f", {kind.strip()}" if kind else "")) + (f" to {n['to']}" if n["to"] else "")
     if n["text"] is None:
         return f"{_when(n['at'])} (file time){who}, `inbox/{n['name']}`: not readable as text"
     return f"{_when(n['at'])}{'' if n['dated'] else ' (file time)'}{who}, `inbox/{n['name']}`"
@@ -508,6 +510,11 @@ def cmd_note(args) -> int:
         raise HandshakeError("refused: give the note's text as one argument, in quotes.")
     args.name = named[0] if named else None
     text = sys.stdin.read() if text == "-" else text
+    kind = getattr(args, "kind", None)
+    if kind and args.direction:
+        raise HandshakeError("refused: give --direction or --kind, not both.")
+    if kind and kind not in KINDS:
+        raise HandshakeError(f"refused: --kind must be one of {', '.join(KINDS)}.")
     if not text.strip():
         raise HandshakeError("refused: the note is empty.")
     reg, p = _start(args)
@@ -519,7 +526,7 @@ def cmd_note(args) -> int:
             here = None
         sender = here.name if here is not None and here.name != p.name else _user()
     now = time.time()
-    path = write_note(prepare(p), text, sender, args.to, now, "direction" if args.direction else None)
+    path = write_note(prepare(p), text, sender, args.to, now, "direction" if args.direction else kind)
     if args.direction:
         ledger = Ledger()
         try:
@@ -534,9 +541,14 @@ def cmd_note(args) -> int:
 @_run
 def cmd_notes(args) -> int:
     reg, p = _start(args)
+    kind = getattr(args, "kind", None)
+    if kind and kind not in KINDS + (DIRECTION,):
+        raise HandshakeError(f"refused: --kind must be one of {', '.join(KINDS + (DIRECTION,))}.")
     notes = read_notes(folder_of(p))
+    if kind:
+        notes = [n for n in notes if n["kind"] == kind]
     here = _here(reg)
-    if not args.since and here is not None and here.name == p.name:   # the project reading its own inbox, all of it
+    if not args.since and not kind and here is not None and here.name == p.name:   # the project reading its own inbox, all of it
         ledger = Ledger()
         try:
             ledger.mark(p.name, READ + p.name)

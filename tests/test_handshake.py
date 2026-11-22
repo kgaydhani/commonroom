@@ -339,6 +339,50 @@ class Reply(Room):
         self.assertIn("please write the charter", digest.read_text(encoding="utf-8"))
 
 
+class Kinds(Room):
+    def test_each_kind_is_written_as_front_matter(self):
+        self.register()
+        for kind in handshake.KINDS:
+            self.assertEqual(self.room("note", "alpha", f"a {kind}", "--kind", kind)[0], 0)
+        kinds = {n["kind"]: n["text"] for n in handshake.read_notes(self.folder("alpha"))}
+        self.assertEqual(kinds, {k: f"a {k}" for k in handshake.KINDS})
+        for path in (self.folder("alpha") / "inbox").iterdir():
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("kind: " + text.split("a ")[-1].split()[0] + chr(10), text)
+
+    def test_unknown_kind_and_kind_with_direction_are_refused(self):
+        self.register()
+        code, _, err = self.room("note", "alpha", "x", "--kind", "hunch")
+        self.assertNotEqual(code, 0)
+        for kind in handshake.KINDS:
+            self.assertIn(kind, err)
+        self.assertNotEqual(self.room("note", "alpha", "x", "--kind", "decision", "--direction")[0], 0)
+        self.assertEqual(handshake.read_notes(self.folder("alpha")), [])
+
+    def test_notes_kind_lists_only_that_kind(self):
+        self.register()
+        self.room("note", "alpha", "chose A", "--kind", "decision")
+        self.room("note", "alpha", "maybe B", "--kind", "suggestion")
+        self.room("note", "alpha", "plain one")
+        code, out, _ = self.room("notes", "alpha", "--kind", "decision")
+        self.assertEqual(code, 0)
+        self.assertIn("chose A", out)
+        self.assertNotIn("maybe B", out)
+        self.assertNotIn("plain one", out)
+        self.assertIn("(decision)", out)
+
+    def test_digest_shows_the_kind_beside_the_sender_only_when_there_is_one(self):
+        self.register()
+        self.room("attach", "alpha")
+        self.room("note", "alpha", "chose A", "--from", "owner", "--kind", "decision")
+        digest = (self.folder("alpha") / "digest.md").read_text(encoding="utf-8")
+        self.assertIn("from owner (decision)", digest)
+        self.room("note", "alpha", "plain", "--from", "owner2")
+        digest = (self.folder("alpha") / "digest.md").read_text(encoding="utf-8")
+        self.assertIn("from owner2,", digest)
+        self.assertNotIn("owner2 (", digest)
+
+
 class Direction(Room):
     def test_direction_note_reads_back_and_marks_the_ledger(self):
         self.register()
