@@ -25,7 +25,7 @@ from pathlib import Path
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
 from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
-from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, weekly
+from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, trials as trials_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.waytext import PLACEHOLDER, fill_way, read_way   # moved there so handshake can import them (commonroom#345)
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
@@ -55,6 +55,7 @@ DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 # value the code fills in. The files are read once, at import: a running dispatcher keeps the text it started with
 # while the room pulls new files under it, and a missing file fails the import with its name.
 WAYS_DIR = Path(__file__).resolve().parent / "ways"
+TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at import (commonroom#352)
 PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
@@ -1285,13 +1286,61 @@ class Dispatcher:
         self.scout_closed: set[int] = set()   # closed scout issues seen (closed stays closed)
         self.scout_told: set[int] = set()     # issues already told what the look-before-building check wants
         self.model_skips_logged: set = set()   # (provider, model, window, resets_at): each skip is logged once
+        self.base_ways = self.ways             # what the project's templates are, outside any trial
+        self.trial_policy: dict[str, int] = {}   # the numbers the running job takes from its trial variants
+        self.trial_refs: list[str] = []          # "<trial>=<arm>" for each trial the running job is under
 
     def policy(self, name: str) -> int:
         """A ways-of-working number from commonroom/ways/policy.toml: this project's `[policy]` value if it set one,
         else the room's, read from its module constant now."""
         if name in self.policy_overrides:
             return self.policy_overrides[name]
+        if name in self.trial_policy:
+            return self.trial_policy[name]
         return workers_mod.RUN_TIMEOUT if name == "run_timeout_seconds" else globals()[POLICY_CONSTANTS[name]]
+
+    def enter_trials(self, job: Job) -> None:
+        """Put the running job under each active trial (commonroom#352): read the trials file now, pick the job's arm
+        by `<project>#<issue>`, and in the variant arm swap in the variant's prompt text and policy numbers. A project's
+        own `[ways] dir` template or `[policy]` number wins over a trial, and a trial it wins on is not recorded.
+        A file that fails to load is logged and the job runs with no trial. Jobs with no issue are never in one."""
+        self.trial_policy, self.trial_refs = {}, []
+        number = (job.issue or {}).get("number")
+        if number is None and job.pr:
+            m = BRANCH.match(job.pr.get("headRefName") or "")
+            number = int(m.group(1)) if m else None
+        if number is None:
+            return
+        try:
+            declared = trials_mod.load(TRIALS_FILE, PROMPTS, policy_mod.BOUNDS)
+            ways, policy, refs = dict(self.base_ways), {}, []
+            for trial in trials_mod.active(declared, datetime.date.today()):
+                arm = trials_mod.arm(trial, f"{self.project}#{number}")
+                applied = False
+                for name, rel in trial.prompts.items():
+                    if self.base_ways[name] != WAYS[name]:
+                        continue   # the project replaced this template
+                    if arm == "variant":
+                        ways[name] = read_way(TRIALS_FILE.parent / str(rel))
+                    applied = True
+                for name, value in trial.policy.items():
+                    if name in self.policy_overrides:
+                        continue
+                    if arm == "variant":
+                        policy[name] = value
+                    applied = True
+                if applied:
+                    refs.append(f"{trial.name}={arm}")
+        except Exception as exc:
+            self.log(f"   trials not applied, the job runs with none: {type(exc).__name__}: {str(exc)[:200]}")
+            return
+        self.ways, self.trial_policy, self.trial_refs = ways, policy, refs
+
+    def leave_trials(self) -> None:
+        self.ways, self.trial_policy, self.trial_refs = self.base_ways, {}, []
+
+    def trial_outputs(self) -> list[dict]:
+        return [{"kind": "trial", "ref": ref} for ref in self.trial_refs]
 
     @property
     def board(self) -> TrustedBoard:
@@ -3122,6 +3171,13 @@ class Dispatcher:
             self.log(f"   {task} is already being worked on; skipped")
             return {"status": "skipped", "outputs": [], "note": "already running"}
         self._run_id = run_id
+        self.enter_trials(job)
+        try:
+            return self.run_claimed(job, role, provider, model, effort, run_id, task)
+        finally:
+            self.leave_trials()
+
+    def run_claimed(self, job: Job, role, provider: str, model: str | None, effort, run_id: str, task: str | None) -> dict:
         # The window at decision time, for audits (commonroom#15).
         self.ledger.db.execute("UPDATE runs SET five_hour_start=? WHERE id=?", (self.five_hour_used(provider), run_id))
         self.ledger.db.commit()
@@ -3160,6 +3216,7 @@ class Dispatcher:
                 status, outputs, note = self.assess(job, branch, before, started_iso, result)
             if resume:
                 note = f"resumed session {resume['session_id']} from run {resume['id']}; {note}"
+            outputs = outputs + self.trial_outputs()
             self.ledger.finish_run(run_id, status, outputs, result.input_tokens, result.output_tokens, result.cost_usd,
                                    note, session_id=result.session_id)
             self.ledger.db.execute("UPDATE runs SET weekly_start=?, weekly_end=? WHERE id=?",
@@ -3301,7 +3358,7 @@ class Dispatcher:
         """Record a room-side error. The task then rests (`busy_tasks`) instead of being retried on the next pass, and
         the third in a row goes to the director with the error, the way repeated builder failures do (commonroom#9)."""
         note = f"{type(exc).__name__}: {exc}"[:800]
-        self.ledger.finish_run(run_id, "room-error", [], note=note)
+        self.ledger.finish_run(run_id, "room-error", self.trial_outputs(), note=note)
         streak = self.ledger.room_error_streaks(self.project).get(task, (0, 0))[0] if task else 0
         m = BRANCH.match((job.pr or {}).get("headRefName") or "")
         n = job.issue["number"] if job.issue else int(m.group(1)) if m else None
