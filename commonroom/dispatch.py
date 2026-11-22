@@ -33,7 +33,8 @@ from commonroom import measure, owner_reserve, steward
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
-DEPENDS = re.compile(r"^(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
+# A line may open with a role tag ("[agent:director] Depends on #5", "[room] Blocked by #5") before the phrase (commonroom#372).
+DEPENDS = re.compile(r"^(?:\[(?:agent:[\w-]+|room)\]\s*)?(?:Depends on|Blocked by)\b(.*)$", re.I | re.M)
 # The list after "Depends on": references joined by commas or "and", each optionally followed by a parenthetical.
 DEPENDS_ITEM = re.compile(r"\s*(?:#(\d+)|\([^)]*\)|issues?\b|and\b|[,&:])", re.I)
 BRANCH = re.compile(r"^i(\d+)-")
