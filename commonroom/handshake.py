@@ -23,7 +23,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from commonroom import config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry
+from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, progress as progress_mod, registry
 from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -358,7 +358,10 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     if board:
         text = text + "\n" + f"## Board check, latest sweep\n{board}" + "\n"
     shown = _measure(ledger, p)
-    return text + "\n" + f"## Measure\n{shown}" + "\n" if shown else text
+    if shown:
+        text = text + "\n" + f"## Measure\n{shown}" + "\n"
+    behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
+    return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
 
 def refresh(reg: registry.Registry, p: registry.Project, now: float | None = None, who: str | None = None) -> str:
@@ -501,6 +504,23 @@ def cmd_findings(args) -> int:
     finally:
         ledger.close()
     print("\n".join(f"{f['invariant']}: {f['detail']}" for f in found) if found else f"no findings for {p.name}")
+    return 0
+
+
+@_run
+def cmd_artifact(args) -> int:
+    """`room artifact published <name>`: record that the artifact was republished just now."""
+    reg, p = _start(args)
+    cfg = room_toml(p)
+    ledger = Ledger()
+    try:
+        if not artifacts.publish(ledger, ledger_name(p), cfg, args.artifact):
+            names = ", ".join(artifacts.declared(cfg)) or "none"
+            print(f"refused: {p.name} has no artifact named {args.artifact!r}. Configured: {names}.", file=sys.stderr)
+            return 1
+    finally:
+        ledger.close()
+    print(f"{p.name}: artifact {args.artifact} marked published")
     return 0
 
 
