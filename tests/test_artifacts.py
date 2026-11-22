@@ -123,11 +123,14 @@ class Artifacts(Room):
 
     def test_not_a_repo_holds_when_temp_is_inside_a_repository(self):
         outer = self.tmp / "outer"
-        outer.mkdir()
-        subprocess.run(["git", "init", "-q", str(outer)], check=True, capture_output=True)
-        (outer / "tmp").mkdir()
+        (outer / "tmp").mkdir(parents=True)
+        (outer / "x").write_text("x", encoding="utf-8")
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init"]):
+            subprocess.run(["git", "-C", str(outer), *args], check=True, capture_output=True)
         self.declare()
-        with mock.patch.object(tempfile, "tempdir", str(outer / "tmp")),                 tempfile.TemporaryDirectory() as bare:
+        with (mock.patch.object(tempfile, "tempdir", str(outer / "tmp")),
+              tempfile.TemporaryDirectory() as bare):
             led = handshake.Ledger()
             try:
                 with outside_any_repository(bare):
@@ -135,6 +138,7 @@ class Artifacts(Room):
             finally:
                 led.close()
         self.assertIn("could not read git history", got)
+        self.assertIn("not a git repository", got)
 
 
 if __name__ == "__main__":
