@@ -3578,7 +3578,9 @@ class Dispatcher:
 
     def digest_section(self) -> str:
         """The director prompt's tail: this project's code-built digest, cut to `[director] digest_chars` (commonroom#345).
-        Empty when the key is unset or 0, or when the project, the registry or the build fails (one log line)."""
+        Empty for a stamp-only run (it only judges a PR head; commonroom#347), when the key is unset or 0, or when the project, the registry or the build fails (one log line)."""
+        if self.stamp_only:
+            return ""
         try:
             limit = int((self.cfg.get("director") or {}).get("digest_chars") or 0)
         except (TypeError, ValueError):
