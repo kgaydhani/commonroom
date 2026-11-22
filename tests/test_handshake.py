@@ -536,10 +536,6 @@ class NoModel(Room):
                     self.assertEqual(self.room(*argv, cwd=self.alpha)[0], 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Corrections(Room):
     """commonroom#399: `--kind correction` notes, counted in the project digest and in the auditor's JSON summary."""
     NOW = datetime(2026, 11, 20, 12, 0).timestamp()
@@ -581,8 +577,7 @@ class Corrections(Room):
         self.register()
         for days in (1, 2, 3, 10):
             self.note(days, "x")
-        cfg = config_mod.load()
-        cfg["project"] = {"name": "alpha"}
+        cfg = config_mod.merge(config_mod.DEFAULTS, {"project": {"name": "alpha"}, "_path": None, "_root": None})
         with mock.patch("time.time", return_value=self.NOW):
             summary = cli.digest(cfg, 24)["summary"]
         self.assertEqual((summary["owner_corrections_7d"], summary["owner_corrections_prev_7d"]), (3, 1))
@@ -685,3 +680,7 @@ class Trail(Room):
             self.assertEqual(code, 0)
             self.assertEqual(self.digest(), [])
             self.assertNotEqual(self.room("trail", "alpha")[0], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
