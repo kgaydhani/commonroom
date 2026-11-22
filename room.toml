@@ -27,6 +27,8 @@ test = "python -m unittest discover -s tests"
 # No GitHub CI on this repo. Housekeeping merges on the reviewer's `REVIEW: APPROVE` posted after the last commit,
 # when it carries `TESTS: PASS <head sha> <test command>: <result>`, and merges one PR per pass.
 ci = false
+# The room runs the suite on a PR head before any reviewer starts; a failing head goes straight back to its builder (#210).
+test_before_review = true
 
 [merge]
 # The room merges its own PRs, so a change to what it may spend or what stops it also needs the director's

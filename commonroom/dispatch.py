@@ -932,15 +932,26 @@ def reviewed_oid(detail: dict, posted: str) -> str:
     return (done[-1].get("oid") or "") if done else ""
 
 
+def room_fail_head(body: str | None) -> str:
+    """The head a room comment says failed the tests before review (commonroom#210), else ''."""
+    parsed = carry_mod.parse(body)
+    return parsed["head"] if parsed and parsed["result"] == "FAIL" and carry_mod.PRE_REVIEW in (body or "") else ""
+
+
 def changes_rounds(detail: dict, since: str = "", merge_only=None) -> int:
     """REVIEW: CHANGES verdicts on a PR posted after `since` (an ISO time; '' counts all). With `merge_only(base, head)`,
     a CHANGES on a head that differs from the last counted one only by merge commits isn't a round: the builder changed
     nothing, so there was no fix to judge (commonroom#205). A comparison that raises counts the round."""
     rounds, base = 0, ""
     for c in detail.get("comments") or []:
-        if (c.get("createdAt") or "") <= since or verdict_of(c.get("body")) != "CHANGES":
+        if (c.get("createdAt") or "") <= since:
             continue
-        head = reviewed_oid(detail, c.get("createdAt") or "") if merge_only else ""
+        room = room_fail_head(c.get("body"))   # the room's own FAIL before review is a round too (commonroom#210)
+        if verdict_of(c.get("body")) != "CHANGES" and not room:
+            continue
+        if room and room == base:
+            continue
+        head = room or (reviewed_oid(detail, c.get("createdAt") or "") if merge_only else "")
         if base and head and head != base:
             try:
                 if merge_only(base, head):
@@ -1264,6 +1275,8 @@ class Dispatcher:
         # project asks, and never with CI, which already tests every head.
         self.carry = bool((cfg.get("merge") or {}).get("carry_tested_approval")) and not self.ci
         self.clean_merges = {}   # (tested sha, head sha) -> only clean merges of main between them; per pass
+        # Run the tests on a PR head in code before any reviewer starts (commonroom#210). Opt-in, never with CI.
+        self.pre_test = bool((cfg.get("checks") or {}).get("test_before_review")) and not self.ci             and bool((cfg.get("checks") or {}).get("test"))
         self.room_root = ROOM_ROOT   # the checkout this code runs from; tests point it elsewhere
         # Pushes owner notifications to a phone (`[notify]`, commonroom#151). None: nothing is sent.
         self.notifier = notifier if notifier is not None else notify_mod.from_config(cfg)
@@ -1379,6 +1392,16 @@ class Dispatcher:
             if self.ci and checks == "red" and not self.dry_run:
                 actions += self.handle_red_ci(pr, detail, issue_no, everything)
                 continue
+            # Tests first: the room runs the suite on a head that wants a review, once per pass (commonroom#210).
+            if (self.pre_test and not carried and not self.dry_run and issue_no and f"#{issue_no}" not in running
+                    and self.pre_review_pending(detail, next((i for i in everything if i["number"] == issue_no), None))):
+                carried = True
+                ran = self.pre_review_run(pr, detail, issue_no)
+                actions += ran
+                if self.room_failed(detail):
+                    review = "CHANGES"   # the CHANGES branch below sends it back, or escalates after enough rounds
+                else:
+                    continue
             # Research reports (docs only) skip review: CI green is enough.
             if self.ci and "review:skip" in labels(pr) and checks == "green":
                 review = "APPROVE"
@@ -2369,6 +2392,45 @@ class Dispatcher:
         return [f"PR #{n}: tests {'failed' if result == 'FAIL' else 'could not finish'} on {head[:7]} in code ({line}); "
                 f"not merged, left with the director"]
 
+    def pre_review_pending(self, detail: dict, issue: dict | None) -> bool:
+        """A reviewer would be started on this head and the room has no test result for it yet."""
+        return self.pre_test and self.room_result(detail) is None and self.review_wanted(detail, issue)
+
+    def room_failed(self, detail: dict) -> bool:
+        result = self.room_result(detail)
+        return bool(result and result["result"] == "FAIL" and not result["approval_at"])
+
+    def pre_review_hold(self, detail: dict) -> bool:
+        """pick_review waits: no room result for this head yet (a BUSY run too), or it failed and goes to its builder."""
+        if not self.pre_test:
+            return False
+        result = self.room_result(detail)
+        return result is None or result["result"] == "FAIL"
+
+    def pre_review_run(self, pr: dict, detail: dict, issue_no: int) -> list[str]:
+        """Run the tests on the head before any reviewer (commonroom#210) and say so on the PR: a provider-none ledger
+        row, a `[room] TESTS:` comment with no approval. A FAIL also tells the issue which tests failed."""
+        n, head, checks = pr["number"], head_sha(detail).lower(), self.cfg.get("checks") or {}
+        started = time.time()
+        result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
+                                           suite_lock(Path(self.ledger.path).parent, self.project),
+                                           float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+        if result == "BUSY":
+            return [f"PR #{n}: tests not run in code yet ({line}); next pass"]
+        run = self.ledger.start_run(self.project, f"#{issue_no}", "carry", "none", now=started)
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"PR #{n}", "head": head, "result": result}])
+        body = carry_mod.pre_review_comment(result, head, checks["test"], line)
+        self.board.comment(n, body)
+        detail.setdefault("comments", []).append({"createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                                  "body": f"{MARK} {body}"})
+        if result != "FAIL":
+            return [f"PR #{n}: tests {'pass' if result == 'PASS' else 'could not finish'} on {head[:7]} in code ({line}); a reviewer follows"]
+        names = "\n".join(f"- `{t}`" for t in getattr(line, "failing", ()))
+        self.board.comment(issue_no, f"PR #{n}: the room ran the tests on {head[:7]} before any reviewer and they failed, so "
+                                     f"it goes back to you.\n\nTESTS: FAIL {head} {checks['test']}: {line}"
+                                     + (f"\n\nFailing:\n{names}" if names else ""))
+        return [f"PR #{n}: tests failed on {head[:7]} in code ({line}); no reviewer, back to its builder"]
+
     def carry_approval(self, pr: dict, detail: dict, issue_no: int | None) -> list[str]:
         """Run the tests on the PR head in code and say on the PR whether the approval carries. The run is a ledger row
         with no model (provider none), like a merge."""
@@ -2691,7 +2753,7 @@ class Dispatcher:
             if f"#{m.group(1)}" in running:
                 continue   # its builder is still pushing: review the finished branch, not a draft (commonroom#124)
             detail = self.board.pr_detail(pr["number"])
-            if not self.needs_review(detail):
+            if not self.needs_review(detail) or self.pre_review_hold(detail):
                 continue
             if issue_labels is None:
                 issue_list = self.board.all_issues()
