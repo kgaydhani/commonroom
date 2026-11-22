@@ -602,7 +602,7 @@ class Trail(Room):
         patch.start()
         self.addCleanup(patch.stop)
 
-    def gh(self, args):
+    def gh(self, args, timeout=30):
         return self.issues if args[0] == "issue" else self.prs
 
     def note(self, days_ago, text, sender="kieran"):
@@ -676,3 +676,12 @@ class Trail(Room):
             self.note(2, "x")
             (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n', encoding="utf-8")
             self.assertEqual(self.digest(), [])
+
+    def test_a_board_timeout_does_not_fail_the_note_command_or_add_a_line(self):
+        self.note(2, "x")
+        boom = mock.Mock(side_effect=subprocess.TimeoutExpired("gh", 10))
+        with mock.patch.object(handshake.board, "gh", boom):
+            code, _, _ = self.room("note", "alpha", "hello")
+            self.assertEqual(code, 0)
+            self.assertEqual(self.digest(), [])
+            self.assertNotEqual(self.room("trail", "alpha")[0], 0)

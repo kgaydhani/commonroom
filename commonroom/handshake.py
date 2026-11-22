@@ -470,6 +470,7 @@ def _corrections(where: Path, now: float) -> str:
 ROLES = {"builder", "scout", "director", "reviewer", "auditor", "room"}   # senders that are agents, not the owner
 FROM_LINE = re.compile(r"^From:[ \t]*(\S+)[ \t]*$", re.M)   # an issue filed from an owner note: `From: <file name>` alone on a line
 TRAIL_DAYS = 14
+TRAIL_TIMEOUT = 10   # seconds per board call, so a slow GitHub can't hold up `room note` for long
 
 
 def owner_notes(reg: registry.Registry, p: registry.Project, since: float, now: float) -> list[dict]:
@@ -488,12 +489,12 @@ def trail(p: registry.Project, notes: list[dict]) -> dict[str, list[dict]]:
     if not notes or not repo:
         return found
     issues = board.gh(["issue", "list", "--repo", repo, "--state", "all", "--limit", "500",
-                       "--json", "number,title,state,body"]) or []
+                       "--json", "number,title,state,body"], timeout=TRAIL_TIMEOUT) or []
     closed = {i["number"] for i in issues if str(i.get("state")).upper() == "CLOSED"}
     merged: set[int] = set()
     if any(i["number"] in closed for i in issues if any(m in found for m in FROM_LINE.findall(i.get("body") or ""))):
         for pr in board.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "500",
-                            "--json", "number,closingIssuesReferences"]) or []:
+                            "--json", "number,closingIssuesReferences"], timeout=TRAIL_TIMEOUT) or []:
             merged |= {r["number"] for r in pr.get("closingIssuesReferences") or []}
     for i in sorted(issues, key=lambda i: i["number"]):
         for name in dict.fromkeys(FROM_LINE.findall(i.get("body") or "")):
@@ -510,7 +511,7 @@ def unlinked(reg: registry.Registry, p: registry.Project, now: float, days: int 
     notes = owner_notes(reg, p, now - days * 86400, now)
     try:
         return sum(1 for items in trail(p, notes).values() if not items)
-    except (RuntimeError, OSError, ValueError, TypeError):
+    except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
         return None
 
 
@@ -749,7 +750,7 @@ def cmd_trail(args) -> int:
         raise HandshakeError(f"refused: {p.name} has no [project] repo in its room.toml.")
     try:
         linked = trail(p, notes)
-    except (RuntimeError, OSError, ValueError) as exc:
+    except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as exc:
         raise HandshakeError(f"refused: the board can't be read: {exc}")
     if not notes:
         print(f"no owner notes for {p.name} in the last {args.days} days")
