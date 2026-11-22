@@ -425,6 +425,15 @@ def efficiency(ledger, project, since: float, now: float) -> dict:
             "by_role_model_effort": groups}
 
 
+def owner_corrections(project: str | None, now: float) -> tuple[int, int]:
+    """(last 7 days, the 7 days before) of `--kind correction` notes in the project's room folder; (0, 0) when it has none."""
+    try:
+        p = registry.load(check=False).projects.get(project or "")
+    except registry.RegistryError:
+        p = None
+    return handshake.corrections(handshake.folder_of(p), now)[:2] if p else (0, 0)
+
+
 def digest(cfg: dict, hours: float) -> dict:
     """Everything an auditor needs about the last `hours`, in one structure."""
     ledger, now = Ledger(), time.time()
@@ -454,7 +463,9 @@ def digest(cfg: dict, hours: float) -> dict:
                     "minutes_lost_to_stops": round(sum(r["minutes"] for r in runs if r["status"] == "stopped"), 1),
                     # ACTIONS claims checked against GitHub, and how many GitHub didn't show (commonroom#68).
                     "actions_reported": sum(r.get("actions_checked") or 0 for r in runs),
-                    "actions_unverified": sum(len(r["unverified"]) for r in runs)},
+                    "actions_unverified": sum(len(r["unverified"]) for r in runs),
+                    # How often the owner had to correct or repeat himself, this week and the one before (commonroom#399).
+                    **dict(zip(("owner_corrections_7d", "owner_corrections_prev_7d"), owner_corrections(project, now)))},
         "efficiency": efficiency(ledger, project, since, now),
         # Per-merge cost over 7 and 30 days whatever `hours` is, with `over_target` naming any target missed (commonroom#211).
         "metrics": metrics.project_report(ledger, project, cfg, now),

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-from commonroom import board, cli, handshake, registry
+from commonroom import board, cli, config as config_mod, handshake, registry
 from commonroom.ledger import Ledger
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -538,3 +538,51 @@ class NoModel(Room):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Corrections(Room):
+    """commonroom#399: `--kind correction` notes, counted in the project digest and in the auditor's JSON summary."""
+    NOW = datetime(2026, 11, 20, 12, 0).timestamp()
+    DAY = 86400
+
+    def note(self, days_ago, text):
+        handshake.write_note(handshake.prepare(registry.load().projects["alpha"]), text, "kieran", None,
+                             self.NOW - days_ago * self.DAY, "correction")
+
+    def line(self):
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            text = handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+        finally:
+            ledger.close()
+        return [l for l in text.split("\n") if l.startswith("Owner corrections")]
+
+    def test_the_note_command_writes_a_correction_and_an_unknown_kind_is_still_refused(self):
+        self.register()
+        self.assertEqual(self.room("note", "alpha", "--kind", "correction", "use the shared one")[0], 0)
+        self.assertEqual([n["kind"] for n in handshake.read_notes(self.folder("alpha"))], ["correction"])
+        self.assertNotEqual(self.room("note", "alpha", "--kind", "hunch", "x")[0], 0)
+
+    def test_three_this_week_and_one_before_give_one_line_with_the_newest_first_line(self):
+        self.register()
+        for days, text in ((6, "old one"), (3, "middle"), (1, "newest one\nsecond line")):
+            self.note(days, text)
+        self.note(10, "last week")
+        self.assertEqual(self.line(), ["Owner corrections: 3 in the last 7 days, 1 in the 7 days before. Newest: newest one"])
+
+    def test_none_in_fourteen_days_gives_no_line(self):
+        self.register()
+        self.assertEqual(self.line(), [])
+        self.note(15, "too old")
+        self.assertEqual(self.line(), [])
+
+    def test_the_json_summary_carries_both_counts(self):
+        self.register()
+        for days in (1, 2, 3, 10):
+            self.note(days, "x")
+        cfg = config_mod.load()
+        cfg["project"] = {"name": "alpha"}
+        with mock.patch("time.time", return_value=self.NOW):
+            summary = cli.digest(cfg, 24)["summary"]
+        self.assertEqual((summary["owner_corrections_7d"], summary["owner_corrections_prev_7d"]), (3, 1))
