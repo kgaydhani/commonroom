@@ -13,7 +13,7 @@ from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
-from commonroom.dispatch import READER_COOLDOWN, Dispatcher, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
+from commonroom.dispatch import READER_COOLDOWN, Dispatcher, GitHubBoard, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook
 from commonroom.ledger import Ledger
@@ -585,6 +585,44 @@ def cmd_submit(args) -> int:
     return 0
 
 
+VERDICTS = ("keep", "park", "cancel")
+
+
+def cmd_reconcile(args, board_for=None) -> int:
+    """After a direction: a verdict on one open issue. Posts the director's DIRECTION comment (park also labels `parked`,
+    cancel closes as not planned), then marks `reconciled:<issue>` in the ledger. A bad verdict or no reason does nothing."""
+    reason = " ".join((args.reason or "").split())
+    if args.verdict not in VERDICTS or not reason:
+        print(f"refused: `room reconcile <project> <issue> {'|'.join(VERDICTS)} \"reason\"`: the verdict must be one of "
+              "those and the reason is required.", file=sys.stderr)
+        return 2
+    try:
+        reg, p = handshake._start(args)
+        repo = (handshake.room_toml(p).get("project") or {}).get("repo")
+        if not repo:
+            raise handshake.HandshakeError(f"refused: {p.name} has no [project] repo in its room.toml.")
+    except handshake.HandshakeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    gh = (board_for or GitHubBoard)(repo)
+    body = f"DIRECTION: {args.verdict}: {reason}"
+    if args.verdict == "park":
+        gh.ensure_label("parked")
+        gh.set_labels(args.issue, add=["parked"])
+        gh.comment_as_director(args.issue, body)
+    elif args.verdict == "cancel":
+        gh.close_not_planned(args.issue, body)
+    else:
+        gh.comment_as_director(args.issue, body)
+    ledger = Ledger()
+    try:
+        ledger.mark(p.name, f"reconciled:{args.issue}")
+    finally:
+        ledger.close()
+    print(f"{p.name} #{args.issue}: {args.verdict}")
+    return 0
+
+
 def _run_limited(test: str, deadline: float) -> int | None:
     """Run the test command; None if it is still going at the deadline (its process tree is killed first)."""
     if time.monotonic() >= deadline:
@@ -933,6 +971,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("digest", help="rebuild and print the project's digest; --hours N: JSON summary for the auditor"); g = p.add_mutually_exclusive_group(); g.add_argument("--hours", type=float); g.add_argument("--project"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.set_defaults(func=cmd_digest)
     p = sub.add_parser("attach", help="join a project: make its room folder, record who attached, print the digest (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.add_argument("--as", dest="who"); p.set_defaults(func=handshake.cmd_attach)
     p = sub.add_parser("note", help="leave a note in a project's inbox ('-' reads the text from standard input)"); p.add_argument("words", nargs="+", metavar="[project] text"); p.add_argument("--project"); p.add_argument("--from", dest="sender"); p.add_argument("--to"); p.add_argument("--direction", action="store_true", help="mark the note as a change of direction and record it in the ledger"); p.set_defaults(func=handshake.cmd_note)
+    p = sub.add_parser("reconcile", help="after a direction: keep, park or cancel one open issue, with a reason"); p.add_argument("name", metavar="project"); p.add_argument("issue", type=int); p.add_argument("verdict"); p.add_argument("reason", nargs="?"); p.set_defaults(func=cmd_reconcile)
     p = sub.add_parser("findings", help="every finding of a project's latest steward sweep"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_findings)
     p = sub.add_parser("artifact", help="`artifact published <name>`: record that a published artifact was republished"); p.add_argument("action", choices=["published"]); p.add_argument("artifact"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_artifact)
     p = sub.add_parser("notes", help="a project's notes, newest first"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.add_argument("--since", help="6h, 3d, 2026-11-20 or '2026-11-20 14:00'"); p.set_defaults(func=handshake.cmd_notes)

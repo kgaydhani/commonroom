@@ -427,6 +427,13 @@ class GitHubBoard:
     def comment(self, number: int, body: str):
         board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
 
+    def comment_as_director(self, number: int, body: str):
+        board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{DIRECTOR_MARK} {body}"])
+
+    def close_not_planned(self, number: int, body: str):
+        board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--reason", "not planned",
+                      "--comment", f"{DIRECTOR_MARK} {body}"])
+
     def issue_state(self, number: int) -> str | None:
         """'OPEN' or 'CLOSED' for issue `number`, None when it can't be read (missing, or a PR)."""
         try:
