@@ -1,0 +1,18 @@
+# Ways-of-working trials (commonroom#350, docs/design-v3.md "How the room improves itself").
+# A trial runs a changed prompt or policy number (the variant) on a share of tasks, the rest staying on the
+# room's own (the control), and measures which does better. No trials are declared yet.
+#
+# [[trial]]
+# name = "short-unique-name"
+# area = "dispatch"              # free text; one trial per area is active at a time
+# started = "2026-12-01"         # YYYY-MM-DD
+# ended = "2026-12-15"           # optional: the trial stops being active after this day
+# share = 0.3                    # strictly between 0 and 1: the share of tasks on the variant
+# measure = "review_runs_per_landing"   # or minutes_per_landing, input_tokens_per_landing
+# min_landings = 10              # per arm, at least 1
+# max_days = 14
+#
+# [trial.variant]
+# prompts = { build = "trials/build-v2.md" }   # template name = file path under ways/; must use only the
+#                                              # {{placeholders}} the room's own template uses
+# policy = { review_rounds = 3 }               # policy name = whole number inside its bounds
