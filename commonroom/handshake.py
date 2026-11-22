@@ -28,13 +28,15 @@ from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
-README, CHARTER, DIGEST, REPLY = (read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply"))
+README, CHARTER, DIGEST, REPLY, HANDOFF = (read_way(TEMPLATES / f"{name}.md")
+                                           for name in ("README", "charter", "digest", "reply", "handoff"))
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
 DIRECTION = "direction"   # ledger mark key: when the owner last changed a project's direction (`note --direction`)
 READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
+HANDOFF_MARK = "handoff:"  # ledger mark key prefix: handoff:<session>, set when that session wrote a handoff (#363)
 ADD = "`room projects add <name> <folder> --share <percent>`"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": WEEK}
 PARTS = ("README.md", "charter.md", "digest.md", "inbox")
@@ -368,6 +370,32 @@ def _trials(ledger: Ledger, p: registry.Project, now: float) -> str | None:
     return "\n".join(f"- {trials.line(t, res)}" for t, res in reports) or None
 
 
+def _fields(path: Path) -> dict:
+    """The `key: value` front matter between a file's first two `---` lines; {} when it has none or can't be read."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig").replace("\r\n", "\n").split("\n")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    ends = [i for i, line in enumerate(lines) if line.strip() == "---"]
+    if len(ends) < 2 or ends[0] != 0:
+        return {}
+    return dict((k.strip().lower(), v.strip()) for k, sep, v in (line.partition(":") for line in lines[1:ends[1]]) if sep)
+
+
+def _newest_handoff(where: Path) -> str | None:
+    """The digest's one line naming the newest file in `handoffs/` (#363); None when there is none."""
+    folder = where / "handoffs"
+    found = sorted(f for f in folder.glob("*.md") if f.is_file()) if folder.is_dir() else []
+    if not found:
+        return None
+    fields = _fields(found[-1])
+    try:
+        at = _when(datetime.fromisoformat(fields.get("at", "")).timestamp())
+    except ValueError:
+        at = _when(found[-1].stat().st_mtime) + " (file time)"
+    return f"- `handoffs/{found[-1].name}`, {at}, from session {fields.get('from_session') or '(not named)'}"
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
@@ -383,6 +411,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     running = _trials(ledger, p, now)
     if running:
         text = text + "\n" + f"## Trials\n{running}" + "\n"
+    newest = _newest_handoff(where)
+    if newest:
+        text = text + "\n" + f"## Newest handoff\n{newest}" + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
@@ -558,4 +589,82 @@ def cmd_artifact(args) -> int:
 def cmd_digest(args) -> int:
     reg, p = _start(args)
     print(refresh(reg, p), end="")
+    return 0
+
+
+def _git(cwd, *argv) -> str | None:
+    """`git <argv>` in `cwd`: its output, or None when git is missing or fails (not a repo, no commit yet)."""
+    try:
+        done = subprocess.run(["git", *argv], cwd=str(cwd), capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.rstrip() if done.returncode == 0 else None
+
+
+def write_handoff(reg: registry.Registry, p: registry.Project, ledger: Ledger, text: str, session: str, reason: str,
+                  context: int | None = None, cwd=None, now: float | None = None) -> Path:
+    """One new file `handoffs/<stamp>-<session>.md` in the project's room folder, never an existing one (#363). The part
+    built here comes first (goal, open work, git); the session's own text follows. Records `handoff:<session>`."""
+    if not text.strip():
+        raise HandshakeError("refused: the session's text is empty. Give it on standard input or with --file.")
+    session, reason = _one_line(session or ""), _one_line(reason or "")
+    if not session or not reason:
+        raise HandshakeError("refused: a handoff needs --session <id> and --reason <text>.")
+    now, cwd = time.time() if now is None else now, Path.cwd() if cwd is None else Path(cwd)
+    stamp = datetime.fromtimestamp(now)
+    inside = _git(cwd, "rev-parse", "--is-inside-work-tree") == "true"
+    branch = _git(cwd, "rev-parse", "--abbrev-ref", "HEAD") if inside else None
+    commit = _git(cwd, "rev-parse", "--short", "HEAD") if inside else None
+    head = ["---", f"from_session: {session}", f"at: {stamp:%Y-%m-%dT%H:%M:%S}", f"reason: {reason}",
+            *([f"context: {context}"] if context is not None else []), *([f"branch: {branch}"] if branch else []),
+            *([f"commit: {commit}"] if commit else []), "---", ""]
+    goal = (room_toml(p).get("goal") or {}).get("milestone")
+    work = [f"Goal milestone: \"{goal}\"." if goal else "No goal milestone is set in the project's room.toml.", "",
+            _work(ledger, p, now)]
+    if (board := _board(ledger, p)) is not None:
+        work += ["", "Board check, latest sweep:", board]
+    if inside:
+        status = _git(cwd, "status", "--short") or ""
+        code = (f"Branch `{branch or '(none)'}` at `{commit or '(no commit yet)'}`. "
+                + (f"`git status --short`:\n```\n{status}\n```" if status else "The working tree is clean."))
+    else:
+        code = f"{cwd} is not in a git repository."
+    body = "\n".join(head) + "\n" + fill_way(HANDOFF, session=session, at=f"{stamp:%a %d %b %Y %H:%M} (local time)",
+                                            reason=reason, work="\n".join(work), code=code,
+                                            text=text.replace("\r\n", "\n").strip("\n")) + "\n"
+    folder = prepare(p) / "handoffs"
+    folder.mkdir(exist_ok=True)
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "-", session).strip("-")[:40] or "session"
+    while True:
+        path = folder / f"{stamp:%Y%m%d-%H%M%S-%f}-{slug}.md"
+        try:
+            with open(path, "x", encoding="utf-8", newline="\n") as handle:
+                handle.write(body)
+            break
+        except FileExistsError:
+            stamp += timedelta(microseconds=1)
+    ledger.mark(p.name, HANDOFF_MARK + session, at=now)
+    return path
+
+
+@_run
+def cmd_handoff(args) -> int:
+    """`room handoff [project] --session <id> --reason <text> [--context <tokens>] [--file PATH|-]` (#363)."""
+    if not _one_line(args.session or "") or not _one_line(args.reason or ""):
+        raise HandshakeError("refused: a handoff needs --session <id> and --reason <text>.")
+    reg, p = _start(args)
+    if args.file in (None, "-"):
+        text = sys.stdin.read()
+    else:
+        try:
+            text = Path(args.file).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise HandshakeError(f"refused: can't read {args.file}: {exc}") from None
+    ledger = Ledger()
+    try:
+        path = write_handoff(reg, p, ledger, text, args.session, args.reason, args.context)
+    finally:
+        ledger.close()
+    refresh(reg, p)
+    print(f"handoff for {p.name} from session {_one_line(args.session)}: {path}")
     return 0
