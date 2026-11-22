@@ -10,6 +10,7 @@ from unittest import mock
 
 from commonroom import carry as carry_mod, config, dispatch, gate, liveness, usage, workers
 from commonroom.ledger import Ledger
+from tests.gitenv import outside_any_repository
 
 
 OWNER = {"login": "o"}   # cfg_with's repo is o/t: the owner, whose account the agents post as
@@ -3308,7 +3309,7 @@ class IncompleteReview(unittest.TestCase):
 class GitRetries(unittest.TestCase):
     def test_a_folder_that_is_not_a_repository_fails_without_sleeping(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(dispatch.time, "sleep") as sleep:
-            with self.assertRaises(RuntimeError):
+            with outside_any_repository(tmp), self.assertRaises(RuntimeError):
                 dispatch.git(["fetch", "--quiet", "origin", "main"], Path(tmp))
         sleep.assert_not_called()
 
