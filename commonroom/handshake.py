@@ -28,10 +28,11 @@ from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
-README, CHARTER, DIGEST, REPLY, HANDOFF = (read_way(TEMPLATES / f"{name}.md")
-                                           for name in ("README", "charter", "digest", "reply", "handoff"))
+README, CHARTER, DIGEST, REPLY, HANDOFF, DECISIONS, DECISIONS_MORE = (
+    read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply", "handoff", "decisions", "decisions-more"))
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
+DECISIONS_SHOWN = 10       # standing decisions and bounds listed in the digest, however old (#365)
 NOTE_CHARS = 800           # of each note's text in the digest
 ATTACHED = "attached:"     # ledger mark key prefix: attached:<who>
 KINDS = ("outcome", "bound", "decision", "suggestion")   # what an owner statement can be (design-v3); `direction` is separate
@@ -301,6 +302,22 @@ def _notes(where: Path) -> str:
     return "\n".join(parts)
 
 
+def _decisions(where: Path, p: registry.Project) -> str:
+    """The digest's section of every `decision` and `bound` note, newest first, so an owner statement never falls out
+    with the newest-5 window. Empty (no section at all) when there are none."""
+    found = [n for n in read_notes(where) if n["kind"] in ("decision", "bound")]
+    if not found:
+        return ""
+    lines = []
+    for n in found[:DECISIONS_SHOWN]:
+        first = next((_one_line(line) for line in (n["text"] or "").split(chr(10)) if line.strip()), "(not readable as text)")
+        first = first if len(first) <= NOTE_CHARS else first[:NOTE_CHARS].rstrip() + " [cut: see the file]"
+        lines.append(f"- {_when(n['at'])}, {n['from'] or 'unknown sender'} ({n['kind']}): {first}")
+    if len(found) > DECISIONS_SHOWN:
+        lines.append(fill_way(DECISIONS_MORE, count=len(found) - DECISIONS_SHOWN, project=p.name))
+    return fill_way(DECISIONS, entries=chr(10).join(lines))
+
+
 LANDED_SHOWN = 10   # newest landings the digest lists; the rest are counted, so the digest stays small (A10)
 
 
@@ -403,7 +420,7 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     where = folder_of(p)
     text = fill_way(DIGEST, project=p.name, reply=_direction(ledger, p, where) + reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
-                    notes=_notes(where), work=_work(ledger, p, now)) + "\n"
+                    decisions=_decisions(where, p), notes=_notes(where), work=_work(ledger, p, now)) + "\n"
     board = _board(ledger, p)
     if board:
         text = text + "\n" + f"## Board check, latest sweep\n{board}" + "\n"

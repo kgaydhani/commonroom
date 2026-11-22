@@ -1,6 +1,6 @@
 # {{project}}: the room folder
 
-Common Room keeps this folder so any agent or person can pick up the {{project}} project.
+Any agent or person can pick up {{project}} from this folder.
 
 - `charter.md`: what the owner wants from the project and why, in the owner's words.
 - `digest.md`: the project's state now, rebuilt by the room. Edits to it are lost.
