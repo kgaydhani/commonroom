@@ -77,4 +77,4 @@ owner_floor_weekly = { value = 5, min = 1, max = 50 }
 # The most tokens one rendered prompt may have: the room hands over the task and leaves the method to the model.
 prompt_max_tokens = 700
 # The most tokens commonroom/ways/prompts/, handshake/ and comments/ may have together, so new text replaces old instead of piling up.
-templates_max_tokens = 3193   # 3193: hands.md (#368); 3180: handoff.md (#363); 3122: review-room-tested.md (#335); 2640 + the 384 of comments/ (commonroom#223); 2640: the public-repo rule (#316); 3080: continue-rework.md (#208)
+templates_max_tokens = 3222   # 3222: hands.md (#368); 3209: handoff-offer.md (#366); 3180: handoff.md (#363); 3122: review-room-tested.md (#335); 2640 + the 384 of comments/ (commonroom#223); 2640: the public-repo rule (#316); 3080: continue-rework.md (#208)

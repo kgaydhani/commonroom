@@ -64,6 +64,18 @@ CREATE TABLE IF NOT EXISTS marks (
     at REAL NOT NULL,
     PRIMARY KEY (project, key)
 );
+CREATE TABLE IF NOT EXISTS lineage (
+    project TEXT NOT NULL,
+    file TEXT NOT NULL,
+    old_session TEXT NOT NULL,
+    new_session TEXT NOT NULL,
+    reason TEXT,
+    context TEXT,
+    branch TEXT,
+    commit_id TEXT,
+    at REAL NOT NULL,
+    PRIMARY KEY (project, file)
+);
 CREATE TABLE IF NOT EXISTS findings (
     project TEXT NOT NULL,
     invariant TEXT NOT NULL,
@@ -431,6 +443,23 @@ class Ledger:
         return [dict(r) for r in self.db.execute(
             "SELECT invariant, number, detail, since FROM findings WHERE project=? ORDER BY since, invariant, number",
             (project or "",))]
+
+    def record_lineage(self, project: str, file: str, old: str, new: str, reason: str = "", context: str = "",
+                       branch: str = "", commit: str = "", at: float | None = None) -> bool:
+        """Link a new session to the one whose handoff brief it took (#366). False, writing nothing, when the brief was taken."""
+        with self.db:
+            cur = self.db.execute("INSERT OR IGNORE INTO lineage (project, file, old_session, new_session, reason, context, "
+                                  "branch, commit_id, at) VALUES (?,?,?,?,?,?,?,?,?)",
+                                  (project, file, old, new, reason, context, branch, commit,
+                                   time.time() if at is None else at))
+            return cur.rowcount == 1
+
+    def lineage(self, project: str, file: str | None = None) -> list[dict]:
+        """A project's lineage records (one brief's, with `file`), newest first."""
+        q, args = "SELECT * FROM lineage WHERE project=?", [project]
+        if file is not None:
+            q, args = q + " AND file=?", args + [file]
+        return [dict(r) for r in self.db.execute(q + " ORDER BY at DESC", args)]
 
     def marks(self, project: str | None, prefix: str) -> list[tuple[str, float]]:
         """Every mark of a project whose key starts with `prefix`, as (rest of the key, at), newest first."""
