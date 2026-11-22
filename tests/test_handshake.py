@@ -222,6 +222,40 @@ class Digest(Room):
         code, out, _ = self.room("digest", "--project", "alpha")
         self.assertIn("Landed by the project's own count in 24 h: 2.", out)
 
+    def landings(self, n, now):
+        ledger = Ledger()
+        for i in range(n):   # #1 is the oldest, #n the newest
+            run = ledger.start_run("alpha", f"#{i + 1}", "merge", "none", now=now - 3600 * (n - i))
+            ledger.finish_run(run, "done", outputs=[{"kind": "merge", "ref": f"PR #{100 + i + 1}"}], now=now - 3600 * (n - i))
+        ledger.close()
+        self.register()
+        code, out, _ = self.room("digest", "--project", "alpha")
+        self.assertEqual(code, 0)
+        return out
+
+    def test_the_digest_lists_the_10_newest_landings_and_counts_the_rest(self):
+        out = self.landings(25, datetime.now().timestamp())
+        self.assertIn("Landed: 25.", out)
+        listed = [line for line in out.splitlines() if "(PR #" in line and line.startswith("- ")]
+        self.assertEqual([line.split(": ", 1)[1] for line in listed],
+                         [f"#{i} (PR #{100 + i})" for i in range(25, 15, -1)])
+        older = [line for line in out.splitlines() if "older landings" in line]
+        self.assertEqual(older, ["15 older landings in the last 7 days; the ledger has them."])
+
+    def test_with_10_or_fewer_landings_every_one_is_listed_and_none_is_called_older(self):
+        for n in (1, 9, 10):
+            with self.subTest(n=n), mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.tmp / f"home{n}")}):
+                out = self.landings(n, datetime.now().timestamp())
+                self.assertIn(f"Landed: {n}.", out)
+                listed = [line for line in out.splitlines() if "(PR #" in line and line.startswith("- ")]
+                self.assertEqual(len(listed), n)
+                self.assertNotIn("older landings", out)
+
+    def test_board_constants_are_defined_once(self):
+        source = Path(handshake.__file__).read_text(encoding="utf-8")
+        self.assertEqual(source.count("\nBOARD_CAP ="), 1)
+        self.assertEqual(source.count("\nBOARD_FIRST ="), 1)
+
     def test_digest_with_hours_is_still_the_auditors_json(self):
         with mock.patch.object(cli, "digest", return_value={"window_hours": 3}) as old, \
                 mock.patch.object(cli.config_mod, "load", return_value={}):
