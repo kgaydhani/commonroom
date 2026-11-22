@@ -315,15 +315,27 @@ class PluginHooksForCodex(unittest.TestCase):
                 self.assertIn("%PLUGIN_ROOT%", entry["commandWindows"])
                 self.assertNotIn("${", entry["commandWindows"])   # cmd does not expand ${VAR}
 
-    def test_codex_form_prints_nothing_when_room_py_is_not_beside_the_plugin(self):
+    def run_codex_form(self, cmd, plugin_root):
+        # as Codex does: one raw command line through `cmd /C "<command>"` (list form would escape the quotes as \\")
+        return subprocess.run(f'cmd /C "{cmd}"', env={**os.environ, "PLUGIN_ROOT": str(plugin_root)},
+                              capture_output=True, text=True, input='{"x":1}')
+
+    def test_codex_form_runs_room_py_beside_the_plugin_and_is_silent_without_it(self):
         if os.name != "nt":
             self.skipTest("cmd.exe only")
         plugin = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        cmd = plugin["hooks"]["SessionStart"][0]["hooks"][0]["commandWindows"]
         with tempfile.TemporaryDirectory() as d:
-            done = subprocess.run(["cmd", "/C", cmd], env={**os.environ, "PLUGIN_ROOT": str(Path(d) / "cache" / "p")},
-                                  capture_output=True, text=True, input="{}")
-        self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""))
+            root = Path(d) / "a root with space"
+            (root / "plugin").mkdir(parents=True)
+            (root / "room.py").write_text("import sys\nprint('ARGS', sys.argv[1:], sys.stdin.read())\n",
+                                          encoding="utf-8")
+            for event, name in (("SessionStart", "session-start"), ("UserPromptSubmit", "prompt-submit")):
+                cmd = plugin["hooks"][event][0]["hooks"][0]["commandWindows"]
+                done = self.run_codex_form(cmd, root / "plugin")
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertEqual(done.stdout.strip(), f"ARGS ['hook', '{name}'] " + '{"x":1}')
+                done = self.run_codex_form(cmd, Path(d) / "cache" / "p")
+                self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""))
 
 
 class ColdReturn(Hook):
