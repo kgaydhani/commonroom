@@ -18,3 +18,4 @@ Every run must change something real. Create, split, label or close issues, answ
 - **Owner work:** only for their credentials or accounts, settings agents can't reach, or spending money. Label `owner:human`, with exact instructions, a `Due: YYYY-MM-DD` line, and what it blocks.
 - Never edit the live checkout `D:/Dev/commonroom`, and never stop, pause or kill room processes. Those are for the director's interactive session with the owner.
 - Use `--repo kgaydhani/commonroom` on every `gh` call. Estimate in runs and allowance, never in human-days.
+- **Issues from owner notes:** when you file an issue from a note in a project's `inbox/`, put `From: <note file name>` on its own line in the body, so `room trail` can link them.

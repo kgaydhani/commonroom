@@ -586,3 +586,93 @@ class Corrections(Room):
         with mock.patch("time.time", return_value=self.NOW):
             summary = cli.digest(cfg, 24)["summary"]
         self.assertEqual((summary["owner_corrections_7d"], summary["owner_corrections_prev_7d"]), (3, 1))
+
+
+class Trail(Room):
+    """commonroom#400: `room trail` links each owner note to the issues filed from it; the digest counts notes with none."""
+    NOW = datetime(2026, 11, 20, 12, 0).timestamp()
+    DAY = 86400
+
+    def setUp(self):
+        super().setUp()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\nrepo = "me/alpha"\n', encoding="utf-8")
+        self.register()
+        self.issues, self.prs = [], []
+        patch = mock.patch.object(handshake.board, "gh", self.gh)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def gh(self, args):
+        return self.issues if args[0] == "issue" else self.prs
+
+    def note(self, days_ago, text, sender="kieran"):
+        return handshake.write_note(handshake.prepare(registry.load().projects["alpha"]), text, sender, None,
+                                    self.NOW - days_ago * self.DAY).name
+
+    def issue(self, number, state, body):
+        self.issues.append({"number": number, "title": f"t{number}", "state": state, "body": body})
+
+    def trail(self):
+        reg = registry.load()
+        p = reg.projects["alpha"]
+        notes = handshake.owner_notes(reg, p, self.NOW - 14 * self.DAY, self.NOW)
+        return notes, handshake.trail(p, notes)
+
+    def digest(self):
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            text = handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+        finally:
+            ledger.close()
+        return [l for l in text.split("\n") if l.startswith("Owner notes with no item")]
+
+    def test_a_note_named_by_two_issues_shows_both_with_their_state(self):
+        name = self.note(2, "make the page faster")
+        self.issue(5, "OPEN", f"Why\nFrom: {name}\n")
+        self.issue(6, "CLOSED", f"From: {name}")
+        self.prs = [{"number": 9, "closingIssuesReferences": [{"number": 6}]}]
+        _, linked = self.trail()
+        self.assertEqual([(i["number"], i["state"], i["merged"]) for i in linked[name]], [(5, "open", False), (6, "closed", True)])
+        self.assertEqual(self.digest(), [])
+
+    def test_the_command_prints_each_issue_and_a_note_with_none_says_no_item_yet(self):
+        name = self.note(2, "make the page faster\nmore")
+        self.note(1, "something else")
+        self.issue(5, "OPEN", f"From: {name}")
+        self.issue(6, "CLOSED", f"From: {name}")
+        self.prs = [{"number": 9, "closingIssuesReferences": [{"number": 6}]}]
+        with mock.patch("time.time", return_value=self.NOW):
+            code, out, _ = self.room("trail", "alpha")
+        self.assertEqual(code, 0)
+        self.assertIn("#5 t5: open", out)
+        self.assertIn("#6 t6: closed, merged PR", out)
+        self.assertIn("something else", out)
+        self.assertEqual(out.count("no item yet"), 1)
+        self.assertLess(out.index("something else"), out.index("make the page faster"))
+
+    def test_a_note_with_no_issue_is_counted_in_the_digest(self):
+        self.note(2, "unanswered")
+        self.assertEqual(self.digest(), ["Owner notes with no item yet: 1 in the last 14 days (`room trail alpha`)."])
+
+    def test_from_in_the_middle_of_a_line_does_not_link(self):
+        name = self.note(2, "x")
+        self.issue(5, "OPEN", f"This came From: {name} I think")
+        _, linked = self.trail()
+        self.assertEqual(linked[name], [])
+        self.assertEqual(len(self.digest()), 1)
+
+    def test_an_agents_note_is_not_listed(self):
+        self.note(2, "a project's", "beta")
+        self.note(2, "a role's", "builder")
+        mine = self.note(1, "the owner's")
+        notes, _ = self.trail()
+        self.assertEqual([n["name"] for n in notes], [mine])
+
+    def test_no_notes_or_no_repo_means_no_board_call_and_no_line(self):
+        self.gh = mock.Mock(side_effect=AssertionError("board read"))
+        with mock.patch.object(handshake.board, "gh", self.gh):
+            self.assertEqual(self.digest(), [])
+            self.note(2, "x")
+            (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n', encoding="utf-8")
+            self.assertEqual(self.digest(), [])

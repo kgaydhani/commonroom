@@ -24,7 +24,7 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from commonroom import artifacts, config as config_mod, ledger as ledger_mod, measure, metrics, policy, progress as progress_mod, registry, trials
+from commonroom import artifacts, board, config as config_mod, ledger as ledger_mod, measure, metrics, policy, progress as progress_mod, registry, trials
 from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -467,6 +467,58 @@ def _corrections(where: Path, now: float) -> str:
     return f"Owner corrections: {last} in the last 7 days, {before} in the 7 days before. Newest: {newest}"
 
 
+ROLES = {"builder", "scout", "director", "reviewer", "auditor", "room"}   # senders that are agents, not the owner
+FROM_LINE = re.compile(r"^From:[ \t]*(\S+)[ \t]*$", re.M)   # an issue filed from an owner note: `From: <file name>` alone on a line
+TRAIL_DAYS = 14
+
+
+def owner_notes(reg: registry.Registry, p: registry.Project, since: float, now: float) -> list[dict]:
+    """The owner's notes in the window, newest first: agent notes (a `from:` naming a project or a role) are left out."""
+    agents = {n.lower() for n in ROLES} | {n.lower() for n in reg.projects} | {ledger_name(p).lower()}
+    agents |= {f.stem.lower() for f in (Path(p.path) / ".claude" / "agents").glob("*.md")}
+    return [n for n in read_notes(folder_of(p)) if since <= n["at"] <= now and n["text"] is not None
+            and (n["from"] or "").strip().lower() not in agents]
+
+
+def trail(p: registry.Project, notes: list[dict]) -> dict[str, list[dict]]:
+    """Each note's file name -> the issues whose body has a `From: <name>` line naming it, each with `number`, `state`
+    and `merged` (a merged PR closed it). Empty when there are no notes or the project has no repo."""
+    repo = (room_toml(p).get("project") or {}).get("repo")
+    found: dict[str, list[dict]] = {n["name"]: [] for n in notes}
+    if not notes or not repo:
+        return found
+    issues = board.gh(["issue", "list", "--repo", repo, "--state", "all", "--limit", "500",
+                       "--json", "number,title,state,body"]) or []
+    closed = {i["number"] for i in issues if str(i.get("state")).upper() == "CLOSED"}
+    merged: set[int] = set()
+    if any(i["number"] in closed for i in issues if any(m in found for m in FROM_LINE.findall(i.get("body") or ""))):
+        for pr in board.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "500",
+                            "--json", "number,closingIssuesReferences"]) or []:
+            merged |= {r["number"] for r in pr.get("closingIssuesReferences") or []}
+    for i in sorted(issues, key=lambda i: i["number"]):
+        for name in dict.fromkeys(FROM_LINE.findall(i.get("body") or "")):
+            if name in found:
+                found[name].append({"number": i["number"], "title": i.get("title") or "", "state": str(i.get("state")).lower(),
+                                    "merged": i["number"] in merged})
+    return found
+
+
+def unlinked(reg: registry.Registry, p: registry.Project, now: float, days: int = TRAIL_DAYS) -> int | None:
+    """How many owner notes in the window have no issue; None when the board can't be read."""
+    if not (room_toml(p).get("project") or {}).get("repo"):
+        return None
+    notes = owner_notes(reg, p, now - days * 86400, now)
+    try:
+        return sum(1 for items in trail(p, notes).values() if not items)
+    except (RuntimeError, OSError, ValueError, TypeError):
+        return None
+
+
+def _unlinked(reg: registry.Registry, p: registry.Project, now: float) -> str:
+    count = unlinked(reg, p, now)
+    return f"Owner notes with no item yet: {count} in the last {TRAIL_DAYS} days (`room trail {p.name}`)." if count else ""
+
+
 def _age(seconds: float) -> str:
     seconds = max(0, seconds)
     return f"{int(seconds // 86400)}d" if seconds >= 86400 else f"{int(seconds // 3600)}h" if seconds >= 3600 else f"{int(seconds // 60)}m"
@@ -496,6 +548,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     said = _corrections(where, now)
     if said:
         text = text + "\n" + said + "\n"
+    unlinked_line = _unlinked(reg, p, now)
+    if unlinked_line:
+        text = text + "\n" + unlinked_line + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
 
@@ -681,6 +736,30 @@ def cmd_artifact(args) -> int:
 def cmd_digest(args) -> int:
     reg, p = _start(args)
     print(refresh(reg, p), end="")
+    return 0
+
+
+@_run
+def cmd_trail(args) -> int:
+    """`room trail [project] [--days N]`: the owner's notes, and the issues filed from each and what landed."""
+    reg, p = _start(args)
+    now = time.time()
+    notes = owner_notes(reg, p, now - args.days * 86400, now)
+    if not (room_toml(p).get("project") or {}).get("repo"):
+        raise HandshakeError(f"refused: {p.name} has no [project] repo in its room.toml.")
+    try:
+        linked = trail(p, notes)
+    except (RuntimeError, OSError, ValueError) as exc:
+        raise HandshakeError(f"refused: the board can't be read: {exc}")
+    if not notes:
+        print(f"no owner notes for {p.name} in the last {args.days} days")
+    for n in notes:
+        print(f"{_when(n['at'])}  {_first_line(n['text'])}  (`inbox/{n['name']}`)")
+        for i in linked[n["name"]]:
+            state = "open" if i["state"] == "open" else "closed, merged PR" if i["merged"] else "closed, no merged PR"
+            print(f"  #{i['number']} {i['title']}: {state}".rstrip())
+        if not linked[n["name"]]:
+            print("  no item yet")
     return 0
 
 
