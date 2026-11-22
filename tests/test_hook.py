@@ -154,6 +154,13 @@ class Points(Hook):
             self.assertEqual(self.room(["notes"], self.alpha), 0)
         self.assertNotIn("Unread notes in its `inbox/`: 1", self.added(self.alpha))
 
+    def test_a_filtered_notes_list_by_kind_does_not_mark_the_inbox_read(self):
+        self.register()
+        self.note("For alpha.", "director", at=time.time() - 3600)
+        with mock.patch("time.time", return_value=time.time() + 10):
+            self.assertEqual(self.room(["notes", "--kind", "decision"], self.alpha), 0)
+        self.assertIn("1, from director", self.added(self.alpha))
+
     def test_the_hook_paragraph_alone_does_not_mark_anything_read(self):
         self.register()
         self.note("For alpha.", "director")
