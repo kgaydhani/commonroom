@@ -30,6 +30,7 @@ from commonroom.ledger import Ledger
 TEMPLATES = Path(__file__).resolve().parent / "ways" / "handshake"
 README, CHARTER, DIGEST, REPLY, HANDOFF, DECISIONS, DECISIONS_MORE = (
     read_way(TEMPLATES / f"{name}.md") for name in ("README", "charter", "digest", "reply", "handoff", "decisions", "decisions-more"))
+HANDOFF_OFFER = read_way(TEMPLATES / "handoff-offer.md")
 WEEK = 7 * 86400
 NEWEST = 5                 # notes shown in the digest; `room notes` shows them all
 DECISIONS_SHOWN = 10       # standing decisions and bounds listed in the digest, however old (#365)
@@ -39,6 +40,7 @@ KINDS = ("outcome", "bound", "decision", "suggestion")   # what an owner stateme
 DIRECTION = "direction"   # ledger mark key: when the owner last changed a project's direction (`note --direction`)
 READ = "read:"             # ledger mark key prefix: read:<project>, set when that project's own session read its inbox
 HANDOFF_MARK = "handoff:"  # ledger mark key prefix: handoff:<session>, set when that session wrote a handoff (#363)
+TOOK = "took:"             # ledger mark key prefix: took:<file>, set when a session took that handoff brief (#366)
 ADD = "`room projects add <name> <folder> --share <percent>`"
 UNITS = {"m": 60, "h": 3600, "d": 86400, "w": WEEK}
 PARTS = ("README.md", "charter.md", "digest.md", "inbox")
@@ -683,9 +685,94 @@ def write_handoff(reg: registry.Registry, p: registry.Project, ledger: Ledger, t
     return path
 
 
+def handoffs(p: registry.Project) -> list[Path]:
+    """The project's handoff briefs, oldest first."""
+    folder = folder_of(p) / "handoffs"
+    return sorted(f for f in folder.glob("*.md") if f.is_file()) if folder.is_dir() else []
+
+
+def _stamp(fields: dict, path: Path) -> str:
+    try:
+        return _when(datetime.fromisoformat(fields.get("at", "")).timestamp())
+    except ValueError:
+        return _when(path.stat().st_mtime) + " (file time)"
+
+
+def offer(p: registry.Project, ledger: Ledger | None, session) -> str | None:
+    """The one line telling a session about the newest handoff brief nobody has taken (#366); None when there is none.
+    Reads only: marks and files."""
+    for path in reversed(handoffs(p)):
+        if ledger is None or ledger.marked(p.name, TOOK + path.name) is None:
+            fields = _fields(path)
+            return fill_way(HANDOFF_OFFER, file=str(path), session=fields.get("from_session") or "(not named)",
+                            at=_stamp(fields, path), me=_one_line(str(session or "")) or "<this session's id>")
+    return None
+
+
+def take_handoff(p: registry.Project, ledger: Ledger, name: str, session: str, now: float | None = None) -> Path:
+    """Record that `session` took the brief `name`: the mark `took:<file>` and the lineage from the brief's front matter."""
+    session = _one_line(session or "")
+    if not session:
+        raise HandshakeError("refused: taking a handoff needs --session <id>.")
+    path = Path(name)
+    if not path.is_file():
+        path = folder_of(p) / "handoffs" / path.name
+    if not path.is_file() or path.parent.resolve() != (folder_of(p) / "handoffs").resolve():
+        raise HandshakeError(f"refused: {name} is not a handoff brief of {p.name}. `room handoff list {p.name}` shows them.")
+    fields = _fields(path)
+    now = time.time() if now is None else now
+    if not ledger.record_lineage(p.name, path.name, fields.get("from_session", ""), session, fields.get("reason", ""),
+                                 fields.get("context", ""), fields.get("branch", ""), fields.get("commit", ""), at=now):
+        by = ledger.lineage(p.name, path.name)[0]
+        raise HandshakeError(f"refused: {path.name} was already taken by session {by['new_session']} ({_when(by['at'])}).")
+    ledger.mark(p.name, TOOK + path.name, at=now)
+    return path
+
+
+def handoff_lines(p: registry.Project, ledger: Ledger) -> list[str]:
+    """One line per handoff brief, newest first: from, to (or "not taken"), the reason and the time."""
+    out = []
+    for path in reversed(handoffs(p)):
+        fields = _fields(path)
+        got = ledger.lineage(p.name, path.name)
+        out.append(f"{_stamp(fields, path)}, from {fields.get('from_session') or '(not named)'} to "
+                   f"{got[0]['new_session'] if got else 'not taken'}: {fields.get('reason', '')} (`{path.name}`)")
+    return out
+
+
+def _handoff_sub(args) -> int:
+    """`room handoff take <file> --session <id>` and `room handoff list [project]` (#366)."""
+    verb, rest = args.name, list(args.rest)
+    if verb == "take":
+        if len(rest) != 1:
+            raise HandshakeError("refused: `room handoff take <file> --session <id>` takes one file.")
+        args.name, file = None, rest[0]
+    else:
+        if len(rest) > 1:
+            raise HandshakeError("refused: `room handoff list [project]` takes at most one project.")
+        args.name, file = (rest[0] if rest else None), None
+    reg, p = _start(args)
+    ledger = Ledger()
+    try:
+        if verb == "list":
+            lines = handoff_lines(p, ledger)
+            print("\n".join(lines) if lines else f"{p.name} has no handoffs.")
+            return 0
+        path = take_handoff(p, ledger, file, args.session)
+    finally:
+        ledger.close()
+    refresh(reg, p)
+    print(f"{p.name}: session {_one_line(args.session)} took {path.name}")
+    return 0
+
+
 @_run
 def cmd_handoff(args) -> int:
     """`room handoff [project] --session <id> --reason <text> [--context <tokens>] [--file PATH|-]` (#363)."""
+    if args.name in ("take", "list"):
+        return _handoff_sub(args)
+    if args.rest:
+        raise HandshakeError(f"refused: unexpected {' '.join(args.rest)}. Name one project.")
     if not _one_line(args.session or "") or not _one_line(args.reason or ""):
         raise HandshakeError("refused: a handoff needs --session <id> and --reason <text>.")
     reg, p = _start(args)

@@ -33,7 +33,7 @@ PINNED = {
 
 
 # Values added to the table since the move, with the value each was added at.
-NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3240,   # commonroom#231; 3240: #367; 3180: #363; 3122: #335; 2530: #262; 2914: #223; 3024: #316; 3080: #208
+NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3269,   # commonroom#231; 3269: #367; 3209: #366; 3180: #363; 3122: #335; 2530: #262; 2914: #223; 3024: #316; 3080: #208
        "pie_idle_minutes": 60,                                    # commonroom#240: today's [share] idle_minutes
        "pie_notice_margin": 1, "pie_own_active_minutes": 20,      # commonroom#243
        "cold_return_minutes": 60, "cold_return_context": 150000,   # commonroom#367
