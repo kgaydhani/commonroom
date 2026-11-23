@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from commonroom import board, config as config_mod, handshake, metrics, page, weekly
+from commonroom import board, config as config_mod, handshake, metrics, page, registry, weekly
 from commonroom.dispatch import verdicts
 from commonroom.ledger import Ledger
 
@@ -155,6 +155,15 @@ def owner_note(body: dict) -> dict:
     return {"ok": True, "name": handshake.write_note(handshake.prepare(p), text, sender="owner", kind=kind).name}
 
 
+def set_project(body: dict) -> dict:
+    """`POST /api/project`: change one project's share and modes through the registry, as `room projects set` does.
+    Raises ValueError (RegistryError is one) with the registry's own text when it refuses."""
+    share = body.get("share")
+    if share is not None and (isinstance(share, bool) or not isinstance(share, (int, float))):
+        raise ValueError("share must be a number")
+    return registry.set_project(str(body.get("project", "")), share, body.get("work") or None, body.get("when") or None)
+
+
 PAGE = (Path(__file__).with_name("static") / "dashboard.html").read_text(encoding="utf-8")
 
 
@@ -185,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
         # A custom header forces a CORS preflight, so other sites can't drive these endpoints.
         if self.headers.get("X-Room") != "1":
             return self.send(403, b"forbidden", "text/plain")
+        origin = self.headers.get("Origin")
+        if origin and origin not in (f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"):
+            return self.send(403, b"forbidden", "text/plain")
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length) or b"{}")
         project = self.cfg["project"].get("name")
@@ -207,6 +219,8 @@ class Handler(BaseHTTPRequestHandler):
                 result = {"ok": True}
             elif self.path == "/api/note":
                 result = owner_note(body)
+            elif self.path == "/api/project":
+                result = set_project(body)
             elif self.path == "/api/suggest":
                 text = str(body.get("title", "")).strip()[:8000]
                 if not text:

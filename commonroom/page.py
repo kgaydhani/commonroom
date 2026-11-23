@@ -132,12 +132,13 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
             ok = pie.may_start(report.rows, active, s.name)[0]
             rows.append({"name": s.name, "share": s.share, "spent_est": s.spent, "room_est": report.room(s.name),
                          "own_sessions_est": report.own.get(s.name, 0.0), "line": s.allowed, "state": _state_word(s, ok),
-                         "when": s.when})
+                         "when": s.when,
+                         "work": reg.projects[s.name].work if s.name in reg.projects else None})
             sections.append({"name": s.name, **_project(ledger, names[s.name], now, s, ok, win, slack),
                              **(_trail(reg, s.name, now, trail) if trail and s.name in reg.projects else {})})
         rows.append({"name": "you (unassigned)", "share": report.owner_share, "spent_est": report.owner_use,
                      "room_est": None, "own_sessions_est": None, "line": report.owner_share * win.elapsed, "state": "yours",
-                     "when": None})
+                     "when": None, "work": None})
     elif not reg.projects:
         sections.append({"name": host or "this project", **_project(ledger, host, now, None, True, win, slack)})
     waiting = []

@@ -180,6 +180,21 @@ def _string(value: str) -> str:
     return '"' + "".join(out) + '"'
 
 
+def set_project(name: str, share=None, work=None, when=None, path: Path | str | None = None) -> dict:
+    """What `room projects set <name> --share --work --when` does: change the named fields, run the registry's checks and
+    save. Raises RegistryError with the registry's own text, leaving the file as it was."""
+    path = path or default_path()
+    reg = load(path, check=False)
+    if name not in reg.projects:
+        raise RegistryError(f"no project {name!r} in {path}")
+    p = reg.projects[name]
+    for key, value in (("share", share), ("work", work), ("when", when)):
+        if value is not None:
+            setattr(p, key, value)
+    warnings = save(reg, path, changing=name)
+    return {"ok": True, "warnings": warnings, "owner_share": reg.owner_share()}
+
+
 def fmt_number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else repr(float(value))
 

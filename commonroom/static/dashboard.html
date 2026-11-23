@@ -81,6 +81,8 @@ function render(d) {
     el("b", null, null, bar).style.left = Math.min(99, 100 * r.line / cap) + "%";
   }
 
+  if (d.registered) editor(pie, d.rows.filter(r => r.work), d.rows.find(r => r.work === null));
+
   const wt = $("waiting");
   wt.textContent = "";
   if (!d.waiting.length) el("p", "Nothing is waiting on you.", "dim", wt);
@@ -136,17 +138,70 @@ function render(d) {
   }
 }
 
-async function load() {
+// Sliders and mode per project. Nothing is saved until Apply; the preview shows the pie as it would be.
+function editor(parent, rows, owner) {
+  const box = el("div", null, "row", parent);
+  el("p", "Change the shares", "dim", box);
+  const ctl = {};
+  const preview = el("p", null, null, box);
+  const msg = el("p", null, "dim", box);
+  const apply = el("button", "Apply", null, box);
+  const draft = () => rows.filter(r => {
+    const c = ctl[r.name];
+    return +c.slider.value !== r.share || c.work.value !== r.work || c.when.value !== r.when;
+  });
+  const show = () => {
+    for (const r of rows) ctl[r.name].out.textContent = ctl[r.name].slider.value + "%";
+    const total = rows.reduce((t, r) => t + +ctl[r.name].slider.value, 0);
+    const mine = Math.round((100 - total) * 10) / 10;
+    const cur = `Now: ${rows.map(r => r.name + " " + r.share + "%").join(", ")}, you ${owner ? owner.share : "-"}%.`;
+    const next = `After Apply: ${rows.map(r => r.name + " " + ctl[r.name].slider.value + "%").join(", ")}, you ${mine}%.`;
+    preview.textContent = draft().length ? cur + " " + next : cur + " No change.";
+    apply.disabled = !draft().length;
+  };
+  for (const r of rows) {
+    const line = el("div", null, "top", box);
+    el("span", r.name, null, line);
+    const c = ctl[r.name] = {};
+    c.slider = el("input", null, null, line);
+    c.slider.type = "range"; c.slider.min = 0; c.slider.max = 100; c.slider.step = 1; c.slider.value = r.share;
+    c.out = el("span", null, "dim", line);
+    c.work = el("select", null, null, line);
+    for (const k of ["fixed", "open"]) el("option", k, null, c.work).value = k;
+    c.work.value = r.work;
+    c.when = el("select", null, null, line);
+    for (const k of ["paced", "spare"]) el("option", k, null, c.when).value = k;
+    c.when.value = r.when;
+    for (const k of ["slider", "work", "when"]) c[k].oninput = show;
+  }
+  show();
+  apply.onclick = async () => {
+    msg.textContent = "Applying...";
+    try {
+      for (const r of draft()) {
+        const c = ctl[r.name];
+        const res = await fetch("/api/project", {method: "POST", headers: {"X-Room": "1"},
+          body: JSON.stringify({project: r.name, share: +c.slider.value, work: c.work.value, when: c.when.value})});
+        const j = await res.json();
+        if (j.error) { msg.textContent = `${r.name}: ${j.error}`; return; }
+      }
+      msg.textContent = "Applied.";
+      load(true);
+    } catch (e) { msg.textContent = "Not applied: " + e; }
+  };
+}
+
+async function load(force) {
   try {
     const r = await fetch("/api/page", {cache: "no-store"});
     const d = await r.json();
-    if (![...document.querySelectorAll("textarea")].some(t => t.value)) render(d);   // a half-written note is not wiped by the refresh
+    if (force === true || (![...document.querySelectorAll("textarea")].some(t => t.value) && !document.querySelector("input[type=range]:focus"))) render(d);   // a half-written note is not wiped by the refresh
   } catch (e) {
     $("week").textContent = "The room's dashboard can't be reached: " + e;
   }
 }
 load();
-setInterval(load, 30000);
+setInterval(() => load(), 30000);
 </script>
 </body>
 </html>
