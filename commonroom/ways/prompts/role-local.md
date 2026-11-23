@@ -3,5 +3,5 @@ Title: {{title}}
 {{body}}
 Comments:
 {{comments}}
-Make no code PR unless your instructions say to. Put your findings and evidence in your report: the room posts it and closes the item.
+Leave files you write uncommitted: the room keeps them. No code PR unless told to. Put findings in your report: the room posts it and closes the item.
 End with a short report; the last line is exactly `STATUS: DONE` or `STATUS: BLOCKED`.

@@ -135,6 +135,69 @@ class LocalProject(unittest.TestCase):
         where = self.run_local_item(repo=False)
         self.assertIn((self.root / "projects" / "demo" / "work").resolve(), where.resolve().parents)
 
+    def run_writing(self, repo: bool, write: bool, provider: str = "claude"):
+        d = self.local_dispatcher(repo)
+        d.allowed = lambda now: {provider: gate.Verdict(True, "ok")}
+        if provider != "claude":
+            d.cfg["roles"]["writer"] = [f"{provider}:gpt"]
+        n = d.board.inner.create_issue("Write the note", "Body.", labels=["status:ready", "role:writer"], milestone="M0")
+        def worker(prov, role, prompt, cwd, *a, **kw):
+            if write:
+                (Path(cwd) / "note.md").write_text("hello\n", encoding="utf-8")
+                (Path(cwd) / ".scratch").mkdir(exist_ok=True)
+                (Path(cwd) / ".scratch" / "tmp.txt").write_text("x", encoding="utf-8")
+            return workers.WorkerResult(ok=True, final_text="Written.\nSTATUS: DONE")
+        with mock.patch.object(dispatch, "run_worker", side_effect=worker):
+            report = d.run_once()
+        self.assertEqual(report["job"]["status"], "done", report)
+        comments = " ".join(c["body"] for c in d.board.inner.issue_comments(n, 0))
+        return d, n, comments
+
+    def git_out(self, *args):
+        return subprocess.run(["git", *args], cwd=self.root, check=True, capture_output=True, text=True).stdout.strip()
+
+    def test_git_project_keeps_uncommitted_work_on_a_room_branch(self):
+        d, n, comments = self.run_writing(True, True)
+        branches = self.git_out("branch", "--list", f"room/item-{n}-*", "--format=%(refname:short)").split()
+        self.assertEqual(len(branches), 1, branches)
+        self.assertEqual(self.git_out("show", f"{branches[0]}:note.md"), "hello")
+        self.assertEqual(self.git_out("ls-tree", "-r", "--name-only", branches[0]), "note.md")   # no .scratch
+        self.assertEqual(self.git_out("rev-list", "--count", "HEAD"), "1")   # the project's branch is untouched
+        self.assertNotIn("note.md", self.git_out("status", "--porcelain"))
+        self.assertFalse((self.root / "note.md").exists())
+        self.assertIn(branches[0], comments)
+
+    def test_git_project_with_no_work_leaves_no_branch(self):
+        d, n, comments = self.run_writing(True, False)
+        self.assertEqual(self.git_out("branch", "--list", "room/*"), "")
+        self.assertNotIn("room/", comments)
+
+    def test_codex_work_on_a_local_git_project_is_kept(self):
+        d, n, comments = self.run_writing(True, True, provider="codex")
+        branches = self.git_out("branch", "--list", f"room/item-{n}-*", "--format=%(refname:short)").split()
+        self.assertEqual(len(branches), 1, branches)
+        self.assertEqual(self.git_out("show", f"{branches[0]}:note.md"), "hello")
+
+    def test_folder_without_git_keeps_files_under_the_room_folder(self):
+        d, n, comments = self.run_writing(False, True)
+        kept = list((self.root / "projects" / "demo" / "files" / f"item-{n}").glob("*/note.md"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn(str(kept[0].parent), comments)
+
+    def test_folder_without_git_and_no_work_leaves_no_folder(self):
+        d, n, comments = self.run_writing(False, False)
+        self.assertFalse((self.root / "projects" / "demo" / "files").exists())
+        self.assertEqual(list((self.root / "projects" / "demo" / "work").iterdir()), [])
+
+    def test_a_github_board_role_run_keeps_nothing(self):
+        cfg = cfg_for(self.root, {"name": "demo", "repo": "o/demo"})
+        d = dispatch.Dispatcher(cfg, self.ledger, board=mock.Mock(), log=lambda *_: None)
+        job = dispatch.Job("role", "writer", issue={"number": 1, "title": "t", "labels": []})
+        with mock.patch.object(dispatch, "git", side_effect=AssertionError("git was called")):
+            self.assertIsNone(d.local_start(job, self.root))
+            self.assertTrue(d.keep_local_work(job, self.root, None, "r1"))
+        self.assertFalse((self.root / "files").exists())
+
     def test_a_local_board_answers_the_pr_side_with_nothing(self):
         board = LocalBoard(self.root / "b")
         self.assertEqual(board.main_checks(), [])
