@@ -3088,7 +3088,7 @@ class StampEffort(unittest.TestCase):
             cfg["director"]["stamp_effort"] = stamp_effort
         issues = list(issues) or [issue(1, ["status:ready", "role:builder"])]
         d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
-        d.ready_for_director = lambda: [self.STAMP] if stamps else []
+        d.stamp_waits = lambda: [("stamp-told:7:abc", self.STAMP)] if stamps else []
         job, _, _ = d.pick(self.ALLOWED)
         return d, job
 
@@ -3137,7 +3137,7 @@ class StampEffort(unittest.TestCase):
         cfg = cfg_with(self.tmp.name)
         cfg["director"].update({"steer_every_hours": 1, "stamp_effort": "medium"})
         d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard([issue(1, ["status:ready", "role:builder"])]), log=lambda *_: None)
-        d.ready_for_director = lambda: [self.STAMP]
+        d.stamp_waits = lambda: [("stamp-told:7:abc", self.STAMP)]
         job, _, _ = d.pick(self.ALLOWED)
         self.assertIn(self.STAMP, job.reason)
         self.assertGreater(len(job.reason), len(self.STAMP))
