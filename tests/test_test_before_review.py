@@ -161,3 +161,30 @@ class PreReview(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlsoAcceptRoomLine(PreReview):
+    """A room PASS naming an older command still proves the head when the project lists it in `[checks] also_accept`."""
+    OLD = "python old/runner.py"
+
+    def room_tested(self, listed):
+        d, board = self.make()
+        d.cfg["checks"]["test"] = "python tests/parallel.py"
+        if listed:
+            d.cfg["checks"]["also_accept"] = [self.OLD]
+        room = {"createdAt": "2026-11-21T00:00:00Z", "body": f"[room] TESTS: PASS {HEAD} {self.OLD}: Ran 3 tests OK"}
+        approve = {"createdAt": "2026-11-22T00:00:00Z", "body": "[agent:reviewer] REVIEW: APPROVE\nLooks right."}
+        detail = pr_detail(comments=[room, approve])
+        return d.room_pass(detail) is not None, d.room_tested(detail, approve)
+
+    def test_listed_old_command_counts(self):
+        self.assertEqual(self.room_tested(True), (True, True))
+
+    def test_unlisted_old_command_does_not(self):
+        self.assertEqual(self.room_tested(False), (False, False))
+
+    def test_names_command_without_setting_is_exact(self):
+        cfg = {"checks": {"test": CMD}}
+        self.assertTrue(dispatch.names_command(f"{CMD}: OK", cfg))
+        self.assertFalse(dispatch.names_command("python other: OK", cfg))
+        self.assertEqual(dispatch.also_accept({"checks": {"also_accept": 1}}), [])
