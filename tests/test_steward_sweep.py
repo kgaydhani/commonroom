@@ -8,7 +8,10 @@ from unittest import mock
 
 from commonroom import dispatch, handshake, registry
 from commonroom.ledger import Ledger
+from tests import notrials
 from tests.test_dispatch import FakeBoard, cfg_with, issue
+
+setUpModule, tearDownModule = notrials.start, notrials.stop   # no shipped trial in a pass or digest (commonroom#449)
 
 
 def pr(n, branch):

@@ -10,7 +10,10 @@ from unittest import mock
 
 from commonroom import carry as carry_mod, config, dispatch, gate, liveness, usage, workers
 from commonroom.ledger import Ledger
+from tests import notrials
 from tests.gitenv import outside_any_repository
+
+setUpModule, tearDownModule = notrials.start, notrials.stop   # no shipped trial in a pass (commonroom#449)
 
 
 OWNER = {"login": "o"}   # cfg_with's repo is o/t: the owner, whose account the agents post as
