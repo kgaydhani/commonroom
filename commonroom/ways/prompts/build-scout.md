@@ -1,2 +1,2 @@
-Do the research in GitHub issue #{{n}} in {{repo}}. You are on branch `{{branch}}` in a fresh worktree. Follow your scout instructions. Commit your report under docs/scouting/, push with `git push -u origin {{branch}}`, and open a PR whose body says `Closes #{{n}}` and summarises the findings. Open any `kind:suggestion` issues the deliverable asks for. Prefix comments with `[agent:scout]`.
-Finish with a short report, and make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.
+Do the research in issue #{{n}} in {{repo}}. You are on branch `{{branch}}` in a fresh worktree. Follow your scout instructions. Commit your report under docs/scouting/, push with `git push -u origin {{branch}}`, and open a PR that says `Closes #{{n}}` and summarises the findings. Open the `kind:suggestion` issues the deliverable asks for. Prefix comments with `[agent:scout]`.
+Finish with a short report; make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.

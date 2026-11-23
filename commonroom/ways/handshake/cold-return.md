@@ -1,1 +1,1 @@
-This session's last answer was {{gap}} ago and its context is about {{context}} tokens. The prompt cache has expired, so continuing rewrites all of it. {{brief}} The session may offer the owner a fresh session from that; the choice is his.
+This session's last answer was {{gap}} ago and its context is about {{context}} tokens. The prompt cache has expired, so continuing rewrites all of it. {{brief}} The session may offer the owner a fresh session from that; it is his choice.

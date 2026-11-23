@@ -74,9 +74,10 @@ class Budget(unittest.TestCase):
                              [f"prompts/ + handshake/ + comments/ is {limit + 1} tokens, over the {limit}-token budget "
                               f"for all templates"])
 
-    def test_the_budget_grew_by_exactly_the_comment_folder_and_the_rework_prompt(self):
+    def test_the_templates_leave_about_a_hundred_tokens_of_headroom(self):   # commonroom#417
         used = tokens("".join(read(p) for f in (TEMPLATES, HANDSHAKE, COMMENTS) for p in sorted(f.iterdir()) if p.is_file()))
-        self.assertTrue(used <= policy.DEFAULTS["templates_max_tokens"] <= used + 16, used)
+        self.assertLessEqual(used, 3100, "trim text before raising templates_max_tokens")
+        self.assertGreaterEqual(policy.DEFAULTS["templates_max_tokens"] - used, 100)
 
     def test_padding_past_the_budget_fails_naming_the_file_and_its_size(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -96,7 +97,7 @@ class Budget(unittest.TestCase):
         self.assertEqual([tokens("x" * n) for n in (0, 1, 4, 5, 2800, 2801)], [0, 1, 1, 2, 700, 701])
 
     def test_the_budgets_are_room_wide_only(self):
-        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 3342))
+        self.assertEqual((policy.DEFAULTS["prompt_max_tokens"], policy.DEFAULTS["templates_max_tokens"]), (700, 3200))
         for name in ("prompt_max_tokens", "templates_max_tokens"):
             with self.subTest(name=name):
                 self.assertIn(name, policy.GLOBAL_ONLY)
