@@ -36,7 +36,8 @@ class LocalBoard:
     """Board operations on files. Swappable for GitHubBoard: same call shapes, same dicts."""
 
     def __init__(self, folder):
-        self.items = Path(folder) / "board" / "items"
+        self.folder = Path(folder)
+        self.items = self.folder / "board" / "items"
         self.items.mkdir(parents=True, exist_ok=True)
 
     # -- reading
@@ -119,6 +120,30 @@ class LocalBoard:
         return None
 
     def pr_detail(self, number: int) -> dict:
+        return {}
+
+    def main_checks(self) -> list[dict]:
+        return []
+
+    def merge(self, number: int, *args, **kwargs):
+        """No pull requests, nothing to merge."""
+
+    def behind_main(self, detail: dict) -> int:
+        return 0
+
+    def update_branch(self, number: int):
+        """Nothing to update."""
+
+    def close_pr(self, number: int, *args, **kwargs):
+        """Nothing to close."""
+
+    def label_pr(self, number: int, *args, **kwargs):
+        """Nothing to label."""
+
+    def compare_since(self, *args, **kwargs) -> dict:
+        return {}
+
+    def own_patches(self, *args, **kwargs) -> dict:
         return {}
 
     # -- writing

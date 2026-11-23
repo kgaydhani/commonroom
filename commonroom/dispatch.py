@@ -3524,7 +3524,8 @@ class Dispatcher:
         self.ledger.db.execute("UPDATE runs SET five_hour_start=? WHERE id=?", (self.five_hour_used(provider), run_id))
         self.ledger.db.commit()
         try:
-            git(["fetch", "--quiet", "origin"], self.root)
+            if config_mod.board_kind(self.cfg) != "local":   # a local board has no remote to fetch (commonroom#466)
+                git(["fetch", "--quiet", "origin"], self.root)
             worktree, branch = self.prepare_worktree(job, provider)
             self.ledger.set_worktree(run_id, worktree)   # removal guard, and no project mistakes this worker's sessions for the owner
         except Exception as exc:
@@ -4048,8 +4049,26 @@ class Dispatcher:
             return path, branch
         path = base / f"{'codex-' if clone else ''}{job.role}-{int(time.time())}"
         path = self.resume_path(job, provider) or path
+        if config_mod.board_kind(self.cfg) == "local":
+            return self.local_workdir(job, clone), None
         path = self.checkout(path, "origin/main", None, clone)
         return path, None
+
+    def local_workdir(self, job: Job, clone: bool) -> Path:
+        """Where a role job runs on a local board, which has no `origin` (commonroom#466): a worktree of the project's local
+        HEAD when the project root is a git repo with a commit, else a scratch folder in the board's room folder."""
+        stamp = f"{job.role}-{int(time.time())}"
+        try:
+            git(["rev-parse", "--verify", "-q", "HEAD"], self.root)
+        except RuntimeError:
+            path = self.board.inner.folder / "work" / stamp
+            self.cleanup_worktree(path, getattr(self, "_run_id", None))
+            if path.exists():
+                path = path.with_name(f"{path.name}-{os.getpid()}")
+            path.mkdir(parents=True)
+            return path
+        base = self.worktree_base()
+        return self.checkout(base / f"{'codex-' if clone else ''}{stamp}", "HEAD", None, False)
 
     def resume_path(self, job: Job, provider: str | None) -> Path | None:
         """The recorded worktree of a stopped role or audit run that qualifies to resume (commonroom#143), if that path
@@ -4129,9 +4148,12 @@ class Dispatcher:
             self.log(f"   kept {path}: run {holder['id']} ({holder['role']} {holder['task'] or '-'}) is still working there")
             return
         if path.exists() and (path / ".git").is_dir():  # a self-contained clone (Codex jobs)
-            import shutil, stat
+            import stat
             self.log(f"   removing clone {path} (run {run_id or '-'})")
             shutil.rmtree(path, onerror=lambda f, p, _: (os.chmod(p, stat.S_IWRITE), f(p)))
+        elif path.exists() and config_mod.board_kind(self.cfg) == "local" and (self.board.inner.folder / "work").resolve() in Path(path).resolve().parents:
+            self.log(f"   removing scratch folder {path} (run {run_id or '-'})")   # not a git worktree (commonroom#466)
+            shutil.rmtree(path, ignore_errors=True)
         elif path.exists():
             self.log(f"   removing worktree {path} (run {run_id or '-'})")
             try:
