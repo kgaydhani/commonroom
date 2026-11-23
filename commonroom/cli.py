@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from commonroom import beat as beat_mod, board, config as config_mod, gate, guar
 from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import READER_COOLDOWN, Dispatcher, GitHubBoard, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
-from commonroom import handshake, hook, jobtree, trials
+from commonroom import handshake, hook, jobtree, roomconfig, trials
 from commonroom.ledger import Ledger
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
@@ -790,6 +791,30 @@ def cmd_projects(args) -> int:
     return 0
 
 
+def cmd_config(args) -> int:
+    """`room config show <project> [key]` and `room config set <project> <table.key> <value> [--yes]`: a project's own
+    room.toml. `set` prints the diff and writes only with --yes. A refusal is one line and exit 2."""
+    try:
+        path = roomconfig.project_file(args.project)
+        if args.action == "show" and args.value is not None:
+            raise roomconfig.Refused("usage: room config show <project> [key]")
+        if args.action == "show":
+            print("\n".join(roomconfig.show(path, args.key)))
+            return 0
+        if args.key is None or args.value is None:
+            raise roomconfig.Refused("usage: room config set <project> <table.key> <value>")
+        diff = roomconfig.set_value(path, args.key, args.value, args.yes)
+    except (roomconfig.Refused, tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as exc:
+        print(f"refused: {str(exc).splitlines()[0] if str(exc) else exc.__class__.__name__}", file=sys.stderr)
+        return 2
+    print(diff or "no change")
+    if not args.yes:
+        print("not written; add --yes to write it")
+    else:
+        print(f"saved {path}")
+    return 0
+
+
 def cmd_pie_raise(args) -> int:
     if (args.clear and (args.points is not None or args.sources)) or (not args.clear and (args.name is None or args.points is None)):
         print("use: room pie raise <project> <points> [--from <project>...] or raise --clear [<project>]", file=sys.stderr)
@@ -1030,6 +1055,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("hook", help="Claude Code hook: session-start adds a pointer to the project's room folder (hook JSON on stdin)"); p.add_argument("event", nargs="?"); p.set_defaults(func=hook.cmd_hook)
     sub.add_parser("guard-command", help="PreToolUse hook: block filter-based process kills (hook JSON on stdin)").set_defaults(func=cmd_guard_command)
     sub.add_parser("check", help="run the project's [checks] test under a per-project lock").set_defaults(func=cmd_check)
+    p = sub.add_parser("config", help="show or change a project's room.toml; `set` prints the diff and writes only with --yes"); p.add_argument("action", choices=("show", "set")); p.add_argument("project"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?"); p.add_argument("--yes", action="store_true"); p.set_defaults(func=cmd_config)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     p = sub.add_parser("projects", help="list or change the projects and their shares (no model call)"); p.set_defaults(func=cmd_projects)
     ps = p.add_subparsers(dest="action")
