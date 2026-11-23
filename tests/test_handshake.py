@@ -13,6 +13,7 @@ from unittest import mock
 
 from commonroom import board, cli, config as config_mod, handshake, registry
 from commonroom.ledger import Ledger
+from commonroom.localboard import LocalBoard
 
 ROOT = Path(__file__).resolve().parent.parent
 PARTS = ["README.md", "charter.md", "digest.md", "inbox"]
@@ -752,6 +753,46 @@ class Trail(Room):
             self.assertEqual(code, 0)
             self.assertEqual(self.digest(), [])
             self.assertNotEqual(self.room("trail", "alpha")[0], 0)
+
+
+class LocalBoardDigest(Room):
+    """commonroom#476: on a `board = "local"` project the digest's owner tasks and `room trail` read the local board."""
+    NOW = datetime(2026, 11, 20, 12, 0).timestamp()
+
+    def setUp(self):
+        super().setUp()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\nboard = "local"\n', encoding="utf-8")
+        self.reg = self.register()
+        self.p = self.reg.projects["alpha"]
+        self.board = LocalBoard(handshake.folder_of(self.p))
+        patch = mock.patch.object(handshake.board, "gh", mock.Mock(side_effect=AssertionError("gh called")))
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def digest(self):
+        ledger = Ledger()
+        try:
+            return handshake.build_digest(self.reg, self.p, ledger, self.NOW)
+        finally:
+            ledger.close()
+
+    def test_an_open_owner_task_with_a_due_line_is_waiting_on_you(self):
+        self.board.create_issue("sign the form", "Due: 2026-11-19\n", labels=["owner:human"])
+        self.board.create_issue("not his", "x", labels=["status:ready"])
+        done = self.board.create_issue("done one", "x", labels=["owner:human"])
+        self.board.close_issue(done, "done")
+        section = self.digest().split("## Waiting on you\n")[1].split("\n\n")[0]
+        self.assertEqual(section.strip().split("\n"), ["- #1 sign the form, due 2026-11-19, overdue"])
+
+    def test_a_note_links_to_the_item_filed_from_it(self):
+        name = handshake.write_note(handshake.prepare(self.p), "do the thing", "kieran", None, self.NOW - 86400).name
+        self.assertEqual(handshake.unlinked(self.reg, self.p, self.NOW), 1)
+        number = self.board.create_issue("the thing", f"Why\nFrom: {name}\n")
+        self.assertEqual(handshake.unlinked(self.reg, self.p, self.NOW), 0)
+        notes = handshake.owner_notes(self.reg, self.p, self.NOW - 14 * 86400, self.NOW)
+        self.assertEqual([(i["number"], i["state"], i["merged"]) for i in handshake.trail(self.p, notes)[name]], [(number, "open", False)])
+        self.board.close_issue(number, "done")
+        self.assertEqual([(i["state"], i["merged"]) for i in handshake.trail(self.p, notes)[name]], [("closed", False)])
 
 
 if __name__ == "__main__":
