@@ -117,7 +117,7 @@ class PromptGuidance(unittest.TestCase):
         for text in texts:
             for word in GAME_ONLY:
                 self.assertNotIn(word, text)
-        self.assertIn("run `python -m unittest discover -s tests` before pushing", texts[-1])
+        self.assertIn("run `python tests/parallel.py` before pushing", texts[-1])
 
     def test_unset_keys_add_nothing(self):
         d = self.dispatcher({"project": {"name": "p", "repo": "o/p"}, "goal": {"milestone": "M"}})
