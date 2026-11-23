@@ -505,6 +505,11 @@ class DirectorPaths(Base):
         text = (REPO / ".claude" / "agents" / "director.md").read_text(encoding="utf-8")
         self.assertIn("HEAD: <sha>", text)
 
+    def test_the_director_prompt_holds_follow_ups_to_open_prs(self):
+        """#433 went to a builder before the PR it followed had merged (commonroom#435)."""
+        text = (REPO / ".claude" / "agents" / "director.md").read_text(encoding="utf-8")
+        self.assertIn("Depends on #<PR>", text)
+
     def test_commonrooms_room_toml_names_the_budget_and_safety_files(self):
         cfg = config.load(REPO / "room.toml", follow_host=False)
         # The ways-of-working table holds safety floors and room-wide defaults (commonroom#230).
