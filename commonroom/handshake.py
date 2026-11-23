@@ -330,7 +330,7 @@ LANDED_SHOWN = 10   # newest landings the digest lists; the rest are counted, so
 
 def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
     rows = ledger.runs_since(ledger_name(p), now - WEEK)
-    runs, landed = metrics.model_runs(rows, now - WEEK, now), metrics.landings(rows, now - WEEK, now)
+    runs, landed = metrics.model_runs(rows, now - WEEK, now), metrics.landings(rows, now - WEEK, now, config_mod.board_kind(room_toml(p)) == "local")
     running = [r for r in rows if r["status"] == "running" and r["started_at"] > now - 7200]
     if not (runs or landed or running):
         return "The ledger shows nothing run or landed for this project in the last 7 days."

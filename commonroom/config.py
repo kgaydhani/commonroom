@@ -8,7 +8,9 @@ import tomllib
 from pathlib import Path
 
 DEFAULTS = {
-    "project": {"name": None, "repo": None, "mission": ""},
+    # `board`: where the project's items live. "github" (the default) is its repo's issues; "local" keeps them in files in the
+    # project's room folder and needs no `repo` (commonroom#455).
+    "project": {"name": None, "repo": None, "mission": "", "board": "github"},
     # `approve`: how much of the planner's work waits for the owner (commonroom#413). "never" (the default) runs every
     # `status:ready` item; "item" starts a builder or scout only on an issue that also has `owner:approved`; "plan" also
     # accepts an item whose `Plan: #N` line names an open `kind:plan` issue that has `owner:approved` (commonroom#430).
@@ -140,6 +142,7 @@ def load(path: Path | None = None, follow_host: bool = True) -> dict:
         data = tomllib.load(handle)
     cfg = merge(DEFAULTS, data) | {"_path": str(path), "_root": str(Path(path).parent)}
     approve(cfg, path)
+    board_kind(cfg, path)
     host = (cfg.get("share") or {}).get("host")
     if cfg.get("share") and os.environ.get(HOST_ENV):
         host = cfg["share"]["host"] = os.environ[HOST_ENV]
@@ -170,6 +173,19 @@ def approve(cfg: dict, path: Path | str | None = None) -> str:
     return value
 
 
+LOCAL_AUTHOR = "room"   # localboard.AUTHOR; not imported so config stays free of other room modules
+BOARDS = ("github", "local")
+
+
+def board_kind(cfg: dict, path: Path | str | None = None) -> str:
+    """`[project] board`: "github" or "local" (commonroom#455). Any other value is a ConfigError naming the key."""
+    value = (cfg.get("project") or {}).get("board", "github")
+    if value not in BOARDS:
+        where = f"{path}: " if path else ""
+        raise ConfigError(f"{where}[project] board = {value!r} is not one of {', '.join(repr(b) for b in BOARDS)}")
+    return value
+
+
 def owner(cfg: dict) -> str:
     """The owner's GitHub login: `[project] owner`, else the repo's owner."""
     project = cfg.get("project") or {}
@@ -180,7 +196,10 @@ def trusted(cfg: dict) -> set[str]:
     """The GitHub logins whose issues, comments and PRs the room acts on, lower-cased (commonroom#176): the owner, whose
     account the agents post as, plus `[project] trusted` (a list, e.g. a co-editor's login). Nobody else."""
     extra = (cfg.get("project") or {}).get("trusted") or []
-    return {str(login).lower() for login in [owner(cfg), *([extra] if isinstance(extra, str) else extra)] if login}
+    logins = {str(login).lower() for login in [owner(cfg), *([extra] if isinstance(extra, str) else extra)] if login}
+    if board_kind(cfg) == "local":
+        logins.add(LOCAL_AUTHOR)   # everything on a local board is written by the room's own files (commonroom#455)
+    return logins
 
 
 def has_ci(cfg: dict) -> bool:

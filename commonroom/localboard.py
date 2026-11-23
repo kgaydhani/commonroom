@@ -102,6 +102,25 @@ class LocalBoard:
                 out.append({"createdAt": _iso(ev["ts"]), "body": ev.get("body", ""), "author": {"login": ev.get("author", AUTHOR)}})
         return out
 
+    # -- the PR side: a local board has no pull requests, so housekeeping finds nothing to merge (commonroom#455)
+    def open_prs(self) -> list[dict]:
+        return []
+
+    def open_prs_by(self, author: str | None) -> list[dict]:
+        return []
+
+    def finished_prs(self) -> list[dict]:
+        return []
+
+    def queued_runs(self) -> list[dict]:
+        return []
+
+    def pr_for_branch(self, branch: str) -> dict | None:
+        return None
+
+    def pr_detail(self, number: int) -> dict:
+        return {}
+
     # -- writing
     def _event(self, number: int, kind: str, **fields):
         if not (self.items / str(number) / "item.json").is_file():
