@@ -2985,6 +2985,21 @@ class Dispatcher:
         self.scout_told.add(n)
         return False
 
+    def person_hold(self, issue: dict, open_now: list[dict]) -> str | None:
+        """Why a ready build item waits on something only a person can clear (a missing `Scout: #N`, `owner:approved`),
+        or None. Reads only: no comment, no label, no log (commonroom#471). Claimed and other-role items are never held."""
+        names = labels(issue)
+        if ({"status:ready", "role:builder"} - names or names & {"owner:human", EXTERNAL} or claimed(names)):
+            return None
+        if config_mod.CAPABILITY in names and config_mod.WAIVED not in names and (why := self.scout_hold(issue)):
+            return f"kind:capability and {why} (add one or owner:waived)"
+        if ((self.cfg.get("checks") or {}).get("look_before_building") and "kind:feature" in names
+                and SCOUT_WAIVED not in names and config_mod.WAIVED not in names and (why := self.scout_hold(issue, legacy=True))):
+            return f"kind:feature and {why} (add one or owner:waived)"
+        if not self.approved(issue, open_now):
+            return "it waits for owner:approved"
+        return None
+
     def ready_on_demand(self, open_now: list[dict]) -> list[tuple[dict, str]]:
         """Ready `role:<name>` issues in the goal milestone whose role is configured and has an agent file, each with
         that role. An issue for a role that isn't configured is skipped and holds nothing else up."""
@@ -3423,13 +3438,21 @@ class Dispatcher:
             names = labels(issue)
             if "owner:human" in names and any(_after(c, since) for c in owner_comments(issue)):
                 reasons.append(f"#{issue['number']} has a new owner comment (delivery or answer)")
-        busy = [i for i in open_issues if labels(i) & {"status:ready", "status:in-progress", "status:review", EXTERNAL}]
+        # A ready item counts only if the dispatcher could start it, or holds it for a reason that clears itself (its
+        # area is busy, it is running). One held for a reason only a person can clear is named instead (commonroom#471).
+        held = {i["number"]: why for i in open_issues if "status:ready" in labels(i) and (why := self.person_hold(i, every_open))}
+        busy = [i for i in open_issues if i["number"] not in held and not (
+                    "status:ready" in labels(i) and claimed(labels(i)) and not labels(i) & {"status:in-progress", "status:review", EXTERNAL})
+                and labels(i) & {"status:ready", "status:in-progress", "status:review", EXTERNAL}]
         owner_open = {i["number"] for i in open_issues if "owner:human" in labels(i)}
-        # Work that only waits on the owner is not a reason to wake the director.
-        machine_open = [i for i in open_issues if "owner:human" not in labels(i)
+        # Work that only waits on the owner is not a reason to wake the director. A claimed item is the owner's too.
+        machine_open = [i for i in open_issues if "owner:human" not in labels(i) and not claimed(labels(i))
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
-            reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
+            if held:
+                reasons += [f"#{n} is ready but held: {why}" for n, why in sorted(held.items())[:5]]
+            else:
+                reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
         waits = self.stamp_waits()
         stamps = [t for _, t in waits]
         self.stamp_told = [k for k, _ in waits]
