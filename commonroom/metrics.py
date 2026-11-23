@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 
+from commonroom import config
+
 DAY = 86400
 WINDOWS = {"7d": 7 * DAY, "30d": 30 * DAY}
 LOOKBACK = 37 * DAY          # rows to load: the longest window plus a week, so its PRs' builders are found
@@ -177,4 +179,4 @@ def report(rows: list[dict], now: float, targets: dict, local: bool = False) -> 
 
 def project_report(ledger, project: str | None, cfg: dict, now: float) -> dict:
     return report(ledger.runs_since(project, now - LOOKBACK), now, cfg.get("targets") or {},
-                  (cfg.get("project") or {}).get("board") == "local")
+                  config.board_kind(cfg) == "local")

@@ -69,7 +69,7 @@ TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at 
 PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-incomplete", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
-           "review", "review-no-ci", "review-room-tested", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
+           "review", "review-no-ci", "review-room-tested", "role", "role-local", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
            "why-milestone", "why-mission")
 # The text the room posts as issue comments, in ways/comments (commonroom#223).
 COMMENTS_NAMES = ("assess-escalate", "assess-retry", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
@@ -3887,6 +3887,13 @@ class Dispatcher:
                                 suite_note=self.suite_note() + (" " + ways["build-incomplete"] if self.pre_test else ""),
                                 open_pr=open_pr)
             return fill_way(ways["build"], n=n, repo=repo, branch=branch, suite_note=self.suite_note(), open_pr=open_pr)
+        if job.kind == "role" and config_mod.board_kind(self.cfg) == "local":
+            item = job.issue
+            comments = "\n".join(f"- {(c.get('author') or {}).get('login', '?')}: {c.get('body', '')}"
+                                 for c in item.get("comments") or []) or "(none)"
+            return fill_way(ways["role-local"], n=item["number"], role=job.role, title=item.get("title", ""),
+                            body=item.get("body") or "(no description)", comments=comments,
+                            folder=self.board.inner.items / str(item["number"]))
         if job.kind == "role":
             return fill_way(ways["role"], n=job.issue["number"], repo=repo, role=job.role)
         if job.kind == "review":

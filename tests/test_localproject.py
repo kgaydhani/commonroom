@@ -66,6 +66,18 @@ class LocalProject(unittest.TestCase):
             self.assertEqual(d.board.open_issues("M0"), [])
         self.assertTrue((self.root / "projects" / "demo" / "board" / "items" / str(n)).is_dir())
 
+    def test_local_role_prompt_carries_the_item_and_names_no_gh(self):
+        cfg = config.load(self.write_config('[project]\nname = "demo"\nboard = "local"\n[goal]\nmilestone = "M0"\n'))
+        d = dispatch.Dispatcher(cfg, self.ledger, log=lambda *_: None)
+        n = d.board.inner.create_issue("Write the note", "Cover the {{repo}} cases.", labels=["role:writer"], milestone="M0")
+        d.board.inner.comment(n, "Mind the deadline.")
+        job = dispatch.Job("role", "writer", issue=d.board.inner.all_issues()[0])
+        text = d.prompt(job, None)
+        for part in ("Write the note", "Cover the {{repo}} cases.", "Mind the deadline.", "STATUS: DONE"):
+            self.assertIn(part, text)
+        for part in ("--repo", "gh issue", "None", "kind:bug"):
+            self.assertNotIn(part, text)
+
     def test_landings_on_a_local_board_are_closed_role_items_only(self):
         now = time.time()
         closed = self.ledger.start_run("demo", "#1", "writer", "claude")
