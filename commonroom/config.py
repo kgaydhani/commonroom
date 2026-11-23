@@ -82,7 +82,7 @@ APPROVE = ("never", "item", "plan")
 APPROVED = "owner:approved"
 PLAN = "kind:plan"
 # `Plan: #<n>` on a line of its own in an item's body names its plan; prose further along a line doesn't (commonroom#430).
-PLAN_LINE = re.compile(r"^[ \t]*Plan:[ \t]*#(\d+)[ \t]*$", re.I | re.M)
+PLAN_LINE = re.compile(r"^[ \t]*Plan:[ \t]*#(\d+)[ \t\r]*$", re.I | re.M)
 
 
 def plan_of(body: str | None) -> int | None:
