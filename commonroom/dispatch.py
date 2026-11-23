@@ -173,6 +173,13 @@ def labels(issue: dict) -> set[str]:
     return {l["name"] for l in issue.get("labels", [])}
 
 
+CLAIMED = "claimed:"   # `room claim` puts `claimed:<name>` on an item its holder is working: the room leaves it alone (commonroom#456)
+
+
+def claimed(names) -> bool:
+    return any(n.startswith(CLAIMED) for n in names)
+
+
 # An issue in review carries no other status and no needs:changes: gamemirage#427 had ready, review and needs:changes
 # at once, and a ready label invites a second builder (commonroom#93).
 LEAVES_REVIEW = ("status:ready", "status:in-progress", "status:blocked", "needs:changes")
@@ -965,6 +972,8 @@ def check_markers(comments: dict[str, str]):
 
 check_markers(COMMENTS)
 DRY_BEAT_RED = "Dry-run beat failed"   # title prefix of the director issue when the live checkout is held
+BEAT_RED = "First beat failed"         # ... when rollback.py moved it back from a sha (commonroom#453)
+LAST_GOOD_SHA, UPDATED_TO, HELD_SHA = "last-good-sha", "updated-to", "held-sha"   # room home files rollback.py reads
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
 RUN_URL = re.compile(r"(.*/actions/runs/(\d+))")   # a check's workflow run, from its details URL
 
@@ -2288,50 +2297,96 @@ class Dispatcher:
         return os.path.normcase(str(self.root.resolve())) == os.path.normcase(str(Path(self.room_root).resolve()))
 
     def update_live_checkout(self) -> list[str]:
-        """After merging the room's own PRs, fast-forward the checkout the room runs from (`git pull --ff-only`; never
+        """After merging the room's own PRs, fast-forward the checkout the room runs from (`git merge --ff-only`; never
         a reset or a force). Safe while room processes run: python processes keep the modules they loaded at start
         (dispatch imports every room module up front), workers never run from this checkout, and heartbeat.cmd is one
         block that cmd.exe reads whole before running. New code takes effect as each process restarts.
-        A project whose suite the room runs on main itself (no CI) moves only to a main its suite passed on, in code."""
+        A project whose suite the room runs on main itself (no CI) moves only to a main its suite passed on, in code.
+        A sha that rollback.py held (its first beat failed, commonroom#453) is never moved to again: the checkout stays
+        detached at the last good sha until main has a newer sha, then goes back onto `main` there."""
         if not self.is_room_repo():
             return []
         try:
+            held = self.held_sha()
             branch = git(["rev-parse", "--abbrev-ref", "HEAD"], self.root)
-            if branch != "main":
+            if branch != "main" and not (held and branch == "HEAD"):
                 return [f"live checkout not updated: it is on {branch}, not main"]
             if self.suite_on_main():
-                return self.fast_forward_to_tested()
-            before = git(["rev-parse", "--short", "HEAD"], self.root)
-            git(["pull", "--ff-only", "--quiet"], self.root)
-            after = git(["rev-parse", "--short", "HEAD"], self.root)
+                return self.fast_forward_to_tested(held)
+            git(["fetch", "--quiet", "origin", "main"], self.root)
+            main = git(["rev-parse", "origin/main"], self.root).strip().lower()
+            if held and (main == held or not self.descends(main, held)):
+                return self.hold_failed_beat(held)
+            before, after = self.move_live_checkout(main, held)
             return [f"live checkout fast-forwarded {before}..{after}; room processes pick it up when they restart"]
         except Exception as exc:
             return [f"live checkout update FAILED, left as it was: {str(exc)[:160]}"]
 
-    def fast_forward_to_tested(self) -> list[str]:
+    def held_sha(self) -> str:
+        """The sha rollback.py moved the live checkout back from (`held-sha` in the room home), or ''."""
+        try:
+            return (self.ledger.path.parent / HELD_SHA).read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            return ""
+
+    def descends(self, sha: str, ancestor: str) -> bool:
+        return subprocess.run(["git", "merge-base", "--is-ancestor", ancestor, sha], cwd=self.root, capture_output=True,
+                              env=git_env(self.root)).returncode == 0
+
+    def move_live_checkout(self, sha: str, held: str) -> tuple[str, str]:
+        """Fast-forward the live checkout to `sha`. First it writes the sha it leaves (`last-good-sha`) and the one it
+        moves to (`updated-to`) to the room home, for rollback.py. From a rollback (detached at the last good sha) it
+        goes back onto `main` first, and back to where it was if the fast-forward fails."""
+        before = git(["rev-parse", "HEAD"], self.root).strip().lower()
+        if sha != before:
+            home = self.ledger.path.parent
+            (home / LAST_GOOD_SHA).write_text(before + "\n", encoding="utf-8")
+            (home / UPDATED_TO).write_text(sha + "\n", encoding="utf-8")
+        if held:
+            git(["checkout", "--quiet", "main"], self.root)
+            try:
+                git(["merge", "--ff-only", "--quiet", sha], self.root)
+            except Exception:
+                git(["checkout", "--quiet", "--detach", before], self.root)
+                raise
+            (self.ledger.path.parent / HELD_SHA).unlink(missing_ok=True)
+        else:
+            git(["merge", "--ff-only", "--quiet", sha], self.root)
+        return before[:7], git(["rev-parse", "--short", "HEAD"], self.root)
+
+    def fast_forward_to_tested(self, held: str = "") -> list[str]:
         """Fast-forward the live checkout to the newest main whose suite passed in code (`main-suite:<sha>` marked,
         `main-suite-red:<sha>` not), never past it to a newer untested main (commonroom#396). The newest tested sha
-        ahead of the checkout decides: red holds it, untested everywhere waits. `git merge --ff-only`: never a reset."""
+        ahead of the checkout decides: red holds it, untested everywhere waits. `git merge --ff-only`: never a reset.
+        After a rollback only shas newer than the held one count."""
         git(["fetch", "--quiet", "origin", "main"], self.root)
         main = git(["rev-parse", "origin/main"], self.root).strip().lower()
-        ahead = [s.strip().lower() for s in git(["rev-list", "--first-parent", "HEAD..origin/main"], self.root).split()]
-        if not ahead:
-            return []
+        ahead = [s.strip().lower() for s in
+                 git(["rev-list", "--first-parent", f"{held or 'HEAD'}..origin/main"], self.root).split()]
         for sha in ahead:                                     # newest first
             if self.ledger.marked(self.project, f"main-suite:{sha}") is None:
                 continue
             if self.ledger.marked(self.project, f"main-suite-red:{sha}") is not None:
                 return [f"live checkout held: main is red on {sha[:7]}"]
-            held = self.dry_run_beat(sha)
-            if held:
-                return held
-            before = git(["rev-parse", "--short", "HEAD"], self.root)
-            git(["merge", "--ff-only", "--quiet", sha], self.root)
-            after = git(["rev-parse", "--short", "HEAD"], self.root)
+            stop = self.dry_run_beat(sha)
+            if stop:
+                return stop
+            before, after = self.move_live_checkout(sha, held)
             note = "" if sha == main else f"; main's suite on {main[:7]} not run yet"
             return [f"live checkout fast-forwarded {before}..{after} (suite passed){note}; "
                     f"room processes pick it up when they restart"]
+        if held:
+            return self.hold_failed_beat(held)
+        if not ahead:
+            return []
         return [f"live checkout waits for main's suite on {main[:7]}"]
+
+    def hold_failed_beat(self, sha: str) -> list[str]:
+        """rollback.py held `sha`: treated as a failed dry-run beat (the same mark and director issue), once."""
+        line = "rollback.py moved the checkout back to the last good sha (rollback.log)"
+        if self.ledger.marked(self.project, f"main-dryrun-red:{sha}") is not None:
+            return [f"live checkout held: first beat failed on {sha[:7]}"]
+        return self.hold_live_checkout(sha, line, BEAT_RED, "The first beat on the new code")
 
     dry_beat_runner = staticmethod(carry_mod.run_dry_beat)   # injectable: tests never start a real dispatcher
 
@@ -2357,14 +2412,20 @@ class Dispatcher:
             return []
         if result != "FAIL":
             return [f"live checkout waits: the dry-run beat on {sha[:7]} didn't finish ({line}); next pass"]
+        return self.hold_live_checkout(sha, line, DRY_BEAT_RED,
+                                       "The dry-run beat (`room.py run --dry-run` against a copy of the ledger)")
+
+    def hold_live_checkout(self, sha: str, line: str, cause: str, what: str) -> list[str]:
+        """Mark `sha` red for the live checkout and file the director issue, unless one is open."""
         line = " ".join(str(line).split())[:200]
         self.ledger.mark(self.project, f"main-dryrun-red:{sha}")
         self.ledger.mark(self.project, f"main-dryrun-line:{sha}:{line}")
-        held = f"live checkout held: dry-run beat failed on {sha[:7]}: {line}"
-        title = f"{DRY_BEAT_RED}: live checkout held on {sha[:7]}"
+        held = f"live checkout held: {cause.lower()} on {sha[:7]}: {line}"
+        title = f"{cause}: live checkout held on {sha[:7]}"
         try:
-            if not any(i["state"] == "OPEN" and i["title"].startswith(DRY_BEAT_RED) for i in self.board.all_issues()):
-                body = (f"The dry-run beat (`room.py run --dry-run` against a copy of the ledger) failed on main {sha}, "
+            if not any(i["state"] == "OPEN" and i["title"].startswith((DRY_BEAT_RED, BEAT_RED))
+                       for i in self.board.all_issues()):
+                body = (f"{what} failed on main {sha}, "
                         f"so the live checkout stays where it is.\n\nOutput tail: {line}\n\nThe director decides: "
                         f"fix main, or clear the mark `main-dryrun-red:{sha}` once it is understood.")
                 number = self.board.create_issue(title, body, labels=["needs:director"], milestone=self.milestone)
@@ -2847,7 +2908,7 @@ class Dispatcher:
 
         def blocked(i: dict) -> bool:
             return not merge_main_only(i) and any(n != i["number"] and areas(i) & held_areas for n, held_areas in held)
-        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
+        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL} and not claimed(labels(i))
                  and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                       or any(l.startswith("provider:") for l in labels(i)))
@@ -2933,7 +2994,7 @@ class Dispatcher:
         for i in open_now:
             names = labels(i)
             role = next((l.split(":", 1)[1] for l in sorted(names) if l.startswith("role:") and l.split(":", 1)[1] in roles), None)
-            if (role and "status:ready" in names and not names & {"owner:human", EXTERNAL} and f"#{i['number']}" not in running
+            if (role and "status:ready" in names and not names & {"owner:human", EXTERNAL} and not claimed(names) and f"#{i['number']}" not in running
                     and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone)):
                 found.append((i, role))
         return found

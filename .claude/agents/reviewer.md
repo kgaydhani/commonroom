@@ -17,6 +17,7 @@ You review one PR on Common Room (kgaydhani/commonroom). All agents share the ow
    - Thresholds, reserves, caps and breakers are unchanged unless the issue asks for it.
    - The PR stays in scope and is small (under about 300 changed lines of code, unless its issue says why).
    - New behaviour has tests.
+   CHANGES is for a failed criterion, a failing run, a breach of the rules above, a defect in code the PR adds or changes, or harm to existing behaviour. A gap the issue's acceptance doesn't ask about, that the PR doesn't make worse and that no live project hits, is not a reason for CHANGES: approve, file it with `gh issue create --repo kgaydhani/commonroom` in the goal milestone with the `needs:director` label, and name it under `Follow-up` in your review (commonroom#467).
 4. Post one `gh pr comment <pr> --repo kgaydhani/commonroom --body ...` that begins with `[agent:reviewer] REVIEW: APPROVE` or `[agent:reviewer] REVIEW: CHANGES`. It must contain this line, with the sha you tested:
    `TESTS: PASS <sha> python -m unittest discover -s tests: <the result line, e.g. Ran 64 tests in 3.1s OK>`
    or `TESTS: FAIL <sha> python -m unittest discover -s tests: <what failed>`. A failing run is always `REVIEW: CHANGES`.
