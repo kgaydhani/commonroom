@@ -1,25 +1,37 @@
-# Common Room v2
+# Common Room
 
-A goal-driven AI studio for one owner. It runs Claude Code and Codex workers against a project's GitHub board, spends subscription allowance only on work that produces output, and treats the owner as both boss (executive channel) and team member (room channel).
+Weekly subscription allowance expires unused, and one person has more projects than attention. Common Room turns the allowance into progress in proportion to how much you care about each project: a project attaches with a goal and a share of the week, and the room keeps it moving between conversations, across Claude and Codex, and keeps track of everything it owes.
+
+It is for people who already use a coding agent every day and still work one conversation at a time.
 
 - Why it exists, and what went wrong with v1: [docs/postmortem-v1.md](docs/postmortem-v1.md)
-- How it works: [docs/design.md](docs/design.md)
+- How it works: [docs/design.md](docs/design.md) and [docs/design-v3.md](docs/design-v3.md)
 
 ## Use
-Run from anywhere inside a project that has a `room.toml`:
+Each project plugs in with a `room.toml` and `.claude/agents/` in its own repo. Register it once, with its share of the week (the shares are the pie):
 
 ```
-python D:/Dev/commonroom/room.py status          # goal, your queue, usage, runs, breakers
-python D:/Dev/commonroom/room.py usage           # meter readings and gate verdicts
-python D:/Dev/commonroom/room.py gate claude     # exit 0 if autonomous Claude work may run now
-python D:/Dev/commonroom/room.py probe codex     # read the Codex meter (no inference)
-python D:/Dev/commonroom/room.py pause "why"     # nothing new starts; running workers finish their job
-python D:/Dev/commonroom/room.py pause --hard "why"  # also stop running workers now (their work is saved as WIP)
-python D:/Dev/commonroom/room.py breaker reset   # clear a pause or a tripped breaker after reading the diagnosis
-python D:/Dev/commonroom/room.py tick            # run the project's [heartbeat] commands (the heartbeat does this)
+python D:/Dev/commonroom/room.py projects add myproject D:/path/to/myproject --share 30
 ```
 
-Each project plugs in with a `room.toml` and `.claude/agents/` in its own repo. The heartbeat runs for one project at a time (`wscript.exe D:\Dev\commonroom\heartbeat.vbs <project dir>`, every 15 minutes from Task Scheduler): that project is the host, and Common Room's own dispatcher rides on its allowance. Switching projects means pointing the scheduled task at another folder.
+The beat runs every registered project. Every 15 minutes the scheduled heartbeat runs `room beat`: one pass over the registry that reads the meters, applies scheduled changes, and starts work for each project whose share, gate and breakers allow it. Adding, changing or removing a project takes effect on the next beat. There is no host project and nothing to repoint.
+
+The commands you run day to day:
+
+```
+python D:/Dev/commonroom/room.py projects                    # list the registered projects and their shares
+python D:/Dev/commonroom/room.py projects set myproject --share 40  # change a share or mode
+python D:/Dev/commonroom/room.py pie                         # each project's effective share and weekly standing
+python D:/Dev/commonroom/room.py status                      # goal, your queue, usage, runs, breakers
+python D:/Dev/commonroom/room.py usage                       # meter readings and gate verdicts
+python D:/Dev/commonroom/room.py attach myproject             # join a project and print its digest
+python D:/Dev/commonroom/room.py note myproject "text"       # leave the project a note in its inbox
+python D:/Dev/commonroom/room.py digest myproject            # rebuild and print the project's digest
+python D:/Dev/commonroom/room.py items myproject             # the project's open items on its board
+python D:/Dev/commonroom/room.py beat                        # one heartbeat over every registered project
+python D:/Dev/commonroom/room.py pause "why"                 # nothing new starts; running workers finish their job
+python D:/Dev/commonroom/room.py breaker reset               # clear a pause or a tripped breaker after reading the diagnosis
+```
 
 `room tap` is a Claude Code status-line command. It records your Claude rate limits on every response and prints a compact usage line.
 
