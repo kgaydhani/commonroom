@@ -107,6 +107,14 @@ class PlanDispatch(Dispatch):
         d, _ = self.dispatcher(self.board("See Plan: #50 for context\n", ("kind:plan", "owner:approved")), "plan")
         self.assertFalse(self.started(d))
 
+    def test_plan_of_accepts_crlf_line_endings(self):
+        self.assertEqual(config.plan_of("Why\r\nPlan: #50\r\nmore"), 50)
+        self.assertIsNone(config.plan_of("See Plan: #50 for context\r\n"))
+
+    def test_a_crlf_body_is_approved_by_its_plan(self):
+        d, _ = self.dispatcher(self.board("Why\r\nPlan: #50\r\n", ("kind:plan", "owner:approved")), "plan")
+        self.assertEqual(self.started(d), ("builder", 60))
+
     def test_a_plan_without_the_kind_label_does_not_count(self):
         d, _ = self.dispatcher(self.board("Plan: #50", ("owner:approved",)), "plan")
         self.assertFalse(self.started(d))
