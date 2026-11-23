@@ -1,5 +1,5 @@
 Audit for o/p. periodic audit.
-Start with `python "X:\room\room.py" digest --hours 1` from this directory: it lists runs, merges, failures, spend, board and usage. Follow your auditor instructions. Write the owner's report to `X:\wt\run\.room-report.md`, exactly that path (the room publishes it). Prefix comments with `[agent:auditor]`. Repo file changes go through a branch and PR. End with one line: `ACTIONS: [...]`, a JSON list of short strings naming each change you made.
+Start with `python "X:\room\room.py" digest --hours 1` from this directory: it lists runs, merges, failures, spend, board and usage. Follow your auditor instructions. Write the owner's report to `X:\wt\run\.room-report.md`, exactly that path even from another working copy (the room publishes it). Prefix comments with `[agent:auditor]`. Repo file changes go through a branch and PR. End with one line: `ACTIONS: [...]`, a JSON list of short strings naming each change you made.
 
 Why this matters: it serves the milestone **M** and the mission: Ship the thing. Judge your work against that goal as well as the task's criteria.
 

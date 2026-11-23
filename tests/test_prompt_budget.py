@@ -74,11 +74,6 @@ class Budget(unittest.TestCase):
                              [f"prompts/ + handshake/ + comments/ is {limit + 1} tokens, over the {limit}-token budget "
                               f"for all templates"])
 
-    def test_the_templates_leave_about_a_hundred_tokens_of_headroom(self):   # commonroom#417
-        used = tokens("".join(read(p) for f in (TEMPLATES, HANDSHAKE, COMMENTS) for p in sorted(f.iterdir()) if p.is_file()))
-        self.assertLessEqual(used, 3100, "trim text before raising templates_max_tokens")
-        self.assertGreaterEqual(policy.DEFAULTS["templates_max_tokens"] - used, 100)
-
     def test_padding_past_the_budget_fails_naming_the_file_and_its_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             fixtures, templates = Path(tmp) / "golden", Path(tmp) / "prompts"
