@@ -23,7 +23,9 @@ hours = 24
 idle_minutes = 60
 
 [checks]
-test = "python -m unittest discover -s tests"
+# One process per test module, in parallel (#421, #422). Approvals naming the old serial command still count (also_accept).
+test = "python tests/parallel.py"
+also_accept = ["python -m unittest discover -s tests"]
 # No GitHub CI on this repo. Housekeeping merges on the reviewer's `REVIEW: APPROVE` posted after the last commit,
 # when it carries `TESTS: PASS <head sha> <test command>: <result>`, and merges one PR per pass.
 ci = false

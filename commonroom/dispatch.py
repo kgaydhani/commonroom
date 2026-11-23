@@ -800,7 +800,13 @@ TESTS_LINE = re.compile(r"^.*\bTESTS:\s*(PASS|FAIL)\b.*$", re.M | re.I)
 INCOMPLETE_LINE = re.compile(r"\bTESTS:\s*INCOMPLETE\b", re.I)   # never a pass, whatever else the comment says
 
 
-def tested_on_head(body: str, head: str, command: str | None) -> bool:
+def also_accept(cfg: dict) -> list[str]:
+    """Older test commands a project still accepts in a `TESTS: PASS` line: `[checks] also_accept` (a list of strings)."""
+    raw = (cfg.get("checks") or {}).get("also_accept") or []
+    return [c for c in ([raw] if isinstance(raw, str) else raw) if isinstance(c, str) and c.strip()]
+
+
+def tested_on_head(body: str, head: str, command: str | None, also: tuple | list = ()) -> bool:
     """A project without CI merges on its reviewer's word, so the approval must state that the reviewer ran the test
     command on the PR head and it passed: a line `TESTS: PASS <head sha> <command>: <result>`. The sha matters because a
     commit pushed while the review ran can still predate the review comment."""
@@ -808,7 +814,8 @@ def tested_on_head(body: str, head: str, command: str | None) -> bool:
     matches = list(TESTS_LINE.finditer(body))
     if not head or len(head) < 7 or any(m.group(1).upper() == "FAIL" for m in matches) or INCOMPLETE_LINE.search(body):
         return False
-    return any(head[:7].lower() in m.group(0).lower() and (command or "") in m.group(0) for m in matches)
+    commands = [command or "", *also]
+    return any(head[:7].lower() in m.group(0).lower() and any(c in m.group(0) for c in commands) for m in matches)
 
 
 def own_test_block(body: str | None) -> bool:
@@ -2357,7 +2364,8 @@ class Dispatcher:
     def tested(self, detail: dict) -> bool:
         """No CI: the approving review states a passing run of the project's test command on the PR head."""
         c = review_comment(self.reviewer_view(detail))
-        return ((bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test")))
+        return ((bool(c) and tested_on_head(c.get("body") or "", head_sha(detail), (self.cfg.get("checks") or {}).get("test"),
+                                                    also_accept(self.cfg)))
                 or self.room_tested(detail, c) or self.carried_test(detail))
 
     def room_pass(self, detail: dict) -> dict | None:
@@ -2399,7 +2407,7 @@ class Dispatcher:
         command = (self.cfg.get("checks") or {}).get("test")
         return bool(result and approval and command and result["result"] == "PASS"
                     and result["line"].startswith(f"{command}:") and result["approval_at"] == approval.get("createdAt")
-                    and (tested_on_head(approval.get("body") or "", result["tested"], command)
+                    and (tested_on_head(approval.get("body") or "", result["tested"], command, also_accept(self.cfg))
                          or (result["tested"] and self.approval_tested(detail, approval) == result["tested"])))
 
     def approval_tested(self, detail: dict, approval: dict) -> str:
@@ -2409,7 +2417,7 @@ class Dispatcher:
         command, body = (self.cfg.get("checks") or {}).get("test"), approval.get("body") or ""
         oids = [(c.get("oid") or "").lower() for c in detail.get("commits") or []]
         own = carry_mod.tested_sha(body, oids)
-        if own and tested_on_head(body, own, command):
+        if own and tested_on_head(body, own, command, also_accept(self.cfg)):
             return own
         if not self.pre_test or not command or own_test_block(body):
             return ""

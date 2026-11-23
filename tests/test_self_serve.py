@@ -95,7 +95,7 @@ class Config(unittest.TestCase):
         self.assertEqual((cfg["project"]["name"], cfg["project"]["repo"]), ("commonroom", "kgaydhani/commonroom"))
         self.assertEqual(cfg["goal"]["milestone"], "Room v3: the room improves itself")
         self.assertFalse(config.has_ci(cfg))
-        self.assertEqual(cfg["checks"]["test"], TEST)
+        self.assertEqual(cfg["checks"]["test"], "python tests/parallel.py")
         self.assertLess(cfg["share"]["max"], 0.5)                       # a modest share, not half the plan
         self.assertEqual(cfg["parallel"]["claude_slots"], 1)
         self.assertTrue(cfg["project"]["worktrees"].startswith("D:/Dev/commonroom-wt/"))
