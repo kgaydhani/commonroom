@@ -208,6 +208,48 @@ class Carry(Base):
         d.housekeeping()
         self.assertEqual(board.merged, [222])
 
+    def own_board(self, then, now):
+        """Stamp at the old head, a merge of main that moved room.toml; `then`/`now` are the PR's own patches there."""
+        board, cfg = self.director_board(stamped=True)
+        head = board.details[222]["headRefOid"]
+        def own_patches(base, sha):
+            got = then if self.tested.startswith(sha) or sha == self.tested else now
+            if isinstance(got, Exception):
+                raise got
+            return got
+        board.own_patches = own_patches
+        return board, cfg, head
+
+    PATCH = "@@ -1,2 +1,3 @@ [x]\n a\n+mine\n b"
+    SHIFTED = "@@ -40,2 +41,3 @@ [x]\n a\n+mine\n b"
+
+    def test_a_stamp_carries_when_only_main_moved_the_director_path(self):
+        board, cfg, head = self.own_board({"room.toml": self.PATCH}, {"room.toml": self.SHIFTED, "docs.md": None})
+        d = self.dispatcher(cfg, board)
+        detail = board.details[222]
+        self.assertTrue(d.carried_stamp(detail))
+        self.assertFalse(d.waits_for_director(detail))
+        self.assertEqual(d.stamp_waits(), [])
+        self.assertEqual(d.carry_reason(detail), "")           # the reviewer's approval carries too
+        self.assertTrue(d.carry_pending(detail))
+
+    def test_no_carry_when_the_pr_s_own_hunk_or_file_set_or_patch_differs(self):
+        cases = {"hunk text": ({"room.toml": self.PATCH}, {"room.toml": self.PATCH + "\n+edited"}),
+                 "new file": ({"docs.md": None}, {"room.toml": self.PATCH}),
+                 "missing patch": ({"room.toml": self.PATCH}, {"room.toml": None}),
+                 "compare error": ({"room.toml": self.PATCH}, RuntimeError("boom")),
+                 "none touched": ({}, {})}
+        for name, (then, now) in cases.items():
+            with self.subTest(name):
+                board, cfg, head = self.own_board(then, now)
+                d = self.dispatcher(cfg, board)
+                self.assertEqual(d.carried_stamp(board.details[222]), "")
+                self.assertTrue(d.waits_for_director(board.details[222]))
+
+    def test_a_director_path_the_pr_touches_only_at_the_new_head_is_not_carried(self):
+        board, cfg, head = self.own_board({"docs.md": None}, {"docs.md": None, "room.toml": self.PATCH})
+        self.assertEqual(self.dispatcher(cfg, board).carried_stamp(board.details[222]), "")
+
     def test_a_director_path_pr_with_a_stamp_that_cannot_be_carried_is_refused(self):
         board, cfg = self.director_board(stamped=True)               # the merge changed room.toml
         d = self.dispatcher(cfg, board)

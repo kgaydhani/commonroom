@@ -378,6 +378,20 @@ def git(args: list[str], cwd: Path) -> str:
     return done.stdout.strip()
 
 
+HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.M)
+
+
+def own_change(patches: dict, globs) -> dict:
+    """Each director-path file's patch with the hunk-header line numbers stripped. Raises on a missing patch."""
+    out = {}
+    for f, patch in patches.items():
+        if any(fnmatch.fnmatchcase(f, g) for g in globs):
+            if not patch:
+                raise RuntimeError(f"no patch for {f}")
+            out[f] = HUNK_HEADER.sub("@@", patch)
+    return out
+
+
 def merges_back_to(commits: list[dict], head: str, stamp: str) -> bool:
     """True when walking first parents from `head` reaches `stamp` and every commit on the way is a merge. Commits that
     main brought in sit behind the merges' second parents and are not on this chain."""
@@ -523,6 +537,17 @@ class GitHubBoard:
         if compare.get("total") is None or compare["total"] != len(compare.get("commits") or []) or len(compare.get("files") or []) >= 300:
             raise RuntimeError(f"compare {base[:7]}...{head[:7]} is incomplete")
         return compare
+
+    def own_patches(self, base_ref: str, head: str) -> dict:
+        """The PR's own change at `head`: each file's patch in `base_ref...head` (its diff against the merge base),
+        None where GitHub sent none. Raises when the list may be cut short."""
+        if len(head) < 40:   # a `HEAD:` stamp may be a short sha
+            head = (board_mod.gh(["api", f"repos/{self.repo}/commits/{head}", "--jq", "{sha: .sha}"]) or {}).get("sha") or head
+        files = board_mod.gh(["api", f"repos/{self.repo}/compare/{base_ref}...{head}", "--jq",
+                              "[(.files // [])[] | {f: .filename, p: .patch}]"])
+        if files is None or len(files) >= 300:
+            raise RuntimeError(f"compare {base_ref}...{head[:7]} is incomplete")
+        return {f["f"]: f.get("p") for f in files}
 
     def update_branch(self, number: int):
         """Merge the base branch into the PR's branch on GitHub (no model run). Raises when that conflicts."""
@@ -2369,13 +2394,21 @@ class Dispatcher:
             if key not in self.carry_cache:
                 try:
                     found = self.board.compare_since(stamp, head)
-                    self.carry_cache[key] = (merges_back_to(found["commits"], head, stamp)
-                                             and not any(fnmatch.fnmatchcase(f, g) for f in found["files"] for g in self.director_paths))
+                    moved = any(fnmatch.fnmatchcase(f, g) for f in found["files"] for g in self.director_paths)
+                    self.carry_cache[key] = merges_back_to(found["commits"], head, stamp) and (
+                        not moved or self.same_own_change(detail, stamp, head))
                 except Exception:
                     continue   # not cached: the next pass asks again
             if self.carry_cache[key]:
                 return stamp
         return ""
+
+    def same_own_change(self, detail: dict, stamp: str, head: str) -> bool:
+        """The PR's own change to every director path is the same at the stamp and at the head, so only main moved
+        them, and main's change already passed the director's review. Any doubt: no."""
+        base = detail.get("baseRefName") or "main"
+        then = own_change(self.board.own_patches(base, stamp), self.director_paths)
+        return bool(then) and then == own_change(self.board.own_patches(base, head), self.director_paths)
 
     def director_rejected(self, detail: dict) -> bool:
         return self.needs_director(detail) and director_verdict(detail) == "CHANGES"
