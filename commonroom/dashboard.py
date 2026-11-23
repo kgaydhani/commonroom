@@ -16,6 +16,7 @@ from commonroom.dispatch import verdicts
 from commonroom.ledger import Ledger
 
 PAUSE_KIND = "paused_by_owner"
+NOTE_MAX = 8000   # characters in one note from the page
 _cache: dict = {}
 
 
@@ -138,6 +139,22 @@ def state(cfg: dict) -> dict:
         ledger.close()
 
 
+def owner_note(body: dict) -> dict:
+    """`POST /api/note`: the owner's note to a registered project, one new file in its `inbox/` (what `room note` writes).
+    Raises ValueError for an unknown project, an empty or over-long text or a kind `room note --kind` doesn't take."""
+    text, kind, name = str(body.get("text", "")).strip(), body.get("kind") or None, str(body.get("project", ""))
+    if kind is not None and kind not in handshake.KINDS:
+        raise ValueError(f"kind must be one of {', '.join(handshake.KINDS)}")
+    if not text:
+        raise ValueError("Write the note first")
+    if len(text) > NOTE_MAX:
+        raise ValueError(f"The note is over {NOTE_MAX} characters")
+    p = handshake.load_registry().projects.get(name)
+    if p is None:
+        raise ValueError(f"No registered project named {name!r}")
+    return {"ok": True, "name": handshake.write_note(handshake.prepare(p), text, sender="owner", kind=kind).name}
+
+
 PAGE = (Path(__file__).with_name("static") / "dashboard.html").read_text(encoding="utf-8")
 
 
@@ -188,6 +205,8 @@ class Handler(BaseHTTPRequestHandler):
                 board.gh(["issue", "comment", str(number), "--repo", self.cfg["project"]["repo"], "--body", text])
                 _cache.pop("owner", None)
                 result = {"ok": True}
+            elif self.path == "/api/note":
+                result = owner_note(body)
             elif self.path == "/api/suggest":
                 text = str(body.get("title", "")).strip()[:8000]
                 if not text:
