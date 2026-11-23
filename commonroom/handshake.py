@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from commonroom import artifacts, board, config as config_mod, ledger as ledger_mod, measure, metrics, policy, progress as progress_mod, registry, steward, trials
+from commonroom.localboard import LocalBoard
 from commonroom.waytext import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -473,6 +474,27 @@ TRAIL_DAYS = 14
 TRAIL_TIMEOUT = 10   # seconds per board call, so a slow GitHub can't hold up `room note` for long
 
 
+def _local(p: registry.Project) -> bool:
+    return config_mod.board_kind(room_toml(p)) == "local"
+
+
+def _readable(p: registry.Project) -> bool:
+    """Whether the project has a board to read: a local board, or a GitHub repo in its room.toml."""
+    return _local(p) or bool((room_toml(p).get("project") or {}).get("repo"))
+
+
+def _items(p: registry.Project, state: str = "all", label: str | None = None, limit: int = 500, fields: str = "number,title,state,body") -> list[dict]:
+    """The project's items shaped as `board.issues()` shapes them: from its local board when `[project] board = "local"`,
+    else from GitHub through `[project] repo` (`fields` is the `--json` list for that call)."""
+    if _local(p):
+        found = LocalBoard(folder_of(p)).all_issues()
+        found = [i for i in found if state == "all" or str(i["state"]).lower() == state]
+        return [i for i in found if not label or any(l["name"] == label for l in i["labels"])]
+    repo = (room_toml(p).get("project") or {}).get("repo")
+    args = ["issue", "list", "--repo", repo, *(["--label", label] if label else []), "--state", state, "--limit", str(limit), "--json", fields]
+    return board.gh(args, timeout=TRAIL_TIMEOUT) or []
+
+
 def owner_notes(reg: registry.Registry, p: registry.Project, since: float, now: float) -> list[dict]:
     """The owner's notes in the window, newest first: agent notes (a `from:` naming a project or a role) are left out."""
     agents = {n.lower() for n in ROLES} | {n.lower() for n in reg.projects} | {ledger_name(p).lower()}
@@ -483,16 +505,15 @@ def owner_notes(reg: registry.Registry, p: registry.Project, since: float, now: 
 
 def trail(p: registry.Project, notes: list[dict]) -> dict[str, list[dict]]:
     """Each note's file name -> the issues whose body has a `From: <name>` line naming it, each with `number`, `state`
-    and `merged` (a merged PR closed it). Empty when there are no notes or the project has no repo."""
-    repo = (room_toml(p).get("project") or {}).get("repo")
+    and `merged` (a merged PR closed it). Empty when there are no notes or the project has no board to read."""
     found: dict[str, list[dict]] = {n["name"]: [] for n in notes}
-    if not notes or not repo:
+    if not notes or not _readable(p):
         return found
-    issues = board.gh(["issue", "list", "--repo", repo, "--state", "all", "--limit", "500",
-                       "--json", "number,title,state,body"], timeout=TRAIL_TIMEOUT) or []
+    issues = _items(p)
     closed = {i["number"] for i in issues if str(i.get("state")).upper() == "CLOSED"}
     merged: set[int] = set()
-    if any(i["number"] in closed for i in issues if any(m in found for m in FROM_LINE.findall(i.get("body") or ""))):
+    if not _local(p) and any(i["number"] in closed for i in issues if any(m in found for m in FROM_LINE.findall(i.get("body") or ""))):
+        repo = (room_toml(p).get("project") or {}).get("repo")
         for pr in board.gh(["pr", "list", "--repo", repo, "--state", "merged", "--limit", "500",
                             "--json", "number,closingIssuesReferences"], timeout=TRAIL_TIMEOUT) or []:
             merged |= {r["number"] for r in pr.get("closingIssuesReferences") or []}
@@ -506,7 +527,7 @@ def trail(p: registry.Project, notes: list[dict]) -> dict[str, list[dict]]:
 
 def unlinked(reg: registry.Registry, p: registry.Project, now: float, days: int = TRAIL_DAYS) -> int | None:
     """How many owner notes in the window have no issue; None when the board can't be read."""
-    if not (room_toml(p).get("project") or {}).get("repo"):
+    if not _readable(p):
         return None
     notes = owner_notes(reg, p, now - days * 86400, now)
     try:
@@ -570,12 +591,10 @@ def _approval(p: registry.Project) -> str:
 def _waiting(p: registry.Project, now: float) -> str:
     """The `## Waiting on you` section body: the project's open `owner:human` issues, oldest first, with their `Due:` date
     and `overdue` when it is past (UTC). Empty when there are none or the project has no repo."""
-    repo = (room_toml(p).get("project") or {}).get("repo")
-    if not repo:
+    if not _readable(p):
         return ""
     try:
-        found = board.gh(["issue", "list", "--repo", repo, "--label", "owner:human", "--state", "open", "--limit", "100",
-                          "--json", "number,title,body,createdAt"], timeout=TRAIL_TIMEOUT) or []
+        found = _items(p, "open", "owner:human", 100, "number,title,body,createdAt")
     except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
         return "the board could not be read"
     today = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d")
@@ -816,7 +835,7 @@ def cmd_trail(args) -> int:
     reg, p = _start(args)
     now = time.time()
     notes = owner_notes(reg, p, now - args.days * 86400, now)
-    if not (room_toml(p).get("project") or {}).get("repo"):
+    if not _readable(p):
         raise HandshakeError(f"refused: {p.name} has no [project] repo in its room.toml.")
     try:
         linked = trail(p, notes)
