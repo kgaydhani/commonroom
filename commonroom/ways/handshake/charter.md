@@ -1,6 +1,6 @@
 # Charter: {{project}}
 
-What the owner wants, in the owner's words. The room created this file and never changes it.
+What the owner wants, in the owner's words. The room never changes it.
 
 ## The outcome, and why
 
