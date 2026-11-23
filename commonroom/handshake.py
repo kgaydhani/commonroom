@@ -530,24 +530,37 @@ WAITING_MAX = 10
 
 def _approval(p: registry.Project) -> str:
     """With `[goal] approve = "item"`, one line: how many ready builder and scout issues wait for `owner:approved`, and
-    how to approve one (commonroom#413). Empty with "never", with none waiting, or when the board can't be read."""
+    how to approve one (commonroom#413). With "plan", one line counting the open `kind:plan` issues without it that a ready
+    item names (#430). Empty with "never", with none waiting, or when the board can't be read."""
     cfg = room_toml(p)
     goal = cfg.get("goal") or {}
     repo = (cfg.get("project") or {}).get("repo")
-    if goal.get("approve") != "item" or not repo:
+    mode = goal.get("approve")
+    if mode not in ("item", "plan") or not repo:
         return ""
     try:
         found = board.gh(["issue", "list", "--repo", repo, "--label", "status:ready", "--state", "open", "--limit", "200",
-                          "--json", "number,labels,milestone"], timeout=TRAIL_TIMEOUT) or []
+                          "--json", "number,labels,milestone" + (",body" if mode == "plan" else "")],
+                         timeout=TRAIL_TIMEOUT) or []
+        plans = board.gh(["issue", "list", "--repo", repo, "--label", config_mod.PLAN, "--state", "open", "--limit", "200",
+                          "--json", "number,labels"], timeout=TRAIL_TIMEOUT) or [] if mode == "plan" else []
     except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
         return ""
     milestone = goal.get("milestone")
-    waiting = []
+    waiting, named = [], set()
     for i in found:
         names = {l.get("name") for l in i.get("labels") or []}
         in_goal = not milestone or (i.get("milestone") or {}).get("title") == milestone or any(n.startswith("provider:") for n in names)
         if names & {"role:builder", "role:scout"} and config_mod.APPROVED not in names and in_goal:
             waiting.append(i["number"])
+            named.add(config_mod.plan_of(i.get("body")))
+    if mode == "plan":
+        open_plans = {p["number"] for p in plans if config_mod.APPROVED not in {l.get("name") for l in p.get("labels") or []}}
+        waiting = sorted(named & open_plans)
+        if not waiting:
+            return ""
+        return (f"Plans waiting for your approval: {len(waiting)}. To approve one, add the label `{config_mod.APPROVED}`"
+                f" (`gh issue edit {min(waiting)} --repo {repo} --add-label {config_mod.APPROVED}`).")
     if not waiting:
         return ""
     return (f"Ready items waiting for your approval: {len(waiting)}. To approve one, add the label `{config_mod.APPROVED}`"

@@ -2712,7 +2712,7 @@ class Dispatcher:
                  and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                       or any(l.startswith("provider:") for l in labels(i)))
-                 and self.scouted(i) and self.approved(i)]
+                 and self.scouted(i) and self.approved(i, open_now)]
         # With none held, only the top issue per area is offered, so the Codex path's second pick can't share an area.
         taken: set[str] = set()
         chosen = set()
@@ -2724,12 +2724,17 @@ class Dispatcher:
         return ready
 
     def approves_items(self) -> bool:
-        """`[goal] approve = "item"`: a builder or scout starts only on an issue the owner labelled `owner:approved`."""
-        return (self.cfg.get("goal") or {}).get("approve") == "item"
+        """`[goal] approve = "item"` or "plan": a builder or scout starts only on an issue the owner labelled `owner:approved`."""
+        return (self.cfg.get("goal") or {}).get("approve") in ("item", "plan")
 
-    def approved(self, issue: dict) -> bool:
-        """The issue may be started (commonroom#413). Labels are only read here, never added or removed."""
-        return not self.approves_items() or config_mod.APPROVED in labels(issue)
+    def approved(self, issue: dict, open_now: list[dict] = ()) -> bool:
+        """The issue may be started (commonroom#413). With "plan" (#430) the label may instead be on the open `kind:plan`
+        issue named by the item's `Plan: #N` line, among the fetched issues. Labels are only read, never added or removed."""
+        if not self.approves_items() or config_mod.APPROVED in labels(issue):
+            return True
+        plan = config_mod.plan_of(issue.get("body")) if (self.cfg.get("goal") or {}).get("approve") == "plan" else None
+        return plan is not None and any(p["number"] == plan and {config_mod.PLAN, config_mod.APPROVED} <= labels(p)
+                                        for p in open_now)
 
     def scouted(self, issue: dict) -> bool:
         """`[checks] look_before_building = true`: a `kind:feature` build is held until its body has `Scouted: #N` naming a
@@ -2860,7 +2865,7 @@ class Dispatcher:
                     return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
         running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
-                    and self.approved(i)]
+                    and self.approved(i, open_now)]
         for issue in sorted(scouting, key=priority):
             choice = self.choose(self.roles.get("scout", ["claude:sonnet"]), {provider: v})
             if choice:
@@ -2923,7 +2928,7 @@ class Dispatcher:
         ready = self.ready_builds(open_now)
         running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
-                    and self.approved(i)]
+                    and self.approved(i, open_now)]
         background = set(self.roles.get("background") or [])
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()

@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import tomllib
 from pathlib import Path
 
 DEFAULTS = {
     "project": {"name": None, "repo": None, "mission": ""},
     # `approve`: how much of the planner's work waits for the owner (commonroom#413). "never" (the default) runs every
-    # `status:ready` item; "item" starts a builder or scout only on an issue that also has `owner:approved`.
+    # `status:ready` item; "item" starts a builder or scout only on an issue that also has `owner:approved`; "plan" also
+    # accepts an item whose `Plan: #N` line names an open `kind:plan` issue that has `owner:approved` (commonroom#430).
     "goal": {"milestone": None, "approve": "never"},
     "budget": {
         # Claude is shared with the owner's own sessions, so it keeps reserves and is paced.
@@ -76,8 +78,17 @@ DEFAULTS = {
 # (commonroom#151). It only overrides `[share] host` in a project that has a `[share]` table.
 HOST_ENV = "COMMONROOM_HOST"
 
-APPROVE = ("never", "item")
+APPROVE = ("never", "item", "plan")
 APPROVED = "owner:approved"
+PLAN = "kind:plan"
+# `Plan: #<n>` on a line of its own in an item's body names its plan; prose further along a line doesn't (commonroom#430).
+PLAN_LINE = re.compile(r"^[ \t]*Plan:[ \t]*#(\d+)[ \t]*$", re.I | re.M)
+
+
+def plan_of(body: str | None) -> int | None:
+    """The plan an item's body names with a `Plan: #<n>` line, or None."""
+    m = PLAN_LINE.search(body or "")
+    return int(m.group(1)) if m else None
 
 
 class ConfigError(ValueError):
@@ -139,7 +150,7 @@ def _same_file(a: Path, b: Path) -> bool:
 
 
 def approve(cfg: dict, path: Path | str | None = None) -> str:
-    """`[goal] approve`: "never" or "item" (commonroom#413). Any other value is a ConfigError naming the key."""
+    """`[goal] approve`: "never", "item" or "plan" (commonroom#413, #430). Any other value is a ConfigError naming the key."""
     value = (cfg.get("goal") or {}).get("approve", "never")
     if value not in APPROVE:
         where = f"{path}: " if path else ""

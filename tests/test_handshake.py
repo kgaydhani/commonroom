@@ -143,7 +143,7 @@ class Attach(Room):
 
 class OtherRoomToml(Room):
     def test_a_room_toml_with_an_unknown_approve_value_reads_as_empty(self):
-        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n[goal]\napprove = "plan"\n', encoding="utf-8")
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n[goal]\napprove = "sometimes"\n', encoding="utf-8")
         self.assertEqual(handshake.room_toml(registry.Project("alpha", str(self.alpha), 30)), {})
 
 
