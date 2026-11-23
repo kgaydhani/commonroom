@@ -225,6 +225,24 @@ def cmd_status(args) -> int:
     return 0
 
 
+ROOM_DIR = Path(__file__).resolve().parent.parent
+
+
+def room_head() -> str | None:
+    """The room checkout's HEAD (the folder room.py lives in, not the project's); None when git can't say."""
+    try:
+        done = subprocess.run(["git", "-C", str(ROOM_DIR), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (done.stdout or "").strip()
+    return out if done.returncode == 0 and out else None
+
+
+def start_replacement(argv: list[str], cwd: str):
+    """Start the process that takes over this dispatcher's slot. It shares this process's output."""
+    return subprocess.Popen(argv, cwd=cwd)
+
+
 def cmd_run(args) -> int:
     cfg = config_mod.load()
     if not cfg.get("_root"):
@@ -246,6 +264,9 @@ def cmd_run(args) -> int:
     # `room stop` writes a timestamp; every dispatcher started before it exits between jobs.
     stop_file = ledger.path.parent / f"{name}.stop"
     started = time.time()
+    # `--until-idle` runs for hours while this repo lands PRs: remember the room's code and hand over when it moves.
+    code_at_start = room_head() if args.until_idle and not args.loop and not args.dry_run else None
+    handover = False
     try:
         while True:
             try:
@@ -265,6 +286,13 @@ def cmd_run(args) -> int:
             idle = report.get("job") is None
             if args.dry_run or (not args.loop and not args.until_idle) or (args.until_idle and idle):
                 return 0
+            if code_at_start:
+                now_head = room_head()
+                if now_head and now_head != code_at_start:
+                    print(f"{datetime.now():%H:%M:%S}{tag} room code moved {code_at_start[:7]}..{now_head[:7]}; "
+                          "handing the slot to a fresh process", flush=True)
+                    handover = True
+                    return 0
             # Idle passes are cheap (no model calls); wait longer when nothing could run.
             time.sleep(args.interval if idle else 5)
     except KeyboardInterrupt:
@@ -273,6 +301,11 @@ def cmd_run(args) -> int:
         ledger.close()
         if not args.dry_run:
             lock.unlink(missing_ok=True)
+        if handover:  # after the lock is let go, so the replacement can take it
+            try:
+                start_replacement([sys.executable] + sys.argv, os.getcwd())
+            except OSError as exc:
+                print(f"{datetime.now():%H:%M:%S}{tag} could not start the replacement: {exc}", flush=True)
 
 
 def desktop_window(label: str) -> str | None:
