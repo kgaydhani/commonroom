@@ -31,7 +31,8 @@ def unplaced(issues: list[dict], milestone: str | None = None) -> list[dict]:
     return [finding("unplaced", i["number"], f"#{i['number']} is open in the milestone with no status or parking label, "
                     "so the dispatcher can't see it.")
             for i in issues if _open(i) and (i.get("milestone") or {}).get("title") == milestone
-            and not dispatch.labels(i) & PLACED]
+            and not dispatch.labels(i) & PLACED
+            and "kind:follow-up" not in dispatch.labels(i)]   # a reviewer follow-up waits for the director's release (#485)
 
 
 def _epoch(stamp: str | None) -> float | None:
