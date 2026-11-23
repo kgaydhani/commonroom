@@ -13,9 +13,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
-from commonroom import config as config_mod, registry
+from commonroom import config as config_mod, pending, registry
 from commonroom.lock import claim_lock
 
 ROOM = Path(__file__).resolve().parent.parent / "room.py"
@@ -47,7 +48,8 @@ def plan(name: str, share, cfg: dict) -> list[tuple[str, list[str], bool]]:
     return steps
 
 
-def beat(home: Path, reg: registry.Registry | None = None, starter=start_process, log=print, python: str | None = None) -> int:
+def beat(home: Path, reg: registry.Registry | None = None, starter=start_process, log=print, python: str | None = None,
+         now: float | None = None) -> int:
     """One beat. Returns an exit code: 0 for a beat that ran (or had nothing to run), 1 for an unreadable registry."""
     python = python or sys.executable
     home = Path(home)
@@ -56,7 +58,7 @@ def beat(home: Path, reg: registry.Registry | None = None, starter=start_process
     except registry.RegistryError as exc:
         log(f"beat: registry unreadable: {exc}")
         return 1
-    if not reg.projects:
+    if not reg.projects and not pending.path(home).exists():
         log(f"beat: no projects are registered in {home / registry.FILENAME}; nothing started")
         return 0
     lock = home / "locks" / "beat.lock"
@@ -66,6 +68,16 @@ def beat(home: Path, reg: registry.Registry | None = None, starter=start_process
         return 0
     children = []
     try:
+        changed = pending.apply_due(home, time.time() if now is None else now, log)
+        try:
+            if changed:
+                reg = registry.load(home / registry.FILENAME, check=False)
+        except registry.RegistryError as exc:
+            log(f"beat: registry unreadable: {exc}")
+            return 1
+        if not reg.projects:
+            log(f"beat: no projects are registered in {home / registry.FILENAME}; nothing started")
+            return 0
         room = [python, str(ROOM)]
         children.append(starter(room + ["probe"], str(home), home / "beat-probe.log", True))
         for name, project in reg.projects.items():
