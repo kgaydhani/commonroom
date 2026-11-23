@@ -557,16 +557,17 @@ def _approval(p: registry.Project) -> str:
     goal = cfg.get("goal") or {}
     repo = (cfg.get("project") or {}).get("repo")
     mode = goal.get("approve")
-    if mode not in ("item", "plan") or not repo:
+    local = _local(p)
+    if mode not in ("item", "plan") or not (repo or local):
         return ""
     try:
-        found = board.gh(["issue", "list", "--repo", repo, "--label", "status:ready", "--state", "open", "--limit", "200",
-                          "--json", "number,labels,milestone" + (",body" if mode == "plan" else "")],
-                         timeout=TRAIL_TIMEOUT) or []
-        plans = board.gh(["issue", "list", "--repo", repo, "--label", config_mod.PLAN, "--state", "open", "--limit", "200",
-                          "--json", "number,labels"], timeout=TRAIL_TIMEOUT) or [] if mode == "plan" else []
+        found = _items(p, "open", "status:ready", 200, "number,labels,milestone" + (",body" if mode == "plan" else ""))
+        plans = _items(p, "open", config_mod.PLAN, 200, "number,labels") if mode == "plan" else []
     except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
         return ""
+    def how(n):
+        return (f"`room label {p.name} {n} --add {config_mod.APPROVED}`" if local
+                else f"`gh issue edit {n} --repo {repo} --add-label {config_mod.APPROVED}`")
     milestone = goal.get("milestone")
     waiting, named = [], set()
     for i in found:
@@ -581,11 +582,11 @@ def _approval(p: registry.Project) -> str:
         if not waiting:
             return ""
         return (f"Plans waiting for your approval: {len(waiting)}. To approve one, add the label `{config_mod.APPROVED}`"
-                f" (`gh issue edit {min(waiting)} --repo {repo} --add-label {config_mod.APPROVED}`).")
+                f" ({how(min(waiting))}).")
     if not waiting:
         return ""
     return (f"Ready items waiting for your approval: {len(waiting)}. To approve one, add the label `{config_mod.APPROVED}`"
-            f" (`gh issue edit {min(waiting)} --repo {repo} --add-label {config_mod.APPROVED}`).")
+            f" ({how(min(waiting))}).")
 
 
 def _waiting(p: registry.Project, now: float) -> str:

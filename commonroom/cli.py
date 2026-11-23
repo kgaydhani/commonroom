@@ -676,6 +676,61 @@ def cmd_claim(args, board_for=None) -> int:
     return 0
 
 
+def _owner_act(args, act, board_for=None) -> int:
+    """Run `act(board, project)` on the project's board as the owner; an unknown project or item is a plain message, exit 1."""
+    try:
+        _, p = handshake._start(args)
+        b = _board_of(p, board_for)
+        if not any(i["number"] == args.n for i in b.all_issues()):
+            print(f"refused: {p.name} has no item #{args.n}.", file=sys.stderr)
+            return 1
+        print(f"{p.name} #{args.n}: {act(b)}")
+    except (handshake.HandshakeError, RuntimeError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return 0
+
+
+def _owner_text(text: str) -> str:
+    """Owner text never starts with `[`, so it can't read as an agent's comment (as `/api/comment` does)."""
+    text = (text or "").strip()
+    return "​" + text if text.startswith("[") else text
+
+
+def cmd_comment(args, board_for=None) -> int:
+    """Add a comment from the owner to an item."""
+    text = _owner_text(args.text)
+    if not text:
+        print("refused: the comment is empty.", file=sys.stderr)
+        return 2
+    def act(b):
+        b.owner_comment(args.n, text)
+        return "commented"
+    return _owner_act(args, act, board_for)
+
+
+def cmd_label(args, board_for=None) -> int:
+    """Add and/or remove labels on an item."""
+    add, remove = args.add or [], args.remove or []
+    if not add and not remove:
+        print("refused: give --add or --remove.", file=sys.stderr)
+        return 2
+    def act(b):
+        for name in add:
+            b.ensure_label(name)
+        b.set_labels(args.n, add=add, remove=remove)
+        return "labels changed" + "".join(f" +{n}" for n in add) + "".join(f" -{n}" for n in remove)
+    return _owner_act(args, act, board_for)
+
+
+def cmd_close(args, board_for=None) -> int:
+    """Close an item, with the owner's reason as its last comment when given."""
+    def act(b):
+        b.owner_close(args.n, _owner_text(args.reason))
+        return "closed"
+    return _owner_act(args, act, board_for)
+
+
 VERDICTS = ("keep", "park", "cancel")
 
 
@@ -1090,6 +1145,9 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("trials", help="each declared trial's arms, figures and verdict (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=cmd_trials)
     p = sub.add_parser("reconcile", help="after a direction: keep, park or cancel one open issue, with a reason"); p.add_argument("name", metavar="project"); p.add_argument("issue", type=int); p.add_argument("verdict"); p.add_argument("reason", nargs="?"); p.set_defaults(func=cmd_reconcile)
     p = sub.add_parser("items", help="a project's open items on its board (local or GitHub); --all adds closed ones"); p.add_argument("name", metavar="project"); p.add_argument("--all", action="store_true"); p.set_defaults(func=cmd_items)
+    p = sub.add_parser("comment", help="comment on an item as the owner"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("text"); p.set_defaults(func=cmd_comment)
+    p = sub.add_parser("label", help="add or remove labels on an item"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("--add", action="append", metavar="LABEL"); p.add_argument("--remove", action="append", metavar="LABEL"); p.set_defaults(func=cmd_label)
+    p = sub.add_parser("close", help="close an item, with an optional reason"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("reason", nargs="?", default=""); p.set_defaults(func=cmd_close)
     p = sub.add_parser("claim", help="mark an item as held by you so the room leaves it alone; --release gives it back"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("--as", dest="who", default="owner"); p.add_argument("--release", action="store_true"); p.set_defaults(func=cmd_claim)
     p = sub.add_parser("findings", help="every finding of a project's latest steward sweep"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_findings)
     p = sub.add_parser("artifact", help="`artifact published <name>`: record that a published artifact was republished"); p.add_argument("action", choices=["published"]); p.add_argument("artifact"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_artifact)
