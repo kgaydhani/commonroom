@@ -134,7 +134,8 @@ class ThisRepo(unittest.TestCase):
         self.assertEqual(cfg["project"]["repo"], "kgaydhani/magazine")
         self.assertEqual(cfg["share"], {})
         self.assertNotIn("_host", cfg)
-        self.assertIn("curator", dispatch.runnable_roles(cfg))
+        if (MAGAZINE.parent / ".claude" / "agents" / "curator.md").is_file():  # the magazine's own choice, not the room's
+            self.assertIn("curator", dispatch.runnable_roles(cfg))
         if "curator" in cfg["schedule"]:
             self.assertTrue(cfg["schedule"]["curator"].get("at") or cfg["schedule"]["curator"].get("every_hours"))
 
