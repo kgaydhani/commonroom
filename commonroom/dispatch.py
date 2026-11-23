@@ -472,6 +472,12 @@ class GitHubBoard:
     def comment(self, number: int, body: str):
         board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
 
+    def owner_comment(self, number: int, text: str):
+        board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", text])
+
+    def owner_close(self, number: int, text: str = ""):
+        board_mod.gh(["issue", "close", str(number), "--repo", self.repo] + (["--comment", text] if text else []))
+
     def comment_as_director(self, number: int, body: str):
         board_mod.gh(["issue", "comment", str(number), "--repo", self.repo, "--body", f"{DIRECTOR_MARK} {body}"])
 

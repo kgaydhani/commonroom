@@ -177,6 +177,15 @@ class LocalBoard:
     def comment(self, number: int, body: str):
         self._event(number, "comment", body=f"{MARK} {body}", author=AUTHOR)
 
+    def owner_comment(self, number: int, text: str):
+        """A comment from the owner: no `[room]` mark, author `owner` (commonroom#477)."""
+        self._event(number, "comment", body=text, author="owner")
+
+    def owner_close(self, number: int, text: str = ""):
+        if text:
+            self.owner_comment(number, text)
+        self._event(number, "state", state="CLOSED")
+
     def set_labels(self, number: int, add=(), remove=()):
         if add or remove:
             self._event(number, "labels", add=list(add), remove=list(remove))
