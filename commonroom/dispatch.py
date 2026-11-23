@@ -53,6 +53,8 @@ AUDIT_MODEL_WINDOW_MAX = 75   # an audit waits while a model's own weekly window
 READER_COOLDOWN = 1800   # seconds between launches of a provider's meter reader, all processes together
 DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
 STAMP_COOLDOWN = POLICY["stamp_cooldown_seconds"]
+LOOKING_MAX = POLICY["looking_max_percent"]
+LOOKING_DAYS = 7
 # What the room tells workers lives in commonroom/ways/prompts/<name>.md, not here (commonroom#216). `{{name}}` marks a
 # value the code fills in. The files are read once, at import: a running dispatcher keeps the text it started with
 # while the room pulls new files under it, and a missing file fails the import with its name.
@@ -1292,6 +1294,7 @@ class Dispatcher:
         self.ci = config_mod.has_ci(cfg)
         # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
         self.stamp_told: list[str] = []   # mark keys of the stamp PRs the last director_trigger named (commonroom#434)
+        self.looking_logged = None
         self.stamp_only = False   # set by director_trigger: every reason came from ready_for_director (commonroom#342)
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
         self.carry_cache = {}   # (stamp sha, head sha) -> may the stamp be carried; one compare per pair per pass
@@ -1320,6 +1323,38 @@ class Dispatcher:
         """Seconds after a director run before a PR waiting only on the stamp is raised (commonroom#434): this project's
         `[policy]` value if it set one, else the room's."""
         return self.policy_overrides.get("stamp_cooldown_seconds", STAMP_COOLDOWN)
+
+    def looking_cap(self) -> int:
+        """Percent of the project's 7-day tokens that scouting and director runs may use (commonroom#440): this
+        project's `[policy]` value if it set one, else the room's."""
+        return self.policy_overrides.get("looking_max_percent", LOOKING_MAX)
+
+    def looking_share(self, now: float | None = None) -> float:
+        """Percent of input+output tokens, over this project's runs of the last 7 days, spent by scout runs and by
+        director runs that were not stamp-only (a run at `[director] stamp_effort` is a stamp run). Runs with no token
+        counts are ignored; no tokens at all is 0."""
+        now = time.time() if now is None else now
+        stamp = (self.cfg.get("director") or {}).get("stamp_effort")
+        total = looking = 0
+        for r in self.ledger.runs_since(self.project, now - LOOKING_DAYS * 86400):
+            if r["input_tokens"] is None and r["output_tokens"] is None:
+                continue
+            tokens = (r["input_tokens"] or 0) + (r["output_tokens"] or 0)
+            total += tokens
+            if r["role"] == "scout" or (r["role"] == "director" and not (stamp and r["effort"] == stamp)):
+                looking += tokens
+        return 100.0 * looking / total if total else 0.0
+
+    def looking_held(self, now: float | None = None) -> bool:
+        """True while the looking share is above the cap; the log names both, once per pass (per pick)."""
+        share, cap = self.looking_share(now), self.looking_cap()
+        if share <= cap:
+            return False
+        if self.looking_logged != (round(share, 1), cap):
+            self.looking_logged = (round(share, 1), cap)
+            self.log(f"   looking is {share:.0f}% of the last {LOOKING_DAYS} days' tokens, over the {cap}% cap: no scout "
+                     f"or periodic director run starts")
+        return True
 
     def policy(self, name: str) -> int:
         """A ways-of-working number from commonroom/ways/policy.toml: this project's `[policy]` value if it set one,
@@ -2876,7 +2911,7 @@ class Dispatcher:
                     return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
         running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
-                    and self.approved(i, open_now)]
+                    and self.approved(i, open_now) and not self.looking_held()]
         for issue in sorted(scouting, key=priority):
             choice = self.choose(self.roles.get("scout", ["claude:sonnet"]), {provider: v})
             if choice:
@@ -2939,7 +2974,7 @@ class Dispatcher:
         ready = self.ready_builds(open_now)
         running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
-                    and self.approved(i, open_now)]
+                    and self.approved(i, open_now) and not self.looking_held()]
         background = set(self.roles.get("background") or [])
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
@@ -3006,7 +3041,7 @@ class Dispatcher:
             choice = self.choose(scout_spec, allowed)
             if choice:
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
-        sweep = self.capability_sweep_due()
+        sweep = self.capability_sweep_due() if not self.looking_held() else None
         if sweep and self.approves_items():
             # The sweep's issue waits for `owner:approved` like any other; one waiting is enough (commonroom#413).
             if not any((i.get("title") or "").startswith("Capability sweep:") and "role:scout" in labels(i) for i in open_now):
@@ -3229,7 +3264,7 @@ class Dispatcher:
             reasons.append(bulletin)
         # The director is always on it (owner, 9 Oct; commonroom#41): even with no event, it steers every few hours.
         steer = float((self.cfg.get("director") or {}).get("steer_every_hours", 3) or 0)
-        if steer and time.time() - since >= steer * 3600:
+        if steer and time.time() - since >= steer * 3600 and not (not reasons and self.looking_held()):
             reasons.append(steer_reason(self.cfg, self.ways))
             reasons += interactive
         self.stamp_only = bool(stamps) and len(reasons) == len(stamps)   # every reason, steer and bulletin included (#342)
