@@ -2828,48 +2828,52 @@ class Dispatcher:
         return plan is not None and any(p["number"] == plan and {config_mod.PLAN, config_mod.APPROVED} <= labels(p)
                                         for p in open_now)
 
+    def scout_hold(self, issue: dict, legacy: bool = False) -> str | None:
+        """Why an item's scout reference does not let it start, or None when it names a closed scout issue. The one
+        place that resolves "is this scout reference closed". `legacy` also accepts the old `Scouted: #N` spelling."""
+        n = issue["number"]
+        body = issue.get("body") or ""
+        ref = config_mod.scout_of(body)
+        if ref is None and legacy and (found := SCOUTED.search(body)):
+            ref = int(found.group(1))
+        if ref is None:
+            return "its body has no `Scout: #N` line"
+        if ref == n:
+            return "`Scout: #N` names the item itself"
+        if ref in self.scout_closed or self.board.issue_state(ref) == "CLOSED":
+            self.scout_closed.add(ref)
+            return None
+        return f"scout #{ref} is not closed"
+
     def capability_scouted(self, issue: dict) -> bool:
         """A `kind:capability` item starts only when its body has a `Scout: #N` line naming a closed issue, or it carries
         `owner:waived` (commonroom#439). Other items are never held. The reason is logged, not commented."""
         names = labels(issue)
         if config_mod.CAPABILITY not in names or config_mod.WAIVED in names:
             return True
-        n = issue["number"]
-        ref = config_mod.scout_of(issue.get("body"))
-        if ref is None:
-            why = "its body has no `Scout: #N` line"
-        elif ref == n:
-            why = "`Scout: #N` names the item itself"
-        elif ref in self.scout_closed or self.board.issue_state(ref) == "CLOSED":
-            self.scout_closed.add(ref)
+        why = self.scout_hold(issue)
+        if why is None:
             return True
-        else:
-            why = f"scout #{ref} is not closed"
-        self.log(f"   #{n} held: kind:capability and {why} (needs a closed Scout item or owner:waived)")
+        self.log(f"   #{issue['number']} held: kind:capability and {why} (needs a closed Scout item or owner:waived)")
         return False
 
     def scouted(self, issue: dict) -> bool:
-        """`[checks] look_before_building = true`: a `kind:feature` build is held until its body has `Scouted: #N` naming a
-        closed issue, or it carries `scout:waived`. The reason is commented once. Off by default; bugs and the rest
-        are never held (commonroom#325)."""
+        """`[checks] look_before_building = true`: a `kind:feature` build is held until its body has a `Scout: #N` line
+        (or the old `Scouted: #N`) naming a closed issue, or it carries `owner:waived` (or the old `scout:waived`).
+        The reason is commented once. Off by default; bugs and the rest are never held (commonroom#325)."""
         names = labels(issue)
-        if not (self.cfg.get("checks") or {}).get("look_before_building") or "kind:feature" not in names or SCOUT_WAIVED in names:
+        if (not (self.cfg.get("checks") or {}).get("look_before_building") or "kind:feature" not in names
+                or SCOUT_WAIVED in names or config_mod.WAIVED in names):
+            return True
+        why = self.scout_hold(issue, legacy=True)
+        if why is None:
             return True
         n = issue["number"]
-        found = SCOUTED.search(issue.get("body") or "")
-        if found:
-            ref = int(found.group(1))
-            if ref not in self.scout_closed and ref != n and self.board.issue_state(ref) == "CLOSED":
-                self.scout_closed.add(ref)
-            if ref in self.scout_closed:
-                return True
-            missing = f"`Scouted: #{ref}` names an issue that is not closed yet"
-        else:
-            missing = "its body has no `Scouted: #N` line"
         if n not in self.scout_told and not self.dry_run and not any(SCOUT_HELD in (c.get("body") or "") for c in issue.get("comments") or []):
-            self.board.comment(n, f"{SCOUT_HELD}: this project looks before building, and {missing}. Add a line `Scouted: #N` "
-                                  "naming a closed scout issue that answered \"does this already exist, free and usable here?\", "
-                                  "or the label `scout:waived`. Until then the issue is skipped.")
+            self.board.comment(n, f"{SCOUT_HELD}: this project looks before building, and {why}. Add a line `Scout: #N` "
+                                  "(the old `Scouted: #N` still works) naming a closed scout issue that answered "
+                                  "\"does this already exist, free and usable here?\", "
+                                  "or the label `owner:waived` (the old `scout:waived` still works). Until then the issue is skipped.")
         self.scout_told.add(n)
         return False
 

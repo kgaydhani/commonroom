@@ -84,3 +84,19 @@ class LookBeforeBuilding(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_a_feature_with_the_shared_scout_line_and_a_closed_item_starts(self):
+        picked, _, _ = self.run_check([self.feature("Why\nScout: #12"), issue(12, ["role:scout"], state="CLOSED")])
+        self.assertEqual(picked, [10])
+
+    def test_a_feature_with_an_open_shared_scout_line_is_held(self):
+        picked, _, _ = self.run_check([self.feature("Scout: #12"), issue(12, ["role:scout"])])
+        self.assertEqual(picked, [])
+
+    def test_owner_waived_lets_a_feature_through(self):
+        picked, _, _ = self.run_check([self.feature(extra=["owner:waived"])])
+        self.assertEqual(picked, [10])
+
+    def test_scout_lines_do_nothing_when_the_flag_is_off(self):
+        picked, _, _ = self.run_check([self.feature("Scout: #12")], on=False)
+        self.assertEqual(picked, [10])
