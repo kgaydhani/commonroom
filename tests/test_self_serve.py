@@ -2,6 +2,7 @@
 and the host project (gamemirage) behaving exactly as before."""
 import ast
 import os
+import sqlite3
 import tempfile
 import time
 import tomllib
@@ -690,6 +691,7 @@ class LiveCheckoutAfterSuite(LiveRepo):
         super().setUp()
         dispatch.Dispatcher.suite_on_main = self._suite_on_main          # the real rule: no CI and a test command
         self.d.main_red = lambda everything, actions: False             # never run a real suite on main here
+        self.d.dry_beat_runner = lambda *a: ("PASS", "ok")              # nor a real dispatcher (#443)
         self.assertTrue(self.d.suite_on_main())
 
     def push(self, name):
@@ -899,6 +901,97 @@ class CarriedStamp(Base):
         board.details[5]["files"] = []
         self.dispatcher(self.cfg(paths=None), board).housekeeping()
         self.assertEqual((board.merged, board.compared), ([5], []))
+
+
+class IssueBoard(MergeBoard):
+    def create_issue(self, title, body, labels=(), milestone=None, assignees=()):
+        self.issues.append({"number": 900 + len(self.issues), "title": title, "body": body, "state": "OPEN",
+                            "labels": [{"name": n} for n in labels], "comments": []})
+        return self.issues[-1]["number"]
+
+
+class DryRunBeat(LiveCheckoutAfterSuite):
+    """commonroom#443: a dry-run beat against a copy of the ledger before the live checkout moves."""
+    def setUp(self):
+        super().setUp()
+        self.d.board = IssueBoard([], {})
+        self.calls = []
+        self.outcome = ("PASS", "ok")
+
+        def runner(root, sha, home, worktree, minutes):
+            self.calls.append((sha, home, (Path(home) / "room.sqlite3").is_file()))
+            return self.outcome
+        self.d.dry_beat_runner = runner
+
+    def test_a_passing_beat_moves_the_checkout_once(self):
+        sha = self.push("b.txt"); self.mark_tested(sha)
+        self.assertIn("fast-forwarded", self.d.update_live_checkout()[0])
+        self.assertIsNotNone(self.ledger.marked("commonroom", f"main-dryrun:{sha}"))
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.d.dry_run_beat(sha), [])
+        self.assertEqual(len(self.calls), 1)                      # the mark answers: no second call
+
+    def test_a_failing_beat_holds_and_opens_one_issue(self):
+        before, sha = self.head(self.live), self.push("b.txt")
+        self.mark_tested(sha)
+        self.outcome = ("FAIL", "exit 1: Traceback boom")
+        actions = self.d.update_live_checkout()
+        self.assertEqual(actions[0], f"live checkout held: dry-run beat failed on {sha[:7]}: exit 1: Traceback boom")
+        self.assertEqual(self.head(self.live), before)
+        self.assertIsNotNone(self.ledger.marked("commonroom", f"main-dryrun-red:{sha}"))
+        issues = self.d.board.issues
+        self.assertEqual(len(issues), 1)
+        self.assertIn("needs:director", [l["name"] for l in issues[0]["labels"]])
+        self.assertIn(sha, issues[0]["body"])
+        again = self.d.update_live_checkout()
+        self.assertEqual(again, [actions[0]])
+        self.assertEqual((len(issues), len(self.calls)), (1, 1))
+        newer = self.push("c.txt"); self.mark_tested(newer)         # another red sha: still only one open issue
+        self.d.update_live_checkout()
+        self.assertEqual(len(self.d.board.issues), 1)
+
+    def test_a_beat_that_cannot_start_holds_nothing_and_marks_nothing(self):
+        before, sha = self.head(self.live), self.push("b.txt")
+        self.mark_tested(sha)
+        self.outcome = ("INCOMPLETE", "could not check out")
+        self.assertIn("didn't finish", self.d.update_live_checkout()[0])
+        self.assertEqual(self.head(self.live), before)
+        self.assertIsNone(self.ledger.marked("commonroom", f"main-dryrun:{sha}"))
+        self.assertIsNone(self.ledger.marked("commonroom", f"main-dryrun-red:{sha}"))
+
+    def test_a_timed_out_beat_is_red_with_one_issue(self):
+        import subprocess
+        from commonroom import carry
+        err = subprocess.TimeoutExpired("x", 1, output=b"Traceback boom", stderr=None)
+        with mock.patch.object(carry.subprocess, "run", side_effect=[mock.Mock(), mock.Mock(returncode=0, stderr=""), err, mock.Mock()]),                 mock.patch.object(carry.shutil, "rmtree"):
+            result, line = carry.run_dry_beat(self.live, "a" * 40, Path(self.tmp.name), Path(self.tmp.name) / "wt", 0.01)
+        self.assertEqual(result, "FAIL")
+        self.assertIn("Traceback boom", line)
+        before, sha = self.head(self.live), self.push("b.txt")
+        self.mark_tested(sha)
+        self.outcome = (result, line)
+        self.assertIn("held: dry-run beat failed", self.d.update_live_checkout()[0])
+        self.assertEqual(self.head(self.live), before)
+        self.assertIsNotNone(self.ledger.marked("commonroom", f"main-dryrun-red:{sha}"))
+        self.assertEqual(len(self.d.board.issues), 1)
+
+    def test_the_copy_is_a_sqlite_backup_in_a_temp_folder_and_the_runner_never_sees_the_live_ledger(self):
+        self.ledger.mark("commonroom", "canary")
+        seen = {}
+
+        def runner(root, sha, home, worktree, minutes):
+            seen["home"] = Path(home)
+            copy = sqlite3.connect(Path(home) / "room.sqlite3")
+            seen["canary"] = copy.execute("SELECT count(*) FROM marks WHERE key='canary'").fetchone()[0]
+            copy.close()
+            return "PASS", "ok"
+        self.d.dry_beat_runner = runner
+        self.mark_tested(self.push("b.txt"))
+        self.d.update_live_checkout()
+        self.assertIn("home", seen)
+        self.assertEqual(seen["canary"], 1)
+        self.assertNotEqual(seen["home"].resolve(), Path(self.ledger.path).parent.resolve())
+        self.assertFalse(seen["home"].exists())                   # temporary: gone after the beat
 
 
 if __name__ == "__main__":
