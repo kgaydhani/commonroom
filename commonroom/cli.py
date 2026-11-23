@@ -681,7 +681,7 @@ def _owner_act(args, act, board_for=None) -> int:
     try:
         _, p = handshake._start(args)
         b = _board_of(p, board_for)
-        if not any(i["number"] == args.n for i in b.all_issues()):
+        if b.issue_state(args.n) is None:
             print(f"refused: {p.name} has no item #{args.n}.", file=sys.stderr)
             return 1
         print(f"{p.name} #{args.n}: {act(b)}")
