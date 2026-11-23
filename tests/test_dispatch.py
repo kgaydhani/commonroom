@@ -452,6 +452,15 @@ class WithLedger(unittest.TestCase):
         self.assertIn("nothing is ready", reason)
         self.assertIn("open follow-ups to release: #30", reason)
 
+    def test_released_follow_ups_are_not_named_and_still_count_as_work(self):
+        issues = [issue(30, ["kind:follow-up", "status:ready", "role:builder"]), issue(32, ["status:blocked", "role:builder"], body="Depends on #99")]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertNotIn("follow-ups", d.director_trigger() or "")
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger,
+                                board=FakeBoard([issue(33, ["kind:follow-up", "status:blocked", "role:builder"], body="Depends on #99")]),
+                                log=lambda *_: None)
+        self.assertIn("nothing is ready", d.director_trigger())
+
     def test_director_not_woken_for_work_waiting_on_owner(self):
         issues = [issue(11, ["status:blocked", "role:builder"], body="Blocked by #12"), issue(12, ["owner:human"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

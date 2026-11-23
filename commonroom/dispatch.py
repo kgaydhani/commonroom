@@ -1333,6 +1333,15 @@ class Job:
     effort: str | None = None   # overrides `[effort] <role>` for this run (commonroom#342)
 
 
+FOLLOW_UP_PLACED = {"status:ready", "status:in-progress", "status:review", "status:blocked", "parked", "needs:director"}
+
+
+def unreleased_follow_up(issue: dict) -> bool:
+    """A reviewer follow-up the director hasn't placed yet (commonroom#485). Once released it keeps its label."""
+    names = labels(issue)
+    return "kind:follow-up" in names and not names & FOLLOW_UP_PLACED
+
+
 class Dispatcher:
     def __init__(self, cfg: dict, ledger: Ledger, board=None, log=print, dry_run: bool = False, only_provider: str | None = None,
                  slot: int = 1, notifier=None):
@@ -3460,7 +3469,7 @@ class Dispatcher:
         owner_open = {i["number"] for i in open_issues if "owner:human" in labels(i)}
         # Work that only waits on the owner is not a reason to wake the director. A claimed item is the owner's too.
         machine_open = [i for i in open_issues if "owner:human" not in labels(i) and not claimed(labels(i))
-                        and "kind:follow-up" not in labels(i)
+                        and not unreleased_follow_up(i)
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
             if held:
@@ -3484,8 +3493,8 @@ class Dispatcher:
             reasons += interactive
         self.stamp_only = bool(stamps) and len(reasons) == len(stamps)   # every reason, steer and bulletin included (#342)
         # Reviewer follow-ups never wake the director alone (commonroom#485); when it runs anyway, it releases them.
-        follow_ups = sorted(i["number"] for i in open_issues if "kind:follow-up" in labels(i))
-        if reasons and follow_ups:
+        follow_ups = sorted(i["number"] for i in open_issues if unreleased_follow_up(i))
+        if reasons and follow_ups and not self.stamp_only:
             reasons.append("open follow-ups to release: " + ", ".join(f"#{n}" for n in follow_ups[:5]))
         return "; ".join(reasons) or None
 
