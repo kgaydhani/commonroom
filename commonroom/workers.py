@@ -41,6 +41,7 @@ class WorkerResult:
     cache_write_tokens: int | None = None   # the part written to the prompt cache (Claude only)
     output_tokens: int | None = None
     cost_usd: float | None = None
+    compactions: int | None = None      # compact_boundary events in a Claude run (None: Codex, which reports none)
     errors: list[str] = field(default_factory=list)
     log: str | None = None
     interrupted: str | None = None      # the room stopped it (gate closed, breaker, timeout)
@@ -200,6 +201,11 @@ def run_worker(provider: str, role: Role, prompt: str, cwd: Path, ledger: Ledger
                 ledger.record_cache_tokens(cwd, result.cache_read_tokens, result.cache_write_tokens)
             except Exception:
                 pass
+        if result.compactions is not None:
+            try:   # only reported, like the split above
+                ledger.record_compactions(cwd, result.compactions)
+            except Exception:
+                pass
         return result
     finally:
         tree.end()   # every process the run started ends with it (commonroom#50)
@@ -253,6 +259,9 @@ def _stream(process, tree, provider, stdin_text, ledger, log_path, result, timeo
             except ValueError:
                 continue
             if provider == "claude":
+                result.compactions = result.compactions or 0
+                if event.get("type") == "system" and event.get("subtype") == "compact_boundary":
+                    result.compactions += 1
                 observations = usage.from_claude_event(event)
                 if observations:
                     ledger.record_usage(observations)

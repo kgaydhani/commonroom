@@ -126,6 +126,15 @@ def window(rows: list[dict], since: float, until: float, models: dict[int, str] 
     }
 
 
+def compacted_by_role(rows: list[dict], since: float, until: float) -> dict[str, int]:
+    """Model runs in [since, until] that compacted at least once, counted by role (commonroom#411)."""
+    counts: dict[str, int] = {}
+    for r in model_runs(rows, since, until):
+        if (r.get("compactions") or 0) > 0:
+            counts[r["role"]] = counts.get(r["role"], 0) + 1
+    return dict(sorted(counts.items()))
+
+
 def readable(value: float) -> str:
     """A number for a person: 26.5M, 135k, 2.5 or 2 (the dashboard's style)."""
     if abs(value) >= 1e6:
@@ -154,6 +163,9 @@ def report(rows: list[dict], now: float, targets: dict) -> dict:
         result[name] = window(rows, now - seconds, now, models)
         flags += [f"{name}: {flag}" for flag in over_target(result[name], targets)]
     result["over_target"] = flags
+    compacted = compacted_by_role(rows, now - WINDOWS["7d"], now)
+    if compacted:   # no line when nothing compacted (commonroom#411)
+        result["compacted_runs_7d_by_role"] = compacted
     return result
 
 
