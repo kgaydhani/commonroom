@@ -35,8 +35,8 @@ class Trials(unittest.TestCase):
         for n in needles:
             self.assertIn(n, str(cm.exception))
 
-    def test_shipped_file_declares_nothing(self):
-        self.assertEqual(trials.load(REAL, NAMES, BOUNDS), [])
+    def test_shipped_file_loads(self):
+        self.assertEqual([t.name for t in trials.load(REAL, NAMES, {"rework_resume_seconds": (0, None)})], ["rework-fresh"])
 
     def test_valid_trial(self):
         (t,) = self.load(HEAD + VARIANT)

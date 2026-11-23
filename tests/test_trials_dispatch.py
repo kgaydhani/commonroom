@@ -1,6 +1,8 @@
 """The dispatcher runs the variant arm of a trial and records each run's arm (commonroom#352)."""
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from commonroom import dispatch, trials, workers
@@ -111,9 +113,42 @@ class TrialRuns(test_resume.Resume):
         self.assertEqual(outs, [])
         self.assertTrue(any("trials not applied" in m for m in self.logs))
 
-    def test_the_shipped_empty_file_records_nothing(self):
-        dispatch.TRIALS_FILE = self.saved
+    def test_a_file_with_no_trial_records_nothing(self):
+        (self.ways / "trials.toml").write_text("# none", encoding="utf-8")
         self.assertEqual(self.go(7)[1], [])
+
+    def test_the_shipped_file_declares_rework_fresh(self):
+        from datetime import date
+        found = trials.load(trials.FILE, dispatch.PROMPTS, {n: dispatch.policy_mod.BOUNDS[n] for n in dispatch.TRIAL_POLICY})
+        self.assertEqual([t.name for t in found], ["rework-fresh"])
+        (t,) = found
+        self.assertEqual(t.policy, {"rework_resume_seconds": 0})
+        self.assertEqual(t.prompts, {})
+        self.assertEqual(trials.active(found, date(2026, 11, 24)), [t])
+        self.assertEqual(trials.active(found, date(2026, 11, 23)), [])
+        self.assertEqual(t.max_days, 21)
+        day = lambda d: time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))   # local midnight, as trials.py reads it
+        self.assertEqual(trials.result(t, [], day(date(2026, 12, 14)))["verdict"], "running")
+        self.assertEqual(trials.result(t, [], day(date(2026, 12, 15)))["verdict"], "too few landings")
+        self.assertEqual(t.measure, "review_runs_per_landing")
+        self.assertEqual(t.share, 0.3)
+        self.assertEqual(t.min_landings, 10)
+
+    def test_shipped_trial_arms_read_rework_resume_0_and_3300(self):
+        from datetime import date
+        (t,) = trials.load(trials.FILE, dispatch.PROMPTS, {n: dispatch.policy_mod.BOUNDS[n] for n in dispatch.TRIAL_POLICY})
+        dispatch.TRIALS_FILE = trials.FILE
+        class Day(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 11, 24)
+        for want, arm in ((0, "variant"), (3300, "control")):
+            d = dispatch.Dispatcher(cfg_with(self.root), self.ledger, board=FakeBoard([]), log=lambda *_: None)
+            n = next(n for n in range(1, 500) if trials.arm(t, f"{d.project}#{n}") == arm)
+            with mock.patch.object(dispatch.datetime, "date", Day):
+                d.enter_trials(dispatch.Job("review", "reviewer", pr={"number": 9, "headRefName": f"i{n}-x"}))
+            self.assertEqual(d.policy("rework_resume_seconds"), want)
+            self.assertEqual(d.trial_refs, [f"rework-fresh={arm}"])
 
     def test_a_job_with_no_issue_is_never_in_a_trial(self):
         self.number_in("variant")
