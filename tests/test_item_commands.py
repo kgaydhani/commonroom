@@ -63,6 +63,33 @@ class ItemCommands(unittest.TestCase):
             self.assertEqual(code, 1)
             self.assertIn("no item #99", err)
 
+    def github_fake(self, state):
+        calls = []
+        class Fake:
+            def __init__(self, repo): pass
+            def all_issues(self): raise AssertionError("all_issues called")
+            def issue_state(self, n): return state
+            def ensure_label(self, name): calls.append(("ensure", name))
+            def set_labels(self, n, add=(), remove=()): calls.append(("labels", n, list(add)))
+            def owner_comment(self, n, text): calls.append(("comment", n, text))
+            def owner_close(self, n, text): calls.append(("close", n, text))
+        self.toml["project"] = {"repo": "o/r"}
+        return Fake, calls
+
+    def test_github_item_is_checked_by_issue_state_not_the_listing(self):
+        fake, calls = self.github_fake("OPEN")
+        code, _, _ = self.run_cmd(lambda a: cli.cmd_label(a, board_for=fake), n=9999, add=["x"], remove=None)
+        self.assertEqual(code, 0)
+        self.assertIn(("labels", 9999, ["x"]), calls)
+
+    def test_github_unreadable_item_is_refused_with_no_write(self):
+        fake, calls = self.github_fake(None)
+        for fn, kw in ((cli.cmd_comment, {"text": "x"}), (cli.cmd_label, {"add": ["a"], "remove": None}), (cli.cmd_close, {"reason": ""})):
+            code, _, err = self.run_cmd(lambda a, fn=fn: fn(a, board_for=fake), n=9999, **kw)
+            self.assertEqual(code, 1)
+            self.assertIn("has no item #9999", err)
+        self.assertEqual(calls, [])
+
     def test_unknown_project_is_refused(self):
         with mock.patch.object(handshake, "_start", side_effect=handshake.HandshakeError("refused: no project")):
             code, _, err = self.run_cmd(cli.cmd_close, n=self.n, reason="")
