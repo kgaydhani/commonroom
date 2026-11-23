@@ -3619,6 +3619,9 @@ class Dispatcher:
             if fresh:
                 verdict = verdict_of(fresh[-1]["body"])
                 if verdict == "APPROVE" and not self.ci and not self.tested(detail):
+                    if own_test_block(fresh[-1]["body"]):
+                        return "failed", [], ("approval carries its own TESTS: FAIL or INCOMPLETE marker "
+                                              "(quote markers in backticks)")
                     return "failed", [], "approval without a `TESTS: PASS <head sha> <command>` line: without CI it can't merge"
                 return "done", [{"kind": "review", "ref": f"PR #{job.pr['number']} {verdict}"}], tail
             return "failed", [], "; ".join(result.errors[-3:]) or "no REVIEW comment posted"
