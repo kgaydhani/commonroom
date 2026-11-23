@@ -161,3 +161,33 @@ class PreReview(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuotedMarker(PreReview):
+    """commonroom#423: a reviewer APPROVE that quotes a `TESTS: FAIL` marker in plain text is refused, and the reason names it."""
+    NO_PROOF = "approval without a `TESTS: PASS"
+    OWN_MARKER = "approval carries its own TESTS: FAIL or INCOMPLETE marker"
+
+    def assess(self, approve_body, with_room_pass=True):
+        room = {"createdAt": "2026-11-21T00:00:00Z", "body": f"[room] TESTS: PASS {HEAD} {CMD}: Ran 3 tests OK"}
+        review = {"createdAt": "2099-01-01T00:00:00Z", "body": approve_body}
+        d, board = self.make(detail=pr_detail(comments=([room] if with_room_pass else []) + [review]))
+        job = dispatch.Job("review", "reviewer", pr={"number": 50, "headRefName": "i7-thing"})
+        result = type("R", (), {"final_text": "", "errors": []})()
+        return d.assess(job, None, None, "2026-11-22T00:00:00Z", result)
+
+    def test_plain_quote_fails_with_the_new_reason(self):
+        status, _, note = self.assess('[agent:reviewer] REVIEW: APPROVE\nThe old text said "Real test failures stay TESTS: FAIL with CHANGES".')
+        self.assertEqual(status, "failed")
+        self.assertIn(self.OWN_MARKER, note)
+        self.assertIn("backticks", note)
+
+    def test_the_same_quote_in_backticks_is_accepted(self):
+        status, _, _ = self.assess('[agent:reviewer] REVIEW: APPROVE\nThe old text said `"Real test failures stay TESTS: FAIL with CHANGES"`.')
+        self.assertEqual(status, "done")
+
+    def test_no_room_pass_and_no_marker_keeps_the_existing_reason(self):
+        status, _, note = self.assess("[agent:reviewer] REVIEW: APPROVE\nLGTM", with_room_pass=False)
+        self.assertEqual(status, "failed")
+        self.assertIn(self.NO_PROOF, note)
+        self.assertNotIn(self.OWN_MARKER, note)
