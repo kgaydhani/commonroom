@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 
+from commonroom import config
+
 DAY = 86400
 WINDOWS = {"7d": 7 * DAY, "30d": 30 * DAY}
 LOOKBACK = 37 * DAY          # rows to load: the longest window plus a week, so its PRs' builders are found
@@ -15,9 +17,15 @@ NOT_WORK = ("running", "room-error")     # unfinished, or failed before any mode
 PR_REF = re.compile(r"PR #(\d+)")
 
 
-def landings(rows: list[dict], since: float, until: float) -> list[dict]:
+def landings(rows: list[dict], since: float, until: float, local: bool = False) -> list[dict]:
     """The landed changes in [since, until]: today the ledger's `merge` rows. Every per-landing figure divides by
-    these, so a project that declares its own landed events changes this function and nothing else."""
+    these, so a project that declares its own landed events changes this function and nothing else.
+    On a local board (`local`) there are no merges: a landing is a role item closed with its worker's `STATUS: DONE`
+    (a finished run whose output is `{kind: <role>, ref: "#<n> closed"}`; commonroom#455)."""
+    if local:
+        return [r for r in rows if since <= r["started_at"] <= until and r["role"] not in ROOM_ROLES
+                and any(o.get("kind") == r["role"] and str(o.get("ref") or "").endswith(" closed")
+                        for o in r.get("outputs") or [])]
     return [r for r in rows if r["role"] == "merge" and since <= r["started_at"] <= until]
 
 
@@ -74,8 +82,8 @@ def per(total: float, count: int, digits: int = 2):
     return round(total / count, digits) if count else None
 
 
-def window(rows: list[dict], since: float, until: float, models: dict[int, str] | None = None) -> dict:
-    landed, work = landings(rows, since, until), model_runs(rows, since, until)
+def window(rows: list[dict], since: float, until: float, models: dict[int, str] | None = None, local: bool = False) -> dict:
+    landed, work = landings(rows, since, until, local), model_runs(rows, since, until)
     n = len(landed)
     models = builder_models(rows) if models is None else models
     coordination = [r for r in work if r["role"] in COORDINATION_ROLES]
@@ -154,13 +162,13 @@ def over_target(figures: dict, targets: dict) -> list[str]:
     return flags
 
 
-def report(rows: list[dict], now: float, targets: dict) -> dict:
+def report(rows: list[dict], now: float, targets: dict, local: bool = False) -> dict:
     """One project's per-merge figures over each window, its targets, and which windows are over them."""
     models = builder_models(rows)
     result = {"targets": dict(targets or {})}
     flags = []
     for name, seconds in WINDOWS.items():
-        result[name] = window(rows, now - seconds, now, models)
+        result[name] = window(rows, now - seconds, now, models, local)
         flags += [f"{name}: {flag}" for flag in over_target(result[name], targets)]
     result["over_target"] = flags
     compacted = compacted_by_role(rows, now - WINDOWS["7d"], now)
@@ -170,4 +178,5 @@ def report(rows: list[dict], now: float, targets: dict) -> dict:
 
 
 def project_report(ledger, project: str | None, cfg: dict, now: float) -> dict:
-    return report(ledger.runs_since(project, now - LOOKBACK), now, cfg.get("targets") or {})
+    return report(ledger.runs_since(project, now - LOOKBACK), now, cfg.get("targets") or {},
+                  config.board_kind(cfg) == "local")

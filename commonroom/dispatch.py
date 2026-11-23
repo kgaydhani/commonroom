@@ -29,9 +29,10 @@ from commonroom import board as board_mod, config as config_mod, gate, notify as
 from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, trials as trials_mod, weekly
 from commonroom.ledger import Ledger
+from commonroom.localboard import LocalBoard
 from commonroom.waytext import PLACEHOLDER, fill_way, read_way   # moved there so handshake can import them (commonroom#345)
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
-from commonroom import measure, owner_reserve, steward
+from commonroom import measure, metrics as metrics_mod, owner_reserve, steward
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -68,7 +69,7 @@ TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at 
 PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-incomplete", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
-           "review", "review-no-ci", "review-room-tested", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
+           "review", "review-no-ci", "review-room-tested", "role", "role-local", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
            "why-milestone", "why-mission")
 # The text the room posts as issue comments, in ways/comments (commonroom#223).
 COMMENTS_NAMES = ("assess-escalate", "assess-retry", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
@@ -418,6 +419,19 @@ def merges_back_to(commits: list[dict], head: str, stamp: str) -> bool:
 
 # Who opened a PR and where its head lives, so the room acts only on its trusted logins' own branches (commonroom#176).
 PR_ORIGIN = "author,isCrossRepository,headRepositoryOwner"
+
+
+def board_for_project(cfg: dict, ledger: Ledger):
+    """The project's board: GitHub issues, or with `[project] board = "local"` files in its room folder (commonroom#455)."""
+    if config_mod.board_kind(cfg) != "local":
+        return GitHubBoard(cfg["project"]["repo"])
+    name = cfg["project"].get("name")
+    try:
+        known = registry_mod.load(Path(ledger.path).parent / registry_mod.FILENAME, check=False).projects.get(name)
+    except (registry_mod.RegistryError, OSError):
+        known = None
+    folder = handshake.folder_of(known) if known else Path(ledger.path).parent / "projects" / str(name)
+    return LocalBoard(folder)
 
 
 class GitHubBoard:
@@ -1323,7 +1337,7 @@ class Dispatcher:
         self.only_provider = only_provider
         self.project = cfg["project"].get("name")
         self.root = Path(cfg["_root"]) if cfg.get("_root") else None
-        self.board = board or GitHubBoard(cfg["project"]["repo"])
+        self.board = board or board_for_project(cfg, ledger)
         self.milestone = cfg["goal"].get("milestone")
         self.roles = cfg.get("roles") or {}
         self.log_dir = Path(ledger.path).parent / "logs" / (self.project or "default")
@@ -3934,6 +3948,13 @@ class Dispatcher:
                                 suite_note=self.suite_note() + (" " + ways["build-incomplete"] if self.pre_test else ""),
                                 open_pr=open_pr)
             return fill_way(ways["build"], n=n, repo=repo, branch=branch, suite_note=self.suite_note(), open_pr=open_pr)
+        if job.kind == "role" and config_mod.board_kind(self.cfg) == "local":
+            item = job.issue
+            comments = "\n".join(f"- {(c.get('author') or {}).get('login', '?')}: {c.get('body', '')}"
+                                 for c in item.get("comments") or []) or "(none)"
+            return fill_way(ways["role-local"], n=item["number"], role=job.role, title=item.get("title", ""),
+                            body=item.get("body") or "(no description)", comments=comments,
+                            folder=self.board.inner.items / str(item["number"]))
         if job.kind == "role":
             return fill_way(ways["role"], n=job.issue["number"], repo=repo, role=job.role)
         if job.kind == "review":
@@ -4187,6 +4208,9 @@ class Dispatcher:
         answer = progress_mod.landed(self.cfg, now - 86400)
         if answer.why:
             self.log(f"   progress: {answer.why}; counting merges this pass")
+        if answer.count is None and config_mod.board_kind(self.cfg) == "local":
+            # No merges on a local board: a role item closed with its worker's STATUS: DONE is a landing (commonroom#455).
+            return len(metrics_mod.landings(self.ledger.runs_since(self.project, now - 86400), now - 86400, now, True))
         return answer.count
 
     def run_once(self) -> dict:
