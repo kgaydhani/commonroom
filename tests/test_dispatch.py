@@ -3157,6 +3157,92 @@ class StampEffort(unittest.TestCase):
         self.assertIsNone(job.effort)
 
 
+class LookingCap(unittest.TestCase):
+    """`looking_max_percent`: scouting and non-stamp director runs stay under a share of 7 days' tokens (commonroom#440)."""
+    ALLOWED = {"claude": gate.Verdict(True, "ok")}
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ledger = Ledger(Path(self.tmp.name) / "room.sqlite3", synchronous="OFF")
+        self.now = time.time()
+        self.lines = []
+
+    def tearDown(self):
+        self.ledger.close(); self.tmp.cleanup()
+
+    def run_of(self, role, tokens, age_days=0.0, effort="default"):
+        run_id = self.ledger.start_run("t", f"x-{role}-{age_days}-{tokens}", role, "claude", effort=effort,
+                                       now=self.now - age_days * 86400 - 10)
+        self.ledger.finish_run(run_id, "done", input_tokens=tokens // 2, output_tokens=tokens - tokens // 2,
+                               now=self.now - age_days * 86400)
+
+    def forty(self, age_days=0.0):
+        self.run_of("builder", 600_000, age_days); self.run_of("scout", 300_000, age_days)
+        self.run_of("director", 100_000, age_days + 1)   # past the director cooldown
+
+    def dispatcher(self, issues, policy=None):
+        cfg = cfg_with(self.tmp.name)
+        cfg["project"]["name"] = "t"
+        if policy:
+            cfg["policy"] = policy
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=self.lines.append)
+        d.project = "t"
+        return d
+
+    SCOUT = [issue(1, ["status:ready", "role:scout"])]
+
+    def test_over_the_cap_a_due_scout_is_not_picked(self):
+        self.forty()
+        d = self.dispatcher(self.SCOUT)
+        self.assertEqual(round(d.looking_share(self.now)), 40)
+        self.assertIsNone(d.pick(self.ALLOWED))
+        self.assertTrue(any("40%" in l and "35%" in l for l in self.lines))
+
+    def test_over_the_cap_an_escalation_still_starts_the_director(self):
+        self.forty()
+        d = self.dispatcher(self.SCOUT + [issue(9, ["needs:director"], milestone=None)])
+        job, _, _ = d.pick(self.ALLOWED)
+        self.assertEqual(job.kind, "direct")
+        self.assertIn("#9 escalated", job.reason)
+
+    def test_over_the_cap_a_periodic_steer_alone_is_held(self):
+        self.forty()
+        d = self.dispatcher([])
+        d.cfg["director"]["steer_every_hours"] = 1
+        self.assertIsNone(d.director_trigger())
+        d.policy_overrides["looking_max_percent"] = 50
+        self.assertIsNotNone(d.director_trigger())
+
+    def test_a_project_can_raise_the_cap(self):
+        self.forty()
+        job, _, _ = self.dispatcher(self.SCOUT, {"looking_max_percent": 50}).pick(self.ALLOWED)
+        self.assertEqual((job.role, job.issue["number"]), ("scout", 1))
+
+    def test_under_the_cap_the_scout_is_picked(self):
+        self.run_of("builder", 900_000); self.run_of("scout", 100_000)
+        job, _, _ = self.dispatcher(self.SCOUT).pick(self.ALLOWED)
+        self.assertEqual(job.role, "scout")
+
+    def test_runs_older_than_seven_days_do_not_count(self):
+        self.forty(age_days=8)
+        d = self.dispatcher(self.SCOUT)
+        self.assertEqual(d.looking_share(self.now), 0.0)
+        self.assertEqual(d.pick(self.ALLOWED)[0].role, "scout")
+
+    def test_no_runs_hold_nothing(self):
+        d = self.dispatcher(self.SCOUT)
+        self.assertEqual(d.looking_share(self.now), 0.0)
+        self.assertFalse(d.looking_held(self.now))
+
+    def test_runs_without_token_counts_and_stamp_runs_are_ignored(self):
+        self.ledger.start_run("t", "x", "scout", "claude", now=self.now - 5)   # still running: no counts
+        self.run_of("builder", 800_000); self.run_of("director", 400_000, effort="medium")
+        d = self.dispatcher([])
+        d.cfg["director"]["stamp_effort"] = "medium"
+        self.assertEqual(d.looking_share(self.now), 0.0)   # the stamp run counts in the total only
+        self.assertFalse(d.looking_held(self.now))
+
+
 class BouncedPrOrder(unittest.TestCase):
     @staticmethod
     def order(*specs):
