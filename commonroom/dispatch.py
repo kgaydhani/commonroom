@@ -3460,6 +3460,7 @@ class Dispatcher:
         owner_open = {i["number"] for i in open_issues if "owner:human" in labels(i)}
         # Work that only waits on the owner is not a reason to wake the director. A claimed item is the owner's too.
         machine_open = [i for i in open_issues if "owner:human" not in labels(i) and not claimed(labels(i))
+                        and "kind:follow-up" not in labels(i)
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
             if held:
@@ -3482,6 +3483,10 @@ class Dispatcher:
             reasons.append(steer_reason(self.cfg, self.ways))
             reasons += interactive
         self.stamp_only = bool(stamps) and len(reasons) == len(stamps)   # every reason, steer and bulletin included (#342)
+        # Reviewer follow-ups never wake the director alone (commonroom#485); when it runs anyway, it releases them.
+        follow_ups = sorted(i["number"] for i in open_issues if "kind:follow-up" in labels(i))
+        if reasons and follow_ups:
+            reasons.append("open follow-ups to release: " + ", ".join(f"#{n}" for n in follow_ups[:5]))
         return "; ".join(reasons) or None
 
     def bulletin_missed(self, last_director: float, now: float | None = None) -> str | None:

@@ -443,6 +443,15 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(hasattr(fake, "milestones") or hasattr(fake, "comments"))
         self.assertIsNone(fake.issues[0]["milestone"])
 
+    def test_open_follow_ups_never_wake_the_director_alone_but_are_named(self):
+        issues = [issue(30, ["kind:follow-up"])]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(d.director_trigger())
+        issues.append(issue(31, ["status:blocked", "role:builder"], body="Depends on #99"))
+        reason = d.director_trigger()
+        self.assertIn("nothing is ready", reason)
+        self.assertIn("open follow-ups to release: #30", reason)
+
     def test_director_not_woken_for_work_waiting_on_owner(self):
         issues = [issue(11, ["status:blocked", "role:builder"], body="Blocked by #12"), issue(12, ["owner:human"])]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

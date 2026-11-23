@@ -30,6 +30,9 @@ class Invariants(unittest.TestCase):
         self.assertEqual(slugs(steward.check(board, [], [], NOW, "M")), [("unplaced", 1)])
         self.assertEqual(steward.check(board, [], [], NOW), [])   # no milestone configured: nothing
 
+    def test_a_follow_up_is_not_unplaced(self):
+        self.assertEqual(steward.check([issue(1, ["kind:follow-up"])], [], [], NOW, "M"), [])
+
     def test_parked_and_closed_are_not_unplaced(self):
         board = [issue(1, ["parked"]), issue(2, [], state="CLOSED"), issue(3, ["claim:external"])]
         self.assertEqual(steward.check(board, [], [], NOW, "M"), [])
