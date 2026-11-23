@@ -1,6 +1,7 @@
 # Ways-of-working trials (commonroom#350, docs/design-v3.md "How the room improves itself").
 # A trial runs a changed prompt or policy number (the variant) on a share of tasks, the rest staying on the
-# room's own (the control), and measures which does better. No trials are declared yet.
+# room's own (the control), and measures which does better. The declared trial is at the end; the commented block
+# below shows the format.
 #
 # [[trial]]
 # name = "short-unique-name"
@@ -18,3 +19,16 @@
 # policy = { rework_resume_seconds = 600 }      # policy name = whole number inside its bounds; only the numbers read
 #                                              # while a job runs: resume_window_seconds, rework_resume_seconds,
 #                                              # run_timeout_seconds
+
+# Does resuming a build's own session for review changes beat a fresh session? (commonroom#449)
+[[trial]]
+name = "rework-fresh"
+area = "rework"
+started = "2026-11-24"
+share = 0.3
+measure = "review_runs_per_landing"
+min_landings = 10
+max_days = 21
+
+[trial.variant]
+policy = { rework_resume_seconds = 0 }
