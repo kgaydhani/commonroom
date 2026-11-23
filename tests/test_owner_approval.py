@@ -89,6 +89,49 @@ class Dispatch(unittest.TestCase):
         self.assertEqual((job.role, job.reason), ("scout", "scheduled capability sweep: tools"))
 
 
+class PlanDispatch(Dispatch):
+    """commonroom#430: with "plan", an item is also approved by an open `kind:plan` issue its `Plan: #N` line names."""
+
+    def board(self, body, plan_labels=("kind:plan",), own=()):
+        return [issue(60, ["status:ready", "role:builder", *own], body=body), issue(50, list(plan_labels))]
+
+    def test_item_waits_for_its_plan_then_is_picked(self):
+        issues = self.board("Why\nPlan: #50\n")
+        d, board = self.dispatcher(issues, "plan")
+        self.assertFalse(self.started(d))
+        issues[1]["labels"].append({"name": "owner:approved"})
+        self.assertEqual(self.started(d), ("builder", 60))
+        self.assertEqual(board.label_calls, [])
+
+    def test_a_plan_reference_mid_line_does_not_count(self):
+        d, _ = self.dispatcher(self.board("See Plan: #50 for context\n", ("kind:plan", "owner:approved")), "plan")
+        self.assertFalse(self.started(d))
+
+    def test_a_plan_without_the_kind_label_does_not_count(self):
+        d, _ = self.dispatcher(self.board("Plan: #50", ("owner:approved",)), "plan")
+        self.assertFalse(self.started(d))
+
+    def test_an_item_with_its_own_label_needs_no_plan(self):
+        d, _ = self.dispatcher(self.board("", own=("owner:approved",))[:1], "plan")
+        self.assertEqual(self.started(d), ("builder", 60))
+
+    def test_item_mode_ignores_the_plan_line(self):
+        d, _ = self.dispatcher(self.board("Plan: #50", ("kind:plan", "owner:approved")), "item")
+        self.assertFalse(self.started(d))
+
+    def test_a_scout_follows_its_plan_too(self):
+        issues = [issue(61, ["status:ready", "role:scout"], body="Plan: #50"), issue(50, ["kind:plan", "owner:approved"])]
+        d, _ = self.dispatcher(issues, "plan", dry_run=True)
+        self.assertEqual(self.started(d), ("scout", 61))
+
+    def test_plan_files_one_capability_sweep_and_waits_for_approval(self):
+        d, board = self.dispatcher([], "plan", dry_run=True)
+        d.cfg["scout"] = {"focus": ["tools"], "every_hours": 24}
+        with mock.patch.object(d, "create_sweep_issue", wraps=d.create_sweep_issue) as create:
+            self.assertFalse(self.started(d))
+            self.assertEqual(create.call_count, 1)
+
+
 class Config(unittest.TestCase):
     def load(self, goal):
         with tempfile.TemporaryDirectory() as tmp:
@@ -99,9 +142,10 @@ class Config(unittest.TestCase):
     def test_default_is_never_and_item_is_accepted(self):
         self.assertEqual(self.load("")["goal"]["approve"], "never")
         self.assertEqual(self.load('approve = "item"')["goal"]["approve"], "item")
+        self.assertEqual(self.load('approve = "plan"')["goal"]["approve"], "plan")
 
     def test_an_unknown_value_is_a_config_error_naming_the_key(self):
-        for value in ("plan", "sometimes"):
+        for value in ("sometimes",):
             with self.assertRaises(config.ConfigError) as caught:
                 self.load(f'approve = "{value}"')
             self.assertIn("approve", str(caught.exception))
@@ -112,20 +156,21 @@ class Digest(Room):
     def setUp(self):
         super().setUp()
         self.register()
-        self.found, self.calls = [], []
+        self.found, self.calls, self.plans = [], [], []
 
     def toml(self, approve=None):
         line = f'approve = "{approve}"\n' if approve else ""
         (self.alpha / "room.toml").write_text(f'[project]\nname = "alpha"\nrepo = "me/alpha"\n[goal]\nmilestone = "M"\n{line}',
                                               encoding="utf-8")
 
-    def ready(self, n, *extra, milestone="M"):
-        self.found.append({"number": n, "labels": [{"name": l} for l in ("status:ready", *extra)], "milestone": {"title": milestone}})
+    def ready(self, n, *extra, milestone="M", body=""):
+        self.found.append({"number": n, "labels": [{"name": l} for l in ("status:ready", *extra)], "milestone": {"title": milestone},
+                           "body": body})
 
     def line(self):
         def gh(args, timeout=30):
             self.calls.append(args)
-            return self.found if "status:ready" in args else []
+            return self.found if "status:ready" in args else self.plans if "kind:plan" in args else []
         reg = registry.load()
         ledger = Ledger()
         try:
@@ -133,7 +178,7 @@ class Digest(Room):
                 text = handshake.build_digest(reg, reg.projects["alpha"], ledger)
         finally:
             ledger.close()
-        return [l for l in text.split("\n") if l.startswith("Ready items waiting")]
+        return [l for l in text.split("\n") if l.startswith(("Ready items waiting", "Plans waiting"))]
 
     def test_item_with_unapproved_ready_work_gets_one_line(self):
         self.toml("item")
@@ -148,6 +193,23 @@ class Digest(Room):
     def test_item_with_everything_approved_has_no_line(self):
         self.toml("item")
         self.ready(6, "role:builder", "owner:approved")
+        self.assertEqual(self.line(), [])
+
+    def test_plan_line_counts_unapproved_plans_named_by_ready_items(self):
+        self.toml("plan")
+        self.plans = [{"number": 9, "labels": [{"name": "kind:plan"}]}, {"number": 7, "labels": [{"name": "kind:plan"}]},
+                      {"number": 3, "labels": [{"name": "kind:plan"}]}, {"number": 5, "labels": [{"name": "kind:plan"}, {"name": "owner:approved"}]}]
+        self.ready(10, "role:builder", body="Plan: #9")
+        self.ready(11, "role:builder", body="Plan: #7\nmore")
+        self.ready(12, "role:builder", body="Plan: #5")           # approved already
+        self.ready(13, "role:builder", body="about Plan: #3 here")  # mid-line: no
+        self.assertEqual(self.line(), ["Plans waiting for your approval: 2. To approve one, add the label `owner:approved`"
+                                       " (`gh issue edit 7 --repo me/alpha --add-label owner:approved`)."])
+
+    def test_plan_with_no_unapproved_plan_named_has_no_line(self):
+        self.toml("plan")
+        self.plans = [{"number": 9, "labels": [{"name": "kind:plan"}]}]
+        self.ready(10, "role:builder")
         self.assertEqual(self.line(), [])
 
     def test_never_or_no_key_has_no_line_and_no_board_call(self):

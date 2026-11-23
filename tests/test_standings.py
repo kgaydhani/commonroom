@@ -121,7 +121,7 @@ class Standings(Room):
 
     def test_a_room_toml_with_an_unknown_approve_value_is_a_registry_error_naming_the_project(self):
         path = self.project_dir("zed", "zed-site")
-        (Path(path) / "room.toml").write_text('[project]\nname = "zed-site"\n[goal]\napprove = "plan"\n', encoding="utf-8")
+        (Path(path) / "room.toml").write_text('[project]\nname = "zed-site"\n[goal]\napprove = "sometimes"\n', encoding="utf-8")
         with self.assertRaises(RegistryError) as ctx:
             standings.ledger_names(Registry({"zed": Project("zed", path, 10)}))
         self.assertIn("'zed'", str(ctx.exception))
