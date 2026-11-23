@@ -91,6 +91,18 @@ def plan_of(body: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+CAPABILITY = "kind:capability"
+WAIVED = "owner:waived"
+# `Scout: #<n>` on a line of its own names the closed scout item that answered "does this already exist?" (commonroom#439).
+SCOUT_LINE = re.compile(r"^[ \t]*Scout:[ \t]*#(\d+)[ \t\r]*$", re.I | re.M)
+
+
+def scout_of(body: str | None) -> int | None:
+    """The scout item an item's body names with a `Scout: #<n>` line, or None."""
+    m = SCOUT_LINE.search(body or "")
+    return int(m.group(1)) if m else None
+
+
 class ConfigError(ValueError):
     """A `room.toml` value the room does not accept; the message names the key."""
 
