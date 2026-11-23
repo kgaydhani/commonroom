@@ -119,6 +119,13 @@ class Standings(Room):
         self.assertTrue(all(isinstance(k, str) for k in report.unregistered))
         sorted(report.unregistered.items())
 
+    def test_a_room_toml_with_an_unknown_approve_value_is_a_registry_error_naming_the_project(self):
+        path = self.project_dir("zed", "zed-site")
+        (Path(path) / "room.toml").write_text('[project]\nname = "zed-site"\n[goal]\napprove = "plan"\n', encoding="utf-8")
+        with self.assertRaises(RegistryError) as ctx:
+            standings.ledger_names(Registry({"zed": Project("zed", path, 10)}))
+        self.assertIn("'zed'", str(ctx.exception))
+
     def test_two_keys_with_one_ledger_name_are_refused(self):
         reg = Registry({"a": Project("a", self.project_dir("a", "same"), 10),
                         "a2": Project("a2", self.project_dir("a2", "same"), 10)})
