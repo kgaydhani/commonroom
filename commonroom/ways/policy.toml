@@ -53,6 +53,11 @@ notify_max = 5
 # Seconds (60 minutes) the room lets one run go; the headless note tells the worker the same number.
 run_timeout_seconds = { value = 3600, min = 300, max = 14400 }
 
+# Percent: scouting plus the director's own runs (not stamp-only ones) stay under this share of the project's input and
+# output tokens over the last 7 days. Above it, no scout job and no periodic steer-only director run starts; escalations,
+# owner comments and stamps still do (commonroom#440).
+looking_max_percent = { value = 35, min = 0, max = 100 }
+
 # The pie ------------------------------------------------------------------------------------------------------------
 
 # Minutes: a project with a model run on a provider now, or one that ended this recently, is active there. A project
