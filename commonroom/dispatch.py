@@ -15,7 +15,9 @@ import os
 import json
 import re
 import shutil
+import sqlite3
 import subprocess
+import tempfile
 import time
 import traceback
 from dataclasses import dataclass
@@ -921,6 +923,7 @@ def check_markers(comments: dict[str, str]):
 
 
 check_markers(COMMENTS)
+DRY_BEAT_RED = "Dry-run beat failed"   # title prefix of the director issue when the live checkout is held
 MAIN_RED = "Main is red"        # title prefix of the fix task the room opens when main's own CI fails
 RUN_URL = re.compile(r"(.*/actions/runs/(\d+))")   # a check's workflow run, from its details URL
 
@@ -2245,6 +2248,9 @@ class Dispatcher:
                 continue
             if self.ledger.marked(self.project, f"main-suite-red:{sha}") is not None:
                 return [f"live checkout held: main is red on {sha[:7]}"]
+            held = self.dry_run_beat(sha)
+            if held:
+                return held
             before = git(["rev-parse", "--short", "HEAD"], self.root)
             git(["merge", "--ff-only", "--quiet", sha], self.root)
             after = git(["rev-parse", "--short", "HEAD"], self.root)
@@ -2252,6 +2258,46 @@ class Dispatcher:
             return [f"live checkout fast-forwarded {before}..{after} (suite passed){note}; "
                     f"room processes pick it up when they restart"]
         return [f"live checkout waits for main's suite on {main[:7]}"]
+
+    dry_beat_runner = staticmethod(carry_mod.run_dry_beat)   # injectable: tests never start a real dispatcher
+
+    def dry_run_beat(self, sha: str) -> list[str]:
+        """The dry-run beat before the live checkout moves to `sha` (docs/design-v3.md): a copy of the ledger (sqlite's
+        backup API, never a file copy of an open database) and one `room.py run --dry-run` of that sha against it. Once
+        per sha, kept as a ledger mark. Returns [] to go ahead, or the action line that holds the checkout."""
+        if self.ledger.marked(self.project, f"main-dryrun:{sha}") is not None:
+            return []
+        if self.ledger.marked(self.project, f"main-dryrun-red:{sha}") is not None:
+            line = next(iter(k for k, _ in self.ledger.marks(self.project, f"main-dryrun-line:{sha}:")), "")
+            return [f"live checkout held: dry-run beat failed on {sha[:7]}: {line}"]
+        with tempfile.TemporaryDirectory(prefix="commonroom-dryrun-") as tmp:
+            copy = sqlite3.connect(Path(tmp) / "room.sqlite3")
+            try:
+                self.ledger.db.backup(copy)
+            finally:
+                copy.close()
+            result, line = self.dry_beat_runner(self.root, sha, Path(tmp), self.worktree_base() / "main-dryrun",
+                                                carry_mod.DRY_BEAT_MINUTES)
+        if result == "PASS":
+            self.ledger.mark(self.project, f"main-dryrun:{sha}")
+            return []
+        if result != "FAIL":
+            return [f"live checkout waits: the dry-run beat on {sha[:7]} didn't finish ({line}); next pass"]
+        line = " ".join(str(line).split())[:200]
+        self.ledger.mark(self.project, f"main-dryrun-red:{sha}")
+        self.ledger.mark(self.project, f"main-dryrun-line:{sha}:{line}")
+        held = f"live checkout held: dry-run beat failed on {sha[:7]}: {line}"
+        title = f"{DRY_BEAT_RED}: live checkout held on {sha[:7]}"
+        try:
+            if not any(i["state"] == "OPEN" and i["title"].startswith(DRY_BEAT_RED) for i in self.board.all_issues()):
+                body = (f"The dry-run beat (`room.py run --dry-run` against a copy of the ledger) failed on main {sha}, "
+                        f"so the live checkout stays where it is.\n\nOutput tail: {line}\n\nThe director decides: "
+                        f"fix main, or clear the mark `main-dryrun-red:{sha}` once it is understood.")
+                number = self.board.create_issue(title, body, labels=["needs:director"], milestone=self.milestone)
+                return [held, f"opened #{number} for the director"]
+        except Exception as exc:
+            return [held, f"opening the director issue failed: {str(exc)[:100]}"]
+        return [held]
 
     def playtest_after_merge(self, pr: dict, detail: dict, everything: list[dict]) -> list[str]:
         """A merged PR that changes a file matching `[playtester] paths` gets the game played (commonroom#53): it joins

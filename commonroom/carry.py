@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from commonroom import workers as workers_mod
@@ -154,3 +155,33 @@ def run_suite(root: Path, head: str, command: str, worktree: Path, lock: Path, m
         shutil.rmtree(worktree, ignore_errors=True)
         shutil.rmtree(workers_mod.worker_tmp(worktree), ignore_errors=True)
         release_lock(lock)
+
+
+DRY_BEAT_MINUTES = 5.0
+
+
+def run_dry_beat(root: Path, sha: str, home: Path, worktree: Path, max_minutes: float = DRY_BEAT_MINUTES) -> tuple[str, str]:
+    """One dry-run dispatcher beat (`room.py run --dry-run`) of commit `sha`, in a detached worktree, with
+    COMMONROOM_HOME at `home` (a copy of the ledger, never the live one). Returns (PASS|FAIL|INCOMPLETE, line)."""
+    try:
+        worktree.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, capture_output=True)
+        added = subprocess.run(["git", "worktree", "add", "--detach", str(worktree), sha], cwd=root,
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if added.returncode:
+            return "INCOMPLETE", f"could not check out {sha[:7]}: {added.stderr.strip()[:150]}"
+        env = workers_mod.worker_env("claude", worktree) | {"COMMONROOM_HOME": str(home)}
+        try:
+            done = subprocess.run([sys.executable, "room.py", "run", "--dry-run"], cwd=worktree, env=env,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  stdin=subprocess.DEVNULL, timeout=max_minutes * 60)
+        except subprocess.TimeoutExpired:
+            return "INCOMPLETE", f"still running after {max_minutes:g} min; stopped"
+        line = summary(done.stdout + done.stderr)
+        return ("PASS", line) if done.returncode == 0 else ("FAIL", f"exit {done.returncode}: {line}")
+    except OSError as exc:
+        return "INCOMPLETE", f"{type(exc).__name__}: {str(exc)[:150]}"
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, capture_output=True)
+        shutil.rmtree(worktree, ignore_errors=True)
+        shutil.rmtree(workers_mod.worker_tmp(worktree), ignore_errors=True)
