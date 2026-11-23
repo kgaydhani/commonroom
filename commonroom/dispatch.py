@@ -172,6 +172,13 @@ def labels(issue: dict) -> set[str]:
     return {l["name"] for l in issue.get("labels", [])}
 
 
+CLAIMED = "claimed:"   # `room claim` puts `claimed:<name>` on an item its holder is working: the room leaves it alone (commonroom#456)
+
+
+def claimed(names) -> bool:
+    return any(n.startswith(CLAIMED) for n in names)
+
+
 # An issue in review carries no other status and no needs:changes: gamemirage#427 had ready, review and needs:changes
 # at once, and a ready label invites a second builder (commonroom#93).
 LEAVES_REVIEW = ("status:ready", "status:in-progress", "status:blocked", "needs:changes")
@@ -2887,7 +2894,7 @@ class Dispatcher:
 
         def blocked(i: dict) -> bool:
             return not merge_main_only(i) and any(n != i["number"] and areas(i) & held_areas for n, held_areas in held)
-        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL}
+        ready = [i for i in open_now if {"status:ready", "role:builder"} <= labels(i) and not labels(i) & {"owner:human", EXTERNAL} and not claimed(labels(i))
                  and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                       or any(l.startswith("provider:") for l in labels(i)))
@@ -2973,7 +2980,7 @@ class Dispatcher:
         for i in open_now:
             names = labels(i)
             role = next((l.split(":", 1)[1] for l in sorted(names) if l.startswith("role:") and l.split(":", 1)[1] in roles), None)
-            if (role and "status:ready" in names and not names & {"owner:human", EXTERNAL} and f"#{i['number']}" not in running
+            if (role and "status:ready" in names and not names & {"owner:human", EXTERNAL} and not claimed(names) and f"#{i['number']}" not in running
                     and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone)):
                 found.append((i, role))
         return found

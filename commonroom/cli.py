@@ -14,10 +14,11 @@ from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
 from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
-from commonroom.dispatch import READER_COOLDOWN, Dispatcher, GitHubBoard, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
+from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook, jobtree, roomconfig, trials
 from commonroom.ledger import Ledger
+from commonroom.localboard import LocalBoard
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
 
 PROVIDERS = ("claude", "codex")
@@ -622,6 +623,59 @@ def cmd_submit(args) -> int:
     return 0
 
 
+def _board_of(p, board_for=None):
+    """The project's board: its files when `[project] board = "local"`, else GitHub through its `[project] repo`."""
+    project = handshake.room_toml(p).get("project") or {}
+    if project.get("board") == "local":
+        return LocalBoard(handshake.folder_of(p))
+    if not project.get("repo"):
+        raise handshake.HandshakeError(f"refused: {p.name} has no [project] repo in its room.toml.")
+    return (board_for or GitHubBoard)(project["repo"])
+
+
+def cmd_items(args, board_for=None) -> int:
+    """A project's open items (`--all`: closed too), one line each: number, status/role/size labels, title."""
+    try:
+        _, p = handshake._start(args)
+        b = _board_of(p, board_for)
+        found = b.all_issues() if args.all else b.open_issues(None)
+    except (handshake.HandshakeError, RuntimeError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    for i in sorted(found, key=lambda i: i["number"]):
+        tags = sorted(n for n in dispatch_labels(i) if n.startswith(("status:", "role:", "size:", CLAIMED)))
+        state = " [closed]" if i.get("state", "OPEN").upper() == "CLOSED" else ""
+        print(f"#{i['number']} {' '.join(tags)} {i['title']}{state}".replace("  ", " "))
+    return 0
+
+
+def cmd_claim(args, board_for=None) -> int:
+    """Mark an item as held by NAME (default `owner`) so the dispatcher skips it; `--release` hands it back."""
+    try:
+        _, p = handshake._start(args)
+        b = _board_of(p, board_for)
+        item = next((i for i in b.all_issues() if i["number"] == args.n), None)
+        if item is None:
+            print(f"refused: {p.name} has no item #{args.n}.", file=sys.stderr)
+            return 1
+        held = sorted(n for n in dispatch_labels(item) if n.startswith(CLAIMED))
+        if args.release:
+            if held:
+                b.set_labels(args.n, remove=held)
+            b.comment(args.n, f"released by {args.who}" if held else f"{args.who} released it, but nobody held it")
+            print(f"{p.name} #{args.n}: released")
+        else:
+            label = CLAIMED + args.who
+            b.ensure_label(label)
+            b.set_labels(args.n, add=[label])
+            b.comment(args.n, f"claimed by {args.who}: the room leaves it alone until `room claim {p.name} {args.n} --release`")
+            print(f"{p.name} #{args.n}: claimed by {args.who}")
+    except (handshake.HandshakeError, RuntimeError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    return 0
+
+
 VERDICTS = ("keep", "park", "cancel")
 
 
@@ -1035,6 +1089,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("note", help="leave a note in a project's inbox ('-' reads the text from standard input)"); p.add_argument("words", nargs="+", metavar="[project] text"); p.add_argument("--project"); p.add_argument("--from", dest="sender"); p.add_argument("--to"); p.add_argument("--direction", action="store_true", help="mark the note as a change of direction and record it in the ledger"); p.add_argument("--kind", help="what the owner's statement is: "+", ".join(handshake.KINDS)); p.set_defaults(func=handshake.cmd_note)
     p = sub.add_parser("trials", help="each declared trial's arms, figures and verdict (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=cmd_trials)
     p = sub.add_parser("reconcile", help="after a direction: keep, park or cancel one open issue, with a reason"); p.add_argument("name", metavar="project"); p.add_argument("issue", type=int); p.add_argument("verdict"); p.add_argument("reason", nargs="?"); p.set_defaults(func=cmd_reconcile)
+    p = sub.add_parser("items", help="a project's open items on its board (local or GitHub); --all adds closed ones"); p.add_argument("name", metavar="project"); p.add_argument("--all", action="store_true"); p.set_defaults(func=cmd_items)
+    p = sub.add_parser("claim", help="mark an item as held by you so the room leaves it alone; --release gives it back"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("--as", dest="who", default="owner"); p.add_argument("--release", action="store_true"); p.set_defaults(func=cmd_claim)
     p = sub.add_parser("findings", help="every finding of a project's latest steward sweep"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_findings)
     p = sub.add_parser("artifact", help="`artifact published <name>`: record that a published artifact was republished"); p.add_argument("action", choices=["published"]); p.add_argument("artifact"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_artifact)
     p = sub.add_parser("handoff", help="write a brief for the next session from standard input or --file, and record its lineage (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project); or `take <file>` / `list [project]`"); p.add_argument("rest", nargs="*", help=argparse.SUPPRESS); p.add_argument("--project"); p.add_argument("--session"); p.add_argument("--reason"); p.add_argument("--context", type=int, help="the session's context size in tokens"); p.add_argument("--file", help="read the session's text from this file ('-': standard input, the default)"); p.set_defaults(func=handshake.cmd_handoff)
