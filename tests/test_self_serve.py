@@ -516,6 +516,61 @@ class DirectorPaths(Base):
         self.assertEqual(cfg["merge"]["director_paths"], self.PATHS + ["commonroom/ways/policy.toml"])
 
 
+class StampFastLane(Base):
+    """commonroom#434: a PR waiting only on the director's stamp is raised 15 minutes after the last run, not an hour."""
+
+    def cfg(self):
+        cfg = project_cfg(self.tmp.name)
+        cfg["merge"] = {"director_paths": ["commonroom/gate.py"]}
+        return cfg
+
+    def trigger(self, minutes_ago):
+        board = MergeBoard([pr(5, 40)], {5: touching("commonroom/gate.py")})
+        d = self.dispatcher(self.cfg(), board)
+        if minutes_ago is not None:
+            run = self.ledger.start_run("commonroom", None, "director", "claude", now=time.time() - minutes_ago * 60)
+            self.ledger.finish_run(run, "done")
+        return d, board
+
+    def test_fires_with_only_the_stamp_reason_after_the_stamp_cooldown(self):
+        d, _ = self.trigger(20)
+        self.assertEqual(d.director_trigger(), waits("touches director paths (commonroom/gate.py)"))
+        self.assertTrue(d.stamp_only)
+
+    def test_waits_inside_the_stamp_cooldown(self):
+        d, _ = self.trigger(10)
+        self.assertIsNone(d.director_trigger())
+
+    def test_other_reasons_keep_the_hourly_cooldown(self):
+        board = MergeBoard([], {}, issues=[{"number": 9, "state": "OPEN", "labels": [{"name": "needs:director"}],
+                                            "comments": [], "body": ""}])
+        d = self.dispatcher(self.cfg(), board)
+        run = self.ledger.start_run("commonroom", None, "director", "claude", now=time.time() - 20 * 60)
+        self.ledger.finish_run(run, "done")
+        self.assertIsNone(d.director_trigger())
+
+    def test_a_pr_the_last_run_was_told_about_waits_until_a_new_head(self):
+        d, board = self.trigger(20)
+        self.ledger.mark(d.project, f"stamp-told:5:{'e' * 40}")    # an older head of the same PR: no help
+        self.assertIsNotNone(d.director_trigger())
+        for key in d.stamp_told:        # what pick() records when it hands the run its reason
+            self.ledger.mark(d.project, key)
+        self.assertIsNone(d.director_trigger())
+        self.assertFalse(d.stamp_only)
+        self.ledger.db.execute("DELETE FROM marks WHERE key=?", (f"stamp-told:5:{HEAD}",))   # as if the head were new
+        self.assertIsNotNone(d.director_trigger())
+
+    def test_pick_marks_what_the_run_was_told(self):
+        d, _ = self.trigger(20)
+        job, _, _ = d.pick({"claude": gate.Verdict(True, "ok")})
+        self.assertEqual(job.kind, "direct")
+        self.assertIsNotNone(self.ledger.marked(d.project, f"stamp-told:5:{HEAD}"))
+
+    def test_over_an_hour_ago_is_the_ordinary_path(self):
+        d, _ = self.trigger(90)
+        self.assertEqual(d.director_trigger(), waits("touches director paths (commonroom/gate.py)"))
+
+
 def labelled(*names, **kw):
     d = touching("commonroom/dispatch.py", **kw)
     d["labels"] = [{"name": n} for n in names]

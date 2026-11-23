@@ -27,6 +27,9 @@ ci_backoff_minutes = 20
 scout_interleave_seconds = 10800
 # Seconds (1 hour) between headless director runs on its ordinary triggers.
 director_cooldown_seconds = 3600
+# Seconds (15 minutes): a PR waiting only on the director's stamp is raised after this, not after the hourly cooldown
+# (commonroom#434). Other reasons keep the hourly one.
+stamp_cooldown_seconds = 900
 # Seconds (5 minutes): new owner comments are answered after this, rather than after the director's hourly cooldown.
 owner_cooldown_seconds = 300
 # Minutes: an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63).
