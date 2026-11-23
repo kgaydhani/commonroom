@@ -115,6 +115,23 @@ function render(d) {
         if (!n.items.length) el("li", p.trail_error ? "items unknown" : "no item yet", "dim", ul);
       }
     }
+    const nb = el("div", null, null, det);
+    const box = el("textarea", null, null, nb);
+    box.rows = 3; box.maxLength = 8000; box.placeholder = "Note to this project";
+    const kind = el("select", null, null, nb);
+    for (const k of ["", "outcome", "bound", "decision", "suggestion", "correction"]) el("option", k || "no kind", null, kind).value = k;
+    const send = el("button", "Note to this project", null, nb);
+    const sent = el("span", "", "dim", nb);
+    send.onclick = async () => {
+      sent.textContent = "Sending...";
+      try {
+        const r = await fetch("/api/note", {method: "POST", headers: {"X-Room": "1"},
+          body: JSON.stringify({project: p.name, text: box.value, kind: kind.value || undefined})});
+        const j = await r.json();
+        sent.textContent = j.error ? " " + j.error : " Saved as " + j.name;
+        if (!j.error) box.value = "";
+      } catch (e) { sent.textContent = " Not sent: " + e; }
+    };
     el("a", "details", null, det).href = "/api/state";
   }
 }
@@ -122,7 +139,8 @@ function render(d) {
 async function load() {
   try {
     const r = await fetch("/api/page", {cache: "no-store"});
-    render(await r.json());
+    const d = await r.json();
+    if (![...document.querySelectorAll("textarea")].some(t => t.value)) render(d);   // a half-written note is not wiped by the refresh
   } catch (e) {
     $("week").textContent = "The room's dashboard can't be reached: " + e;
   }
