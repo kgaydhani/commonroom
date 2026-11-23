@@ -17,7 +17,10 @@ from unittest import mock
 
 from commonroom import dispatch, registry, usage, workers
 from commonroom.ledger import Ledger
+from tests import notrials
 from tests.test_dispatch import FakeBoard, cfg_with, issue
+
+setUpModule, tearDownModule = notrials.start, notrials.stop   # no shipped trial in a pass (commonroom#449)
 
 ROOT = Path(__file__).resolve().parent.parent
 LEDGER = Path("docs/decisions.csv")

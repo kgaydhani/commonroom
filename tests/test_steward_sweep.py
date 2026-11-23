@@ -6,9 +6,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from commonroom import dispatch, handshake, registry, trials
+from commonroom import dispatch, handshake, registry
 from commonroom.ledger import Ledger
+from tests import notrials
 from tests.test_dispatch import FakeBoard, cfg_with, issue
+
+setUpModule, tearDownModule = notrials.start, notrials.stop   # no shipped trial in a pass or digest (commonroom#449)
 
 
 def pr(n, branch):
@@ -117,10 +120,6 @@ class Digest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         env = mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(Path(tmp.name) / "home")})
-        (Path(tmp.name) / "trials.toml").write_text("", encoding="utf-8")   # no trial in the digest
-        trial_file = mock.patch.object(trials, "FILE", Path(tmp.name) / "trials.toml")
-        trial_file.start()
-        self.addCleanup(trial_file.stop)
         env.start()
         self.addCleanup(env.stop)
         folder = Path(tmp.name) / "alpha"
