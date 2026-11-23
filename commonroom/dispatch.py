@@ -2712,7 +2712,7 @@ class Dispatcher:
                  and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                       or any(l.startswith("provider:") for l in labels(i)))
-                 and self.scouted(i)]
+                 and self.scouted(i) and self.approved(i)]
         # With none held, only the top issue per area is offered, so the Codex path's second pick can't share an area.
         taken: set[str] = set()
         chosen = set()
@@ -2722,6 +2722,14 @@ class Dispatcher:
                 chosen.add(i["number"])
         ready = [i for i in ready if not areas(i) or merge_main_only(i) or i["number"] in chosen]
         return ready
+
+    def approves_items(self) -> bool:
+        """`[goal] approve = "item"`: a builder or scout starts only on an issue the owner labelled `owner:approved`."""
+        return (self.cfg.get("goal") or {}).get("approve") == "item"
+
+    def approved(self, issue: dict) -> bool:
+        """The issue may be started (commonroom#413). Labels are only read here, never added or removed."""
+        return not self.approves_items() or config_mod.APPROVED in labels(issue)
 
     def scouted(self, issue: dict) -> bool:
         """`[checks] look_before_building = true`: a `kind:feature` build is held until its body has `Scouted: #N` naming a
@@ -2851,7 +2859,8 @@ class Dispatcher:
                 if choice:
                     return Job("build", "builder", issue=issue, reason=f"#{issue['number']} is ready (parallel slot {self.slot})"), *choice
         running = self.busy_tasks()
-        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
+        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
+                    and self.approved(i)]
         for issue in sorted(scouting, key=priority):
             choice = self.choose(self.roles.get("scout", ["claude:sonnet"]), {provider: v})
             if choice:
@@ -2913,7 +2922,8 @@ class Dispatcher:
         open_now = self.board.open_issues(None)
         ready = self.ready_builds(open_now)
         running = self.busy_tasks()
-        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running]
+        scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
+                    and self.approved(i)]
         background = set(self.roles.get("background") or [])
         # The owner waiting on an answer outranks builds: a reply should never sit behind the whole queue.
         owner = self.owner_trigger()
@@ -2979,7 +2989,11 @@ class Dispatcher:
             if choice:
                 return Job("build", "scout", issue=issue, reason=f"#{issue['number']} research is ready"), *choice
         sweep = self.capability_sweep_due()
-        if sweep and self.choose(scout_spec, allowed):
+        if sweep and self.approves_items():
+            # The sweep's issue waits for `owner:approved` like any other; one waiting is enough (commonroom#413).
+            if not any((i.get("title") or "").startswith("Capability sweep:") and "role:scout" in labels(i) for i in open_now):
+                self.create_sweep_issue(sweep)
+        elif sweep and self.choose(scout_spec, allowed):
             issue = self.create_sweep_issue(sweep)
             if issue:
                 return Job("build", "scout", issue=issue, reason=f"scheduled capability sweep: {sweep}"), *self.choose(scout_spec, allowed)
