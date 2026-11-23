@@ -1,2 +1,2 @@
 PR #{{pr}} in {{repo}} (issue #{{n}}) conflicts with main. This is a merge-main run only. You are in a fresh worktree on branch `{{branch}}`. Run `git fetch origin && git merge origin/main`, resolve each conflict keeping both sides' intent, run `{{test}}`, commit and `git push origin {{branch}}`. Change nothing outside the conflicts (no fixes, refactors or new work): the PR then needs no new review. If the tests need changes outside the conflicts, make them in a separate commit after the merge (the PR then goes back to review) and say so on the PR (`[agent:builder]`).
-Finish with a short report; make the last line exactly `STATUS: DONE` or `STATUS: BLOCKED`.
+End with a short report; the last line is exactly `STATUS: DONE` or `STATUS: BLOCKED`.
