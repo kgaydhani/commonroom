@@ -224,7 +224,7 @@ def room_toml(p: registry.Project) -> dict:
     """The project's own room.toml over the defaults, or {} when it can't be read."""
     try:
         return config_mod.load(Path(p.path) / "room.toml", follow_host=False)
-    except (OSError, TypeError, tomllib.TOMLDecodeError):
+    except (OSError, TypeError, tomllib.TOMLDecodeError, config_mod.ConfigError):
         return {}
 
 
