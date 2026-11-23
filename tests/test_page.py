@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from commonroom import dashboard, handshake, page, registry
+from commonroom.localboard import LocalBoard
 from tests.test_dispatch import cfg_with
 from tests.test_standings import H, Room
 
@@ -189,3 +190,41 @@ class Trail(Room):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LocalBoardPage(Room):
+    """commonroom#478: a local-board project's owner tasks and note trail show on the page."""
+    def setUp(self):
+        super().setUp()
+        self.alpha = self.register().projects["alpha"]
+        (Path(self.alpha.path) / "room.toml").write_text(
+            '[project]\nname = "alpha-site"\nboard = "local"\n', encoding="utf-8")
+        self.week()
+        self.cfg = {**PageState.cfg(self), "project": {"name": "alpha-site"}}
+
+    def test_an_open_owner_item_is_waiting_with_its_due_date_and_queue_is_not_asked(self):
+        lb = LocalBoard(handshake.folder_of(self.alpha))
+        lb.create_issue("pick a name", "Due: 2026-12-01\n", labels=("owner:human",))
+        lb.create_issue("machine work", "x", labels=("role:builder",))
+        done = lb.create_issue("old", "x", labels=("owner:human",))
+        lb.close_issue(done, "done")
+        asked = []
+        d = page.page_state(self.ledger, self.cfg, self.now, queue=lambda repo: asked.append(repo) or [])
+        mine = [t for t in d["waiting"] if t["project"] == "alpha"]
+        self.assertEqual([(t["number"], t["title"], t["due"]) for t in mine], [(1, "pick a name", "2026-12-01")])
+        self.assertEqual(asked, [])
+
+    def test_the_trail_links_a_note_and_its_item_with_no_error(self):
+        note = handshake.write_note(handshake.prepare(self.alpha), "make a logo", "kieran", None, self.now - 86400).name
+        LocalBoard(handshake.folder_of(self.alpha)).create_issue("logo", f"From: {note}\n")
+        d = page.page_state(self.ledger, self.cfg, self.now, trail=handshake.trail)
+        sec = next(s for s in d["projects"] if s["name"] == "alpha")
+        self.assertNotIn("trail_error", sec)
+        self.assertEqual([(i["number"], i["title"]) for i in sec["trail"][0]["items"]], [(1, "logo")])
+
+    def test_a_project_with_no_repo_and_no_local_board_keeps_its_message(self):
+        (Path(self.alpha.path) / "room.toml").write_text('[project]\nname = "alpha-site"\n', encoding="utf-8")
+        handshake.write_note(handshake.prepare(self.alpha), "hello", "kieran", None, self.now - 86400)
+        d = page.page_state(self.ledger, self.cfg, self.now, trail=handshake.trail)
+        sec = next(s for s in d["projects"] if s["name"] == "alpha")
+        self.assertEqual(sec["trail_error"], "no [project] repo in its room.toml")

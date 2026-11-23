@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from commonroom import config as config_mod, handshake, pie, registry as registry_mod, standings
+from commonroom import board, config as config_mod, handshake, pie, registry as registry_mod, standings
 from commonroom.dispatch import pie_active, pie_holds, verdicts
 from commonroom.liveness import orphaned
+from commonroom.localboard import LocalBoard
 
 PROVIDER = "claude"
 WEEK_SECONDS = pie.WEEK
@@ -77,7 +78,7 @@ def _trail(reg, key: str, now: float, board_trail) -> dict:
     error, linked = None, {}
     if not notes:
         pass
-    elif not (handshake.room_toml(p).get("project") or {}).get("repo"):
+    elif not handshake._readable(p):
         error = "no [project] repo in its room.toml"
     else:
         try:
@@ -90,6 +91,14 @@ def _trail(reg, key: str, now: float, board_trail) -> dict:
             "items": [{k: i[k] for k in ("number", "title", "state", "merged")} for i in linked.get(n["name"]) or []]}
            for n in notes]
     return {"trail": out, **({"trail_error": error} if error else {})}
+
+
+def _local_tasks(p) -> list[dict]:
+    """A local-board project's open `owner:human` items, shaped as the queue shapes them; the url is the item's folder."""
+    folder = handshake.folder_of(p)
+    return [{"number": i["number"], "title": i["title"], "due": board.due_date(i["body"]),
+             "url": str(LocalBoard(folder).items / str(i["number"]))}
+            for i in LocalBoard(folder).open_issues(None) if any(l["name"] == board.OWNER_LABEL for l in i["labels"])]
 
 
 def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts: Path | None = None, trail=None) -> dict:
@@ -142,9 +151,19 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
     elif not reg.projects:
         sections.append({"name": host or "this project", **_project(ledger, host, now, None, True, win, slack)})
     waiting = []
+    local = set()
+    for key, p in reg.projects.items():
+        try:
+            if handshake._local(p):
+                local.add(key)
+                waiting += [{"project": key, **t} for t in _local_tasks(p)]
+        except Exception:
+            continue
     if queue:
         repos = {}
         for key, p in reg.projects.items():
+            if key in local:
+                continue
             try:
                 repos[key] = config_mod.load(Path(p.path) / "room.toml", follow_host=False)["project"].get("repo")
             except Exception:
