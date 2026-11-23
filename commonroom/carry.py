@@ -175,8 +175,10 @@ def run_dry_beat(root: Path, sha: str, home: Path, worktree: Path, max_minutes: 
             done = subprocess.run([sys.executable, "room.py", "run", "--dry-run"], cwd=worktree, env=env,
                                   capture_output=True, text=True, encoding="utf-8", errors="replace",
                                   stdin=subprocess.DEVNULL, timeout=max_minutes * 60)
-        except subprocess.TimeoutExpired:
-            return "INCOMPLETE", f"still running after {max_minutes:g} min; stopped"
+        except subprocess.TimeoutExpired as exc:
+            # red, not "try again": a pass that raises under --dry-run loops (cmd_run sleeps and continues)
+            out = [o.decode("utf-8", "replace") if isinstance(o, bytes) else (o or "") for o in (exc.stdout, exc.stderr)]
+            return "FAIL", f"still running after {max_minutes:g} min (a pass raising under --dry-run loops): {summary(''.join(out))}"
         line = summary(done.stdout + done.stderr)
         return ("PASS", line) if done.returncode == 0 else ("FAIL", f"exit {done.returncode}: {line}")
     except OSError as exc:
