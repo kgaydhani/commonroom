@@ -528,6 +528,32 @@ def _age(seconds: float) -> str:
 WAITING_MAX = 10
 
 
+def _approval(p: registry.Project) -> str:
+    """With `[goal] approve = "item"`, one line: how many ready builder and scout issues wait for `owner:approved`, and
+    how to approve one (commonroom#413). Empty with "never", with none waiting, or when the board can't be read."""
+    cfg = room_toml(p)
+    goal = cfg.get("goal") or {}
+    repo = (cfg.get("project") or {}).get("repo")
+    if goal.get("approve") != "item" or not repo:
+        return ""
+    try:
+        found = board.gh(["issue", "list", "--repo", repo, "--label", "status:ready", "--state", "open", "--limit", "200",
+                          "--json", "number,labels,milestone"], timeout=TRAIL_TIMEOUT) or []
+    except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return ""
+    milestone = goal.get("milestone")
+    waiting = []
+    for i in found:
+        names = {l.get("name") for l in i.get("labels") or []}
+        in_goal = not milestone or (i.get("milestone") or {}).get("title") == milestone or any(n.startswith("provider:") for n in names)
+        if names & {"role:builder", "role:scout"} and config_mod.APPROVED not in names and in_goal:
+            waiting.append(i["number"])
+    if not waiting:
+        return ""
+    return (f"Ready items waiting for your approval: {len(waiting)}. To approve one, add the label `{config_mod.APPROVED}`"
+            f" (`gh issue edit {min(waiting)} --repo {repo} --add-label {config_mod.APPROVED}`).")
+
+
 def _waiting(p: registry.Project, now: float) -> str:
     """The `## Waiting on you` section body: the project's open `owner:human` issues, oldest first, with their `Due:` date
     and `overdue` when it is past (UTC). Empty when there are none or the project has no repo."""
@@ -577,6 +603,9 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     unlinked_line = _unlinked(reg, p, now)
     if unlinked_line:
         text = text + "\n" + unlinked_line + "\n"
+    approval = _approval(p)
+    if approval:
+        text = text + "\n" + approval + "\n"
     waiting = _waiting(p, now)
     if waiting:
         text = text + "\n" + f"## Waiting on you\n{waiting}" + "\n"

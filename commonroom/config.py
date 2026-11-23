@@ -8,7 +8,9 @@ from pathlib import Path
 
 DEFAULTS = {
     "project": {"name": None, "repo": None, "mission": ""},
-    "goal": {"milestone": None},
+    # `approve`: how much of the planner's work waits for the owner (commonroom#413). "never" (the default) runs every
+    # `status:ready` item; "item" starts a builder or scout only on an issue that also has `owner:approved`.
+    "goal": {"milestone": None, "approve": "never"},
     "budget": {
         # Claude is shared with the owner's own sessions, so it keeps reserves and is paced.
         "claude": {"reserve_weekly": 25, "reserve_5h": 10, "pace": True, "weekly_slack": 8, "front_load": 0.3},
@@ -74,6 +76,14 @@ DEFAULTS = {
 # (commonroom#151). It only overrides `[share] host` in a project that has a `[share]` table.
 HOST_ENV = "COMMONROOM_HOST"
 
+APPROVE = ("never", "item")
+APPROVED = "owner:approved"
+
+
+class ConfigError(ValueError):
+    """A `room.toml` value the room does not accept; the message names the key."""
+
+
 # What a guest takes from its host, so both pass through one budget gate.
 GATE_KEYS = ("budget", "owner", "freshness_seconds")
 
@@ -106,6 +116,7 @@ def load(path: Path | None = None, follow_host: bool = True) -> dict:
     with open(path, "rb") as handle:
         data = tomllib.load(handle)
     cfg = merge(DEFAULTS, data) | {"_path": str(path), "_root": str(Path(path).parent)}
+    approve(cfg, path)
     host = (cfg.get("share") or {}).get("host")
     if cfg.get("share") and os.environ.get(HOST_ENV):
         host = cfg["share"]["host"] = os.environ[HOST_ENV]
@@ -125,6 +136,15 @@ def load(path: Path | None = None, follow_host: bool = True) -> dict:
 
 def _same_file(a: Path, b: Path) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def approve(cfg: dict, path: Path | str | None = None) -> str:
+    """`[goal] approve`: "never" or "item" (commonroom#413). Any other value is a ConfigError naming the key."""
+    value = (cfg.get("goal") or {}).get("approve", "never")
+    if value not in APPROVE:
+        where = f"{path}: " if path else ""
+        raise ConfigError(f"{where}[goal] approve = {value!r} is not one of {', '.join(repr(a) for a in APPROVE)}")
+    return value
 
 
 def owner(cfg: dict) -> str:
