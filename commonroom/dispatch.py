@@ -3540,6 +3540,7 @@ class Dispatcher:
             raise
         labelled = False
         result = None
+        local_start = self.local_start(job, worktree)
         try:
             before = self.remote_head(branch)
             weekly_start = self.weekly_used(provider)
@@ -3588,7 +3589,8 @@ class Dispatcher:
             self.preserve_work(job, worktree, branch)
             if result is not None:
                 self.report_timeout(job, branch, result)
-            self.cleanup_worktree(worktree, run_id)
+            if self.keep_local_work(job, worktree, local_start, run_id):
+                self.cleanup_worktree(worktree, run_id)
             shutil.rmtree(worker_tmp(worktree), ignore_errors=True)
         self.log(f"   {status}: {', '.join(o['ref'] for o in outputs) or 'no output'}  {note[:200]}")
         return {"status": status, "outputs": outputs, "note": note, "session": result.session_id}
@@ -3777,6 +3779,54 @@ class Dispatcher:
         except Exception as exc:
             self.log(f"   could not push work on {branch}: {str(exc)[:160]}")
             self.rescue(job, worktree, branch)
+
+    def local_start(self, job: Job, worktree: Path) -> str | None:
+        """The commit a local board's role worktree starts on, or None when there is nothing to keep (commonroom#474)."""
+        if job.kind != "role" or config_mod.board_kind(self.cfg) != "local" or not (Path(worktree) / ".git").exists():
+            return None
+        try:
+            return git(["rev-parse", "HEAD"], worktree)
+        except RuntimeError:
+            return None
+
+    def keep_local_work(self, job: Job, worktree: Path, start: str | None, run_id: str) -> bool:
+        """A role run on a local board keeps what the worker left (commonroom#474): a git worktree's changes are committed
+        by the room and kept on a local branch `room/item-<n>-<run id>`; a scratch folder's files move to
+        `<room folder>/files/...`. Names it on the item. Returns False, keeping the working folder, if keeping failed."""
+        if job.kind != "role" or config_mod.board_kind(self.cfg) != "local" or self.dry_run or not Path(worktree).exists():
+            return True
+        who = f"item-{job.issue['number']}" if job.issue else job.role
+        tag = re.sub(r"[^A-Za-z0-9._-]+", "-", str(run_id))
+        try:
+            if (Path(worktree) / ".git").exists():
+                if start is None:
+                    return True
+                workers_mod.exclude_scratch(worktree)
+                git(["add", "-A"], worktree)   # info/exclude holds .scratch/; unstage it too if that file couldn't be written
+                git(["rm", "-r", "-q", "--cached", "--ignore-unmatch", "--", ".scratch"], worktree)
+                if git(["diff", "--cached", "--name-only"], worktree):
+                    git(["-c", "user.name=Common Room", "-c", "user.email=room@commonroom.invalid", "commit", "-q", "-m",
+                         f"Work from run {run_id} ({job.role})\n\nKept by Common Room: the worker left it uncommitted."], worktree)
+                if git(["rev-parse", "HEAD"], worktree) == start:
+                    return True
+                name = f"room/{who}-{tag}"
+                git(["branch", name, "HEAD"], worktree)
+                text = f"the work from this run is on the local branch `{name}`. To take it: `git merge {name}`."
+            else:
+                files = [p for p in Path(worktree).rglob("*") if p.is_file() and ".scratch" not in p.relative_to(worktree).parts]
+                if not files:
+                    return True
+                dest = self.board.inner.folder / "files" / who / tag
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(worktree), str(dest))
+                text = f"the files from this run are in `{dest}`."
+            self.log(f"   kept local work: {text}")
+            if job.issue:
+                self.board.comment(job.issue["number"], f"{MARK} {text[0].upper()}{text[1:]}")
+            return not Path(worktree).exists() or (Path(worktree) / ".git").exists()
+        except Exception as exc:
+            self.log(f"   could not keep local work in {worktree}: {str(exc)[:200]}")
+            return False
 
     def rescue(self, job: Job, worktree: Path, branch: str):
         """Last resort before the working copy is deleted: bundle its unpushed commits to a local file."""
