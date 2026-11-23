@@ -52,6 +52,7 @@ POLICY = policy_mod.DEFAULTS
 AUDIT_MODEL_WINDOW_MAX = 75   # an audit waits while a model's own weekly window is past this: a quarter is the owner's
 READER_COOLDOWN = 1800   # seconds between launches of a provider's meter reader, all processes together
 DIRECTOR_COOLDOWN = POLICY["director_cooldown_seconds"]
+STAMP_COOLDOWN = POLICY["stamp_cooldown_seconds"]
 # What the room tells workers lives in commonroom/ways/prompts/<name>.md, not here (commonroom#216). `{{name}}` marks a
 # value the code fills in. The files are read once, at import: a running dispatcher keeps the text it started with
 # while the room pulls new files under it, and a missing file fails the import with its name.
@@ -1290,6 +1291,7 @@ class Dispatcher:
         self._provider = None
         self.ci = config_mod.has_ci(cfg)
         # Globs of repo files whose PRs also need the director's approval to merge (commonroom#49). Empty: no extra gate.
+        self.stamp_told: list[str] = []   # mark keys of the stamp PRs the last director_trigger named (commonroom#434)
         self.stamp_only = False   # set by director_trigger: every reason came from ready_for_director (commonroom#342)
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
         self.carry_cache = {}   # (stamp sha, head sha) -> may the stamp be carried; one compare per pair per pass
@@ -1313,6 +1315,11 @@ class Dispatcher:
         self.base_ways = self.ways             # what the project's templates are, outside any trial
         self.trial_policy: dict[str, int] = {}   # the numbers the running job takes from its trial variants
         self.trial_refs: list[str] = []          # "<trial>=<arm>" for each trial the running job is under
+
+    def stamp_cooldown(self) -> int:
+        """Seconds after a director run before a PR waiting only on the stamp is raised (commonroom#434): this project's
+        `[policy]` value if it set one, else the room's."""
+        return self.policy_overrides.get("stamp_cooldown_seconds", STAMP_COOLDOWN)
 
     def policy(self, name: str) -> int:
         """A ways-of-working number from commonroom/ways/policy.toml: this project's `[policy]` value if it set one,
@@ -2345,7 +2352,11 @@ class Dispatcher:
                 f"with the line `HEAD: {head_sha(detail)}`")
 
     def ready_for_director(self) -> list[str]:
-        """PRs with their usual approval, up to date with main, that wait only for the director's (commonroom#49). One
+        return [text for _, text in self.stamp_waits()]
+
+    def stamp_waits(self) -> list[tuple[str, str]]:
+        """(mark key, reason) for each PR that waits only for the director's stamp. The key names the PR and its head, so
+        a new push is a new key (commonroom#434). PRs with their usual approval, up to date with main, that wait only for the director's (commonroom#49). One
         the director already sent back, or one housekeeping still has to update, isn't theirs yet."""
         waiting = []
         for pr in self.board.open_prs():
@@ -2364,7 +2375,7 @@ class Dispatcher:
                     continue
             except Exception:
                 continue   # housekeeping reports a PR it can't compare with main
-            waiting.append(self.director_wait(pr["number"], detail))
+            waiting.append((f"stamp-told:{pr['number']}:{head_sha(detail)}", self.director_wait(pr["number"], detail)))
         return waiting
 
     def tested(self, detail: dict) -> bool:
@@ -2944,6 +2955,8 @@ class Dispatcher:
             if choice:
                 # A run for director-path stamps only judges those lines: a lower effort when `[director] stamp_effort` says so (#342).
                 stamp = (self.cfg.get("director") or {}).get("stamp_effort") if self.stamp_only else None
+                for key in self.stamp_told:
+                    self.ledger.mark(self.project, key)   # this run is told: the fast lane won't fire for it again
                 return Job("direct", "director", reason=trigger, effort=stamp or None), *choice
         # The periodic audit: the frontier model steps back, judges everything, acts, and reports to the owner.
         audit = self.audit_due()
@@ -3158,8 +3171,19 @@ class Dispatcher:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
         self.stamp_only = False
-        if time.time() - since < self.policy("director_cooldown_seconds"):
-            return None
+        self.stamp_told = []
+        age = time.time() - since
+        if age < self.policy("director_cooldown_seconds"):
+            # The fast lane (commonroom#434): past the stamp cooldown, only PRs waiting on the director's stamp, and
+            # only those at a head no earlier director run was told about.
+            if age < self.stamp_cooldown():
+                return None
+            fresh = [(k, t) for k, t in self.stamp_waits() if self.ledger.marked(self.project, k) is None]
+            if not fresh:
+                return None
+            self.stamp_only = True
+            self.stamp_told = [k for k, _ in fresh]
+            return "; ".join(t for _, t in fresh)
         reasons = []
         # Escalations and suggestions count whatever their milestone: a suggestion the director hasn't placed
         # yet has none (commonroom#10). The rest of the checks are about the goal milestone only.
@@ -3193,7 +3217,9 @@ class Dispatcher:
                         and not (dependencies(i.get("body")) & owner_open)]
         if machine_open and not busy:
             reasons.append("the milestone has open work but nothing is ready: unblock, re-plan or split tasks")
-        stamps = self.ready_for_director()
+        waits = self.stamp_waits()
+        stamps = [t for _, t in waits]
+        self.stamp_told = [k for k, _ in waits]
         reasons += stamps
         steward_reason = self.steward_reason(since)
         if steward_reason:

@@ -12,7 +12,7 @@ from pathlib import Path
 
 POLICY_FILE = Path(__file__).resolve().parent / "ways" / "policy.toml"
 NAMES = ("review_rounds", "incomplete_rounds", "ci_bounces", "ci_reruns", "ci_backoff_minutes",
-         "scout_interleave_seconds", "director_cooldown_seconds", "owner_cooldown_seconds", "stale_claim_minutes",
+         "scout_interleave_seconds", "director_cooldown_seconds", "stamp_cooldown_seconds", "owner_cooldown_seconds", "stale_claim_minutes",
          "room_error_backoff_seconds", "room_error_escalate", "resume_window_seconds", "rework_resume_seconds", "progress_min_work_seconds",
          "notify_max", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens", "pie_idle_minutes",
          "owner_floor_weekly", "pie_notice_margin", "pie_own_active_minutes", "cold_return_minutes", "cold_return_context",
