@@ -490,6 +490,65 @@ class ColdReturn(Hook):
         self.assertIsNone(HandshakeOnly.METHOD.search(template), template)
 
 
+class Compacted(Hook):
+    """commonroom#410: a SessionStart after a second compaction offers a fresh start; it never blocks."""
+
+    def transcript(self, boundaries, name="c.jsonl"):
+        lines = [json.dumps({"type": "user"})]
+        for _ in range(boundaries):
+            lines += [json.dumps({"type": "system", "subtype": "compact_boundary"}), json.dumps({"type": "user"})]
+        path = self.tmp / name
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def start(self, source, path):
+        return self.added(self.alpha, source=source, transcript_path=str(path))
+
+    def test_two_boundaries_after_a_compaction_add_the_paragraph_naming_the_count(self):
+        self.register()
+        plain = self.added(self.alpha, source="startup")
+        text = self.start("compact", self.transcript(2))
+        self.assertTrue(text.startswith(plain))
+        self.assertIn("compacted 2 times", text)
+        self.assertIn("room handoff alpha --session <id> --reason <text>", text)
+        self.assertIn("compacted 3 times", self.start("compact", self.transcript(3)))
+
+    def test_the_newest_untaken_brief_is_named_instead_of_the_command(self):
+        self.register()
+        p = registry.load().projects["alpha"]
+        folder = handshake.prepare(p) / "handoffs"
+        folder.mkdir(exist_ok=True)
+        (folder / "20260101-000000-000000-s0.md").write_text("---\nfrom_session: s0\n---\nx\n", encoding="utf-8")
+        self.assertIn("handoffs/20260101-000000-000000-s0.md", self.start("compact", self.transcript(2)))
+
+    def test_one_boundary_or_another_source_adds_nothing_new(self):
+        self.register()
+        plain = self.added(self.alpha, source="startup")
+        self.assertEqual(self.start("compact", self.transcript(1)), plain)
+        self.assertEqual(self.start("startup", self.transcript(3)), plain)
+        self.assertEqual(self.start("resume", self.transcript(3)), plain)
+
+    def test_a_missing_or_unreadable_transcript_adds_nothing_and_exits_0(self):
+        self.register()
+        plain = self.added(self.alpha, source="startup")
+        self.assertEqual(self.start("compact", self.tmp / "none.jsonl"), plain)
+        self.assertEqual(self.start("compact", self.tmp), plain)   # a folder cannot be read as a file
+        self.assertEqual(self.added(self.alpha, source="compact"), plain)
+        self.assertEqual(hook.compactions(self.tmp / "none.jsonl"), 0)
+
+    def test_a_boundary_cut_by_a_chunk_edge_is_counted_once(self):
+        mark = b'{"type":"system","subtype":"compact_boundary"}\n'
+        path = self.tmp / "edge.jsonl"
+        for pad in range(0, len(mark) + 2):
+            path.write_bytes(b"x" * (64 - pad) + mark + mark)
+            with mock.patch.object(hook, "CHUNK", 64):
+                self.assertEqual(hook.compactions(path), 2, pad)
+
+    def test_the_template_exists_and_has_no_method_words(self):
+        template = (ROOT / "commonroom/ways/handshake/compacted.md").read_text(encoding="utf-8")
+        self.assertIsNone(HandshakeOnly.METHOD.search(template), template)
+
+
 class HandshakeOnly(Hook):
     """Axiom A9: the text says what is there and how to reply, never how to work."""
 

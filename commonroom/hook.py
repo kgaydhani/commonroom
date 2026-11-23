@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -30,10 +31,14 @@ from commonroom.ledger import Ledger
 
 SESSION_START = read_way(handshake.TEMPLATES / "session-start.md")
 COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
+COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
 HEAD = 4194304         # bytes: the most of a rollout's first line that is read to see what it is
+CHUNK = 1048576        # bytes read per step when counting compaction boundaries
+BOUNDARY = re.compile(rb'"subtype"\s*:\s*"compact_boundary"')
+OVERLAP = 64
 LIMIT = 2.0             # seconds: a hook still working after this adds nothing
 WORKER_WINDOW = 86400   # a folder a room worker ran in within the last day is a worker's folder
 SENDER_CHARS = 40
@@ -120,6 +125,36 @@ def _ago(seconds: float) -> str:
     return f"{minutes} minutes" if minutes < 120 else f"{minutes // 60} hours"
 
 
+def _brief_line(p, ledger: Ledger | None) -> str:
+    """One sentence naming the project's newest untaken handoff brief, or the command that writes one."""
+    brief = next((path for path in reversed(handshake.handoffs(p))
+                  if ledger is None or ledger.marked(p.name, handshake.TOOK + path.name) is None), None)
+    if brief:
+        return f"The project's newest untaken handoff brief is `handoffs/{brief.name}`."
+    return f"None is written: `room handoff {p.name} --session <id> --reason <text>` writes one."
+
+
+def compactions(path, budget: float = LIMIT / 2) -> int:
+    """How many `compact_boundary` lines the transcript at `path` holds, counted by scanning it in chunks; 0 when it
+    cannot be read, and what was counted so far when `budget` seconds run out (commonroom#410)."""
+    stop = time.monotonic() + budget
+    count, carry = 0, b""
+    try:
+        with open(path, "rb") as handle:
+            while time.monotonic() < stop:
+                chunk = handle.read(CHUNK)
+                if not chunk:
+                    break
+                data = carry + chunk
+                count += len(BOUNDARY.findall(data))
+                # a match cut by the chunk edge is counted in the next pass; one already counted is not repeated
+                last = [m.end() for m in BOUNDARY.finditer(data)]
+                carry = data[max(len(data) - OVERLAP, last[-1] if last else 0):]
+    except (OSError, TypeError, ValueError):
+        return 0
+    return count
+
+
 def cold_return(data: dict, now: float | None = None) -> str:
     """The text to add for one UserPromptSubmit input, or "" to add nothing: the last turn is older than the cache
     lifetime and its context is large (commonroom#367). It offers; it never blocks (axiom A0)."""
@@ -136,15 +171,10 @@ def cold_return(data: dict, now: float | None = None) -> str:
         p = _project(data, now, ledger)
         if p is None:
             return ""
-        brief = next((path for path in reversed(handshake.handoffs(p))
-                      if ledger is None or ledger.marked(p.name, handshake.TOOK + path.name) is None), None)
+        named = _brief_line(p, ledger)
     finally:
         if ledger is not None:
             ledger.close()
-    if brief:
-        named = f"The project's newest untaken handoff brief is `handoffs/{brief.name}`."
-    else:
-        named = f"None is written: `room handoff {p.name} --session <id> --reason <text>` writes one."
     return fill_way(COLD_RETURN, gap=_ago(now - turn[0]), context=f"{turn[1] // 1000}k", brief=named)
 
 
@@ -158,6 +188,9 @@ def context(data: dict, now: float | None = None) -> str:
             return ""
         unread = handshake.unread(handshake.read_notes(handshake.folder_of(p)), p, ledger)
         brief = handshake.offer(p, ledger, data.get("session_id"))
+        path = data.get("transcript_path")
+        n = compactions(path) if data.get("source") == "compact" and isinstance(path, str) else 0
+        named = _brief_line(p, ledger) if n >= 2 else ""
     finally:
         if ledger is not None:
             ledger.close()
@@ -168,6 +201,8 @@ def context(data: dict, now: float | None = None) -> str:
                     reply=handshake.reply_line(p))
     if not unread and not handshake.charter_written(where, p.name):
         text = text.split("\n", 1)[0]
+    if named:
+        text = f"{text}\n" + fill_way(COMPACTED, count=str(n), brief=named)
     return f"{text}\n{brief}" if brief else text
 
 
