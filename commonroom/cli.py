@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import away, owner_reserve, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
+from commonroom import away, owner_reserve, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import handshake, hook, jobtree, roomconfig, trials
@@ -871,8 +871,29 @@ def cmd_projects(args) -> int:
         found = registry.problems(reg)
         for problem in found:
             print(f"problem: {problem}")
+        try:
+            for entry in sorted(pending.load(), key=lambda e: e["at"]):
+                fields = ", ".join(f"{k}={v!r}" for k, v in entry["changes"].items())
+                print(f"pending {entry['project']} at {pending.clock(entry['at'])}: {fields}")
+        except registry.RegistryError as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 1
         return 1 if found else 0
     name = args.name
+    if args.action == "set" and (args.at is not None or args.cancel_pending):
+        changes = {key: getattr(args, key) for key in pending.FIELDS if getattr(args, key) is not None}
+        try:
+            if args.cancel_pending:
+                if changes:
+                    raise registry.RegistryError("--cancel-pending cannot be combined with fields to change")
+                print(f"{name}: cancelled {pending.cancel(name)} pending changes")
+            else:
+                pending.schedule(name, args.at, changes)
+                print(f"{name}: pending change saved for {pending.clock(pending.parse_time(args.at))}")
+        except (registry.RegistryError, OSError) as exc:
+            print(f"refused: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.action == "add":
         if any(n.lower() == name.lower() for n in reg.projects):
             print(f"refused: project {name!r} already exists; use `room projects set`", file=sys.stderr)
@@ -1177,6 +1198,9 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
     q = ps.add_parser("set", help="change a project's share or mode"); q.add_argument("name"); q.add_argument("--share", type=float)
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
+    timing = q.add_mutually_exclusive_group()
+    timing.add_argument("--at", help="schedule at ISO 8601 with a zone, or local YYYY-MM-DD HH:MM")
+    timing.add_argument("--cancel-pending", action="store_true", help="drop this project's pending changes")
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)

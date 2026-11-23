@@ -123,6 +123,13 @@ yet, so every project runs as described above (commonroom#225, commonroom#238).
 - **Registry warnings.** `add`, `set` and `remove` refuse only for the project being changed and for rules of the
   whole registry. Another project's problem, such as a missing folder, is printed as a warning and the change is
   saved.
+- **Scheduled registry changes** (commonroom#488). `room projects set <name> --share <points> --at <time>` (also
+  `--work`, `--when`, `--strict`) queues fields in `<room home>/projects-pending.json`, leaving `projects.toml`
+  untouched. Times are ISO 8601 with a zone, or local `YYYY-MM-DD HH:MM`. Before planning, each beat applies due
+  entries in time order through the registry's checks and logs the old and new values. Refused entries are logged
+  and removed too; other entries and the beat continue. `room projects` shows the queue with UTC times;
+  `room projects set <name> --cancel-pending` drops all pending entries for that project. Queue writes use a short
+  lock and atomic replace. With no pending entries, projects behave as before.
 - **One-week raises** (commonroom#242). `room pie raise <project> <points> [--from <project>...]` transfers points
   in proportion to the donors' unspent shares; by default donors are the other projects. `--from owner` explicitly
   includes the unassigned slice (`--from "@owner"` works even when a project is named `owner`). Raises cover every provider with a
