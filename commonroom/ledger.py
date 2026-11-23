@@ -120,7 +120,7 @@ class Ledger:
         for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT"),
                            ("five_hour_start", "REAL"), ("unverified", "TEXT NOT NULL DEFAULT '[]'"),
                            ("actions_checked", "INTEGER"), ("cache_read_tokens", "INTEGER"),
-                           ("cache_write_tokens", "INTEGER")):
+                           ("cache_write_tokens", "INTEGER"), ("compactions", "INTEGER")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
@@ -270,6 +270,15 @@ class Ledger:
             return self.db.execute("UPDATE runs SET cache_read_tokens=?, cache_write_tokens=? WHERE id=(SELECT id FROM runs "
                                    "WHERE worktree=? AND status='running' AND started_at>? ORDER BY started_at DESC LIMIT 1)",
                                    (cache_read, cache_write, _path_key(worktree), now - 7200)).rowcount > 0
+
+    def record_compactions(self, worktree, count: int, now: float | None = None) -> bool:
+        """How many times a running Claude run compacted its context (commonroom#411): the count of `compact_boundary`
+        events in its stream. Found like `record_cache_tokens`; `finish_run` leaves it alone. Older rows keep NULL."""
+        now = time.time() if now is None else now
+        with self.db:
+            return self.db.execute("UPDATE runs SET compactions=? WHERE id=(SELECT id FROM runs "
+                                   "WHERE worktree=? AND status='running' AND started_at>? ORDER BY started_at DESC LIMIT 1)",
+                                   (count, _path_key(worktree), now - 7200)).rowcount > 0
 
     def runs_since(self, project: str | None, since: float) -> list[dict]:
         """Every run of a project started since `since`, oldest first, outputs decoded (no row limit)."""

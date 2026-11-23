@@ -334,5 +334,74 @@ class CacheSplit(unittest.TestCase):
         self.assertEqual((row["cache_read_tokens"], row["cache_write_tokens"]), (None, None))
 
 
+class Compactions(unittest.TestCase):
+    """commonroom#411: runs record how many times Claude compacted them, and the report counts them by role."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.ledger = Ledger(self.root / "room.sqlite3")
+        self.addCleanup(self.ledger.db.close)
+
+    def worker(self, provider, events):
+        wt = self.root / "i1-x"
+        wt.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, workers.worker_tmp(wt), True)
+        rid = self.ledger.start_run("t", "#1", "builder", provider, "m")
+        self.ledger.set_worktree(rid, wt)
+        script = self.root / "w.py"
+        script.write_text("import json, sys\nsys.stdin.read()\nfor e in " + repr(events)
+                          + ":\n    print(json.dumps(e), flush=True)\n", encoding="utf8")
+        cmd = lambda *a, **k: [sys.executable, str(script)]
+        with mock.patch.object(workers, "claude_command", cmd), mock.patch.object(workers, "codex_command", cmd):
+            result = workers.run_worker(provider, workers.Role("builder", None, [], "x"), "y", wt, self.ledger,
+                                        self.root / "logs")
+        return rid, result
+
+    def stored(self, rid):
+        return {r["id"]: r for r in self.ledger.runs_since("t", 0)}[rid]["compactions"]
+
+    def test_two_compact_boundary_events_record_two(self):
+        boundary = {"type": "system", "subtype": "compact_boundary"}
+        done = {"type": "result", "usage": {}, "result": "ok", "is_error": False}
+        rid, result = self.worker("claude", [boundary, {"type": "system", "subtype": "init"}, boundary, done])
+        self.assertEqual((result.compactions, self.stored(rid)), (2, 2))
+
+    def test_none_records_zero_and_codex_is_unaffected(self):
+        rid, result = self.worker("claude", [{"type": "result", "usage": {}, "result": "ok", "is_error": False}])
+        self.assertEqual((result.compactions, self.stored(rid)), (0, 0))
+        rid, result = self.worker("codex", [{"type": "system", "subtype": "compact_boundary"}, {"type": "turn.completed", "usage": {}}])
+        self.assertEqual((result.compactions, self.stored(rid)), (None, None))
+
+    def run_row(self, role, compactions, ago=60):
+        rid = self.ledger.start_run("t", "#1", role, "claude", "m", now=NOW - ago * MIN)
+        wt = self.root / f"wt-{rid}"
+        self.ledger.set_worktree(rid, wt)
+        self.ledger.record_compactions(wt, compactions, now=NOW - ago * MIN + 1)
+        self.ledger.finish_run(rid, "done", [], 10, 1, now=NOW - ago * MIN + 60)
+
+    def test_report_counts_compacted_runs_by_role_and_stays_silent_without(self):
+        self.run_row("builder", 0)
+        self.assertNotIn("compacted_runs_7d_by_role", metrics.project_report(self.ledger, "t", {}, NOW))
+        self.run_row("builder", 3)
+        self.run_row("builder", 1)
+        self.run_row("reviewer", 2)
+        self.run_row("builder", 1, ago=9 * 24 * 60)   # outside 7 days
+        report = metrics.project_report(self.ledger, "t", {}, NOW)
+        self.assertEqual(report["compacted_runs_7d_by_role"], {"builder": 2, "reviewer": 1})
+
+    def test_a_ledger_without_the_column_migrates(self):
+        path = self.root / "old.sqlite3"
+        old = Ledger(path)
+        old.db.execute("ALTER TABLE runs DROP COLUMN compactions")
+        old.db.commit()
+        old.db.close()
+        new = Ledger(path)
+        self.addCleanup(new.db.close)
+        self.assertIn("compactions", {r[1] for r in new.db.execute("PRAGMA table_info(runs)")})
+        rid = new.start_run("t", "#1", "builder", "claude", "m")
+        self.assertIsNone(new.runs_since("t", 0)[0]["compactions"])
+
+
 if __name__ == "__main__":
     unittest.main()
