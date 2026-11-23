@@ -65,7 +65,7 @@ WAYS_DIR = Path(__file__).resolve().parent / "ways"
 # selection, outside the job, where a variant would never apply (commonroom#352).
 TRIAL_POLICY = ("resume_window_seconds", "rework_resume_seconds", "run_timeout_seconds")
 TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at import (commonroom#352)
-PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-merge-main",
+PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-incomplete", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
            "review", "review-no-ci", "review-room-tested", "role", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
@@ -3685,10 +3685,18 @@ class Dispatcher:
         except Exception as exc:
             self.log(f"   could not rescue work on {branch}: {str(exc)[:160]}")
 
+    def sandbox_suite_incomplete(self, job: Job, result) -> bool:
+        """Only the sandbox suite is unfinished; the room will test the published head (#457)."""
+        text = result.final_text or ""
+        return (self.pre_test and self._provider == "codex" and job.kind == "build" and job.role == "builder"
+                and bool(re.search(r"\bTESTS:\s*INCOMPLETE\b", text, re.I))
+                and not re.search(r"^[ \t]*(?:Blocked:|BLOCKER)", text, re.M | re.I))
+
     def publish_sandboxed_work(self, job: Job, worktree: Path, branch: str, result):
         """Codex's sandbox keeps .git read-only, so the room commits, pushes and opens the PR for its changes."""
         changes = git(["status", "--porcelain"], worktree)
-        if not changes or re.search(r"STATUS:\s*BLOCKED", result.final_text or "", re.I):
+        if not changes or (re.search(r"STATUS:\s*BLOCKED", result.final_text or "", re.I)
+                           and not self.sandbox_suite_incomplete(job, result)):
             return
         text = result.final_text or ""
         title = (re.search(r"^PR_TITLE:\s*(.+)$", text, re.M) or [None, f"#{job.issue['number']}: {job.issue['title']}"])[1].strip()
@@ -3731,6 +3739,8 @@ class Dispatcher:
             pr = self.board.pr_for_branch(branch)
             after = self.remote_head(branch)
             if pr and pr["state"] == "OPEN" and after and after != before:
+                if blocked and self.sandbox_suite_incomplete(job, result):
+                    blocked = False
                 if blocked:
                     # Pushed, but the builder says it can't finish: that goes to the director now, not to a review
                     # that would only find the same blocker (commonroom#319). A Codex build still hands off.
@@ -3860,7 +3870,8 @@ class Dispatcher:
                 return fill_way(ways["build-scout"], n=n, repo=repo, branch=branch)
             if codex:
                 return fill_way(ways["build-codex"], n=n, repo=repo, branch=branch, codex_note=self.codex_note(),
-                                suite_note=self.suite_note(), open_pr=open_pr)
+                                suite_note=self.suite_note() + (" " + ways["build-incomplete"] if self.pre_test else ""),
+                                open_pr=open_pr)
             return fill_way(ways["build"], n=n, repo=repo, branch=branch, suite_note=self.suite_note(), open_pr=open_pr)
         if job.kind == "role":
             return fill_way(ways["role"], n=job.issue["number"], repo=repo, role=job.role)

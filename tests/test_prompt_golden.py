@@ -128,6 +128,8 @@ class GoldenPrompts(unittest.TestCase):
         d.remote_head = lambda branch: "def5678"
         review = dispatch.Job("review", "reviewer", pr={"number": 5, "headRefName": "i7-thing"})
         out["edge-continue-review-no-sha"] = d.continuation_prompt(review, "i7-thing", {"status": "limited"}) + d.headless_note()
+        d = self.dispatcher(plain | {"checks": {"ci": False, "test": "python tests/parallel.py", "test_before_review": True}}, "codex")
+        out["edge-codex-build-pretest"] = d.prompt(JOBS["build"][0](), "i7-thing") + d.why() + d.headless_note()
         return out
 
     def bulletin(self) -> str:
@@ -164,7 +166,7 @@ class GoldenPrompts(unittest.TestCase):
         """Build with and without a PR, merge-main, scout, role, review, audit and director; both providers; trusted
         logins, CI, a test command and both `[prompts]` keys on and off; and the variants each one switches."""
         rendered = self.rendered()
-        self.assertEqual(len(rendered), len(CONFIGS) * (2 * len(JOBS) + len(CONTINUATIONS)) + 6 + 7)
+        self.assertEqual(len(rendered), len(CONFIGS) * (2 * len(JOBS) + len(CONTINUATIONS)) + 6 + 8)
         self.assertIn("Run `the project's tests` here", rendered["edge-review-no-ci-no-test"])
         self.assertIn("(it implements issue #?)", rendered["edge-review-odd-branch"])
         self.assertNotIn("A PR already exists", rendered["edge-build-pr-closed"])
