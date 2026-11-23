@@ -1509,9 +1509,10 @@ class Dispatcher:
         self.sweep(everything, prs)
         self.take_measure()
         actions += self.clear_stray_ready(everything)
+        held_by_owner = {i["number"] for i in everything if claimed(labels(i))}   # `room claim`: the room moves nothing here
         for issue in everything:
             n = issue["number"]
-            if (issue["state"] == "OPEN" and "status:review" in labels(issue) and n not in has_pr
+            if (issue["state"] == "OPEN" and "status:review" in labels(issue) and n not in has_pr and n not in held_by_owner
                     and EXTERNAL not in labels(issue) and f"#{n}" not in running and not self.dry_run):
                 self.board.set_labels(n, add=["status:ready"], remove=["status:review"])
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
@@ -1520,6 +1521,8 @@ class Dispatcher:
         for claim in stale_claims(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                   stale_minutes=self.policy("stale_claim_minutes")):
             n = claim["number"]
+            if n in held_by_owner:
+                continue
             if not self.dry_run:
                 self.board.set_labels(n, add=["status:ready"], remove=["status:in-progress"])
                 self.board.comment(n, f"Released a stale claim: no room or moonshot run is working on this and it hasn't "
@@ -1539,6 +1542,8 @@ class Dispatcher:
             detail = self.board.pr_detail(pr["number"])
             review, checks = self.review_verdict(self.reviewer_view(detail)), checks_state(detail)
             issue_no = int(m.group(1)) if m else None
+            if issue_no in held_by_owner:
+                continue   # claimed: no merge, bounce, escalation or update until the claim is released
             # The director's CHANGES on a PR that needs them sends it back to the builder, as a reviewer's does.
             if self.director_rejected(detail):
                 review = "CHANGES"
@@ -1724,7 +1729,7 @@ class Dispatcher:
         self.count_finished_prs(everything, prs, state)
         for issue in everything:
             names = labels(issue)
-            if issue["state"] != "OPEN" or "status:blocked" not in names or names & {"needs:director", "owner:human"}:
+            if issue["state"] != "OPEN" or "status:blocked" not in names or names & {"needs:director", "owner:human"} or claimed(names):
                 continue
             deps = dependencies(issue.get("body"))
             if deps and all(state.get(d) == "CLOSED" for d in deps):
@@ -3146,6 +3151,8 @@ class Dispatcher:
             if issue_labels is None:
                 issue_list = self.board.all_issues()
                 issue_labels = {i["number"]: labels(i) for i in issue_list}
+            if claimed(issue_labels.get(int(m.group(1)), ())):
+                continue   # `room claim`: its holder reviews it
             if self.review_wanted(detail, next((i for i in issue_list if i["number"] == int(m.group(1))), None)):
                 # Codex (the smaller subscription) is spent where independence matters most: high-risk changes.
                 high_risk = "risk:high" in issue_labels.get(int(m.group(1)), set())
