@@ -81,10 +81,6 @@ class LookBeforeBuilding(unittest.TestCase):
         picked, _, _ = self.run_check([issue(1, READY + ["kind:bug"]), issue(2, READY + ["kind:infra"]), issue(3, READY)])
         self.assertEqual(sorted(picked), [1, 2, 3])
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_a_feature_with_the_shared_scout_line_and_a_closed_item_starts(self):
         picked, _, _ = self.run_check([self.feature("Why\nScout: #12"), issue(12, ["role:scout"], state="CLOSED")])
         self.assertEqual(picked, [10])
@@ -100,3 +96,7 @@ if __name__ == "__main__":
     def test_scout_lines_do_nothing_when_the_flag_is_off(self):
         picked, _, _ = self.run_check([self.feature("Scout: #12")], on=False)
         self.assertEqual(picked, [10])
+
+
+if __name__ == "__main__":
+    unittest.main()
