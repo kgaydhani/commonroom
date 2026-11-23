@@ -2758,7 +2758,7 @@ class Dispatcher:
                  and f"#{i['number']}" not in running and not blocked(i)
                  and (not self.milestone or (i.get("milestone") or {}).get("title") == self.milestone
                       or any(l.startswith("provider:") for l in labels(i)))
-                 and self.scouted(i) and self.approved(i, open_now)]
+                 and self.scouted(i) and self.capability_scouted(i) and self.approved(i, open_now)]
         # With none held, only the top issue per area is offered, so the Codex path's second pick can't share an area.
         taken: set[str] = set()
         chosen = set()
@@ -2781,6 +2781,26 @@ class Dispatcher:
         plan = config_mod.plan_of(issue.get("body")) if (self.cfg.get("goal") or {}).get("approve") == "plan" else None
         return plan is not None and any(p["number"] == plan and {config_mod.PLAN, config_mod.APPROVED} <= labels(p)
                                         for p in open_now)
+
+    def capability_scouted(self, issue: dict) -> bool:
+        """A `kind:capability` item starts only when its body has a `Scout: #N` line naming a closed issue, or it carries
+        `owner:waived` (commonroom#439). Other items are never held. The reason is logged, not commented."""
+        names = labels(issue)
+        if config_mod.CAPABILITY not in names or config_mod.WAIVED in names:
+            return True
+        n = issue["number"]
+        ref = config_mod.scout_of(issue.get("body"))
+        if ref is None:
+            why = "its body has no `Scout: #N` line"
+        elif ref == n:
+            why = "`Scout: #N` names the item itself"
+        elif ref in self.scout_closed or self.board.issue_state(ref) == "CLOSED":
+            self.scout_closed.add(ref)
+            return True
+        else:
+            why = f"scout #{ref} is not closed"
+        self.log(f"   #{n} held: kind:capability and {why} (needs a closed Scout item or owner:waived)")
+        return False
 
     def scouted(self, issue: dict) -> bool:
         """`[checks] look_before_building = true`: a `kind:feature` build is held until its body has `Scouted: #N` naming a
