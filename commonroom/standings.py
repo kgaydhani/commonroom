@@ -102,7 +102,7 @@ def ledger_names(reg: Registry) -> dict[str, str | None]:
         path = Path(p.path) / "room.toml"
         try:
             cfg = config_mod.load(path, follow_host=False)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, tomllib.TOMLDecodeError, config_mod.ConfigError) as exc:
             raise RegistryError(f"project {key!r}: can't read {path}: {exc}") from None
         name = cfg["project"].get("name") or None
         for other, taken in names.items():

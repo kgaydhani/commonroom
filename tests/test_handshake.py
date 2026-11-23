@@ -141,6 +141,12 @@ class Attach(Room):
             self.assertIn("ways/handshake/*.md", tomllib.load(f)["tool"]["setuptools"]["package-data"]["commonroom"])
 
 
+class OtherRoomToml(Room):
+    def test_a_room_toml_with_an_unknown_approve_value_reads_as_empty(self):
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n[goal]\napprove = "plan"\n', encoding="utf-8")
+        self.assertEqual(handshake.room_toml(registry.Project("alpha", str(self.alpha), 30)), {})
+
+
 class Notes(Room):
     def test_each_note_is_a_new_file_and_two_in_one_second_do_not_collide(self):
         self.register()
