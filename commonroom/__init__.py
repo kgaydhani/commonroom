@@ -1,2 +1,2 @@
-"""Common Room v2: goal-driven AI studio."""
-__version__ = "2.0.0"
+"""Common Room: goal-driven AI studio."""
+__version__ = "3.0.0.dev0"

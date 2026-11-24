@@ -2217,6 +2217,16 @@ class Dispatcher:
         """No GitHub CI to read, but a test command and a checkout: the room runs the suite on main itself."""
         return not self.ci and bool(self.root and (self.cfg.get("checks") or {}).get("test"))
 
+    def checks_at(self, sha: str, live: dict) -> tuple[dict, str]:
+        """`[checks]` from the `room.toml` at `sha`, with a note for the action line when the live one is used instead."""
+        try:
+            tested = (config_mod.load_text(git(["show", f"{sha}:room.toml"], self.root)).get("checks") or {})
+            if not tested.get("test"):
+                raise ValueError("no [checks] test")
+        except (RuntimeError, ValueError, OSError) as exc:     # TOMLDecodeError and ConfigError are ValueErrors
+            return live, f"main {sha[:7]}'s room.toml unusable ({str(exc)[:60]}); testing with the live checks"
+        return tested, ""
+
     def main_suite_red(self, everything: list[dict], actions: list[str]) -> bool:
         """The no-CI `main_red` (commonroom#303): run the suite on main's head once per sha, in code with no model, and
         hold merges while the latest result is FAIL, with the one `Main is red` task open. The result is a ledger mark per
@@ -2232,6 +2242,11 @@ class Dispatcher:
         red_key, seen_key = f"main-suite-red:{sha}", f"main-suite:{sha}"
         if self.ledger.marked(self.project, seen_key) is None:
             started = time.time()
+            # The command comes from the room.toml at the sha under test, so a fix to the command can land while main
+            # is red (commonroom#533). Nothing else is read from it.
+            checks, note = self.checks_at(sha, checks)
+            if note:
+                actions.append(note)
             result, line = carry_mod.run_suite(self.root, sha, checks["test"], self.worktree_base() / "main-suite",
                                                suite_lock(Path(self.ledger.path).parent, self.project),
                                                float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES),

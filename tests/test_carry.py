@@ -453,6 +453,45 @@ class MainSuite(Carry):
             self.assertEqual(carry.probe_interpreter("py -m unittest", self.root), "3.12.1 (main) [GCC]")
             self.assertEqual(run.call_args.args[0][:2], ["py", "-c"])
 
+    def stub_commands(self):
+        self.commands = []
+        def stub(root, head, command, worktree, lock, max_minutes, **kw):
+            self.commands.append((command, max_minutes))
+            return "PASS", "Ran 3 tests OK"
+        carry.run_suite = stub
+
+    def test_the_suite_runs_the_command_from_the_room_toml_at_the_sha(self):
+        board = self.setup_ready_pr()
+        self.stub_commands()
+        self.write("room.toml", '[checks]\ntest = "py -3.14 -m unittest"\nmax_minutes = 7\n')
+        self.commit("fix the test command")
+        actions = []
+        self.dispatcher(self.cfg(), board).main_suite_red([], actions)
+        self.assertEqual(self.commands, [("py -3.14 -m unittest", 7.0)])
+        self.assertFalse([a for a in actions if "room.toml" in a])
+
+    def test_a_missing_or_broken_room_toml_at_the_sha_uses_the_live_command(self):
+        board = self.setup_ready_pr()
+        self.stub_commands()
+        actions = []
+        self.dispatcher(self.cfg(), board).main_suite_red([], actions)       # no room.toml at this sha
+        self.assertEqual(self.commands, [(PASS, carry.DEFAULT_MAX_MINUTES)])
+        self.assertTrue([a for a in actions if "room.toml unusable" in a])
+        self.write("room.toml", "[checks\n")
+        self.commit("break it")
+        actions = []
+        self.dispatcher(self.cfg(), board).main_suite_red([], actions)
+        self.assertEqual(self.commands[-1][0], PASS)
+        self.assertTrue([a for a in actions if "room.toml unusable" in a])
+
+    def test_an_unchanged_room_toml_gives_the_live_command(self):
+        board = self.setup_ready_pr()
+        self.stub_commands()
+        self.write("room.toml", f'[checks]\ntest = "{PASS}"\n')
+        self.commit("add room.toml")
+        self.dispatcher(self.cfg(), board).main_suite_red([], [])
+        self.assertEqual(self.commands, [(PASS, carry.DEFAULT_MAX_MINUTES)])
+
     def test_a_project_with_ci_never_runs_the_suite_on_main(self):
         board = self.setup_ready_pr()
         d = self.dispatcher(self.cfg(ci=True), board)
