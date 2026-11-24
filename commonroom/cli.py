@@ -1222,7 +1222,7 @@ def cmd_reddit(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="room", description="Common Room v2")
+    parser = argparse.ArgumentParser(prog="room", description="Common Room")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("tap", help="status-line command: record Claude rate limits").set_defaults(func=cmd_tap)
     p = sub.add_parser("usage", help="latest readings and gate verdicts"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_usage)
