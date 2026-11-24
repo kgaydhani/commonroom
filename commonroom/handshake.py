@@ -707,8 +707,29 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     waiting = _waiting(p, now)
     if waiting:
         text = text + "\n" + f"## Waiting on you\n{waiting}" + "\n"
+    lagging = _checkout_behind(p)
+    if lagging:
+        text = text + "\n" + f"## Checkout behind main\n{lagging}" + "\n"
     behind = artifacts.stale(ledger, ledger_name(p), room_toml(p), Path(p.path))
     return text + "\n" + f"## Artifacts to republish\n{behind}" + "\n" if behind else text
+
+
+def _checkout_behind(p: registry.Project) -> str:
+    """One line when the project's checkout is behind its local `origin/main` (the dispatcher keeps that ref fresh),
+    else "". Read-only git only: nothing fetches, pulls or changes the checkout, which is the owner's (#524)."""
+    path = Path(p.path)
+    if _git(path, "rev-parse", "--is-inside-work-tree") != "true":
+        return ""
+    count = _git(path, "rev-list", "--count", "HEAD..origin/main")
+    if not count or not count.isdigit() or int(count) == 0:
+        return ""
+    branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
+    tree = "uncommitted changes" if _git(path, "status", "--porcelain", "--untracked-files=no") else "tree clean"
+    differs = bool(_git(path, "diff", "--name-only", "HEAD", "origin/main", "--", "room.toml"))
+    n = int(count)
+    tail = ("room.toml differs, so merged room.toml changes are not live. Pull it from an interactive session." if differs
+            else "room.toml is the same, so nothing the room reads from it is stale.")
+    return f"{path} (branch {branch}) is {n} commit{'' if n == 1 else 's'} behind origin/main, {tree}; {tail}"
 
 
 def refresh(reg: registry.Registry, p: registry.Project, now: float | None = None, who: str | None = None) -> str:
