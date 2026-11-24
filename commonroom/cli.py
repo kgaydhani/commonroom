@@ -16,7 +16,7 @@ from commonroom import beat as beat_mod, board, config as config_mod, gate, guar
 from commonroom import away, owner_reserve, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
-from commonroom import doctor, handshake, hook, jobtree, roomconfig, trials
+from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, trials
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
@@ -903,6 +903,11 @@ def cmd_doctor(args) -> int:
     return doctor.run()
 
 
+def cmd_init(args) -> int:
+    """Write a starter room.toml and .claude/agents/ files into PATH; refuses if any exists. Does not register the project."""
+    return starter.run(args.path, args.goal)
+
+
 def cmd_projects(args) -> int:
     """List, add, change or remove the projects in the registry (`<room home>/projects.toml`). No model or GitHub call.
     A change that would break a rule is refused with the reason, and the file is left as it was."""
@@ -1216,12 +1221,7 @@ def cmd_reddit(args) -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8")
-        except (AttributeError, ValueError):
-            pass
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="room", description="Common Room v2")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("tap", help="status-line command: record Claude rate limits").set_defaults(func=cmd_tap)
@@ -1264,6 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("config", help="show or change a project's room.toml; `set` prints the diff and writes only with --yes"); p.add_argument("action", choices=("show", "set")); p.add_argument("project"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?"); p.add_argument("--yes", action="store_true"); p.set_defaults(func=cmd_config)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     sub.add_parser("doctor", help="read-only first-run checks: tools, gh login, registry, each project's room.toml and roles").set_defaults(func=cmd_doctor)
+    p = sub.add_parser("init", help="write a starter room.toml and agent files into PATH (never overwrites; does not register it)"); p.add_argument("path"); p.add_argument("--goal", metavar="MILESTONE", help="the goal milestone's name"); p.set_defaults(func=cmd_init)
     p = sub.add_parser("projects", help="list or change the projects and their shares (no model call)"); p.set_defaults(func=cmd_projects)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("add", help="add a project"); q.add_argument("name"); q.add_argument("path"); q.add_argument("--share", type=float, required=True)
@@ -1284,6 +1285,16 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("--from", dest="sources", nargs="+", action="extend", help="donor projects; @owner names the unassigned slice")
     q.add_argument("--clear", action="store_true"); q.add_argument("--provider", choices=PROVIDERS)
     q.set_defaults(func=cmd_pie_raise)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
+    parser = build_parser()
     args, extra = parser.parse_known_args(argv)
     if extra and args.func is handshake.cmd_note and not any(x.startswith("-") and x != "-" for x in extra):
         args.words += extra    # argparse ends a `+` positional at the first option: words after `--from X` still belong to it
