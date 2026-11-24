@@ -101,17 +101,13 @@ class CodexIncomplete(unittest.TestCase):
         self.assertEqual(status, "blocked")
         self.assertIn("provider:claude", board.label_calls[0][1])
 
-    def test_guidance_only_for_codex_builds_with_room_pretesting(self):
-        for enabled, provider, ci, test, expected in ((True, "codex", False, "tests", True),
-                (False, "codex", False, "tests", False), (True, "claude", False, "tests", False),
-                (True, "codex", True, "tests", False), (True, "codex", False, "", False)):
-            with self.subTest(enabled=enabled, provider=provider, ci=ci, test=test):
-                d, _, job = self.dispatcher(enabled, provider, ci, test)
-                text = d.prompt(job, "i7-feature")
-                self.assertEqual("A full suite that can't finish in your sandbox is not a blocker" in text, expected)
-                if expected:
-                    self.assertIn("end `STATUS: DONE`", text)
+    def test_both_builds_say_blocked_needs_a_reason_in_either_suite_wording(self):
+        for provider in ("claude", "codex"):
+            for enabled in (True, False):
+                with self.subTest(provider=provider, pretest=enabled):
+                    d, _, job = self.dispatcher(enabled, provider)
+                    text = d.prompt(job, "i7-feature")
                     self.assertIn("`Blocked: <reason>`", text)
-                job.kind, job.role = "review", "reviewer"
-                job.pr = {"number": 8, "headRefName": "i7-feature"}
-                self.assertNotIn("A full suite that can't finish", d.prompt(job, "i7-feature"))
+                    self.assertIn("aren't blockers", text)
+                    self.assertEqual("before any review" in text, enabled)
+                    self.assertEqual("The reviewer runs the suite on the PR head" in text, not enabled)

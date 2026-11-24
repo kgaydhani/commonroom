@@ -1,1 +1,0 @@
-A full suite that can't finish in your sandbox is not a blocker: report `TESTS: INCOMPLETE` with your focused results and end `STATUS: DONE`. The room runs the suite on the PR before any review. For any other blocker, add a `Blocked: <reason>` line.
