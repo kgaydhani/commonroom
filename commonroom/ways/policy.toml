@@ -96,3 +96,9 @@ handoff_offer_hours = { value = 72, min = 1 }
 prompt_max_tokens = 700
 # The most tokens commonroom/ways/prompts/, handshake/ and comments/ may have together, so new text replaces old instead of piling up.
 templates_max_tokens = 3308   # 3308: build-blocked*.md replace build-incomplete.md, plus two comments (#515); the shared sentence is in one file; 3290: role-local.md (#455), the cap grew by the new template; 3200: the templates trimmed to 3100 tokens (#417), so about 100 tokens of headroom; 3342: compacted.md (#410), the cap grew by the new template; 3299: the correction clause in reply.md (#399); 3282: cold-return.md (#367); 3222: hands.md (#368); 3209: handoff-offer.md (#366); 3180: handoff.md (#363); 3122: review-room-tested.md (#335); 2640 + the 384 of comments/ (commonroom#223); 2640: the public-repo rule (#316); 3080: continue-rework.md (#208)
+
+# Notes -------------------------------------------------------------------------------------------------------------
+
+# Hours (24): a note in a project's room inbox that the project has not read in this long is a steward finding, and the
+# page shows the count and the oldest (commonroom#588, docs/layer.md conclusion 9: nothing is written where nobody reads).
+unread_note_hours = { value = 24, min = 1 }

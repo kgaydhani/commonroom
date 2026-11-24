@@ -811,6 +811,19 @@ def unread(notes: list[dict], p: registry.Project, ledger: Ledger | None) -> lis
     return [n for n in notes if n["at"] >= seen and (n["from"] or "").lower() != p.name.lower()]
 
 
+def unread_summary(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float) -> dict:
+    """What the page shows of a project's unread inbox: the count, and the oldest one's time and name (None if none)."""
+    found = unread(read_notes(folder_of(p)), p, ledger)
+    oldest = min(found, key=lambda n: n["at"], default=None)
+    return {"count": len(found), "oldest_at": oldest["at"] if oldest else None,
+            "oldest_name": oldest["name"] if oldest else None}
+
+
+def project_named(reg: registry.Registry, ledger_project: str) -> registry.Project | None:
+    """The registered project the ledger records under `ledger_project`, or None."""
+    return next((p for p in reg.projects.values() if ledger_name(p) == ledger_project), None)
+
+
 def _here(reg: registry.Registry) -> registry.Project | None:
     """The project whose folder the current directory is in, or None."""
     try:

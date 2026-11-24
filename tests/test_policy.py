@@ -39,6 +39,7 @@ NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3308,   # commonroom#23
        "cold_return_minutes": 60, "cold_return_context": 150000,   # commonroom#367
        "stamp_cooldown_seconds": 900,   # commonroom#434
        "handoff_offer_hours": 72,       # commonroom#384
+       "unread_note_hours": 24,         # commonroom#588
        "looking_max_percent": 35,       # commonroom#440
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
 

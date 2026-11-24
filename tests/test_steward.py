@@ -122,3 +122,20 @@ class Unreconciled(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnreadNotes(unittest.TestCase):
+    """commonroom#588: a note nobody has read past the policy limit is a finding."""
+
+    def note(self, name, age_hours):
+        return {"name": name, "at": NOW - age_hours * 3600, "from": "someone"}
+
+    def test_only_an_unread_note_older_than_the_limit_is_raised(self):
+        found = steward.unread_notes([self.note("old.md", 30), self.note("fresh.md", 2)], NOW, 24)
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["invariant"], "unread-note")
+        self.assertIn("old.md", found[0]["detail"])
+        self.assertIn("30 hours", found[0]["detail"])
+
+    def test_nothing_unread_raises_nothing(self):
+        self.assertEqual(steward.unread_notes([], NOW, 24), [])

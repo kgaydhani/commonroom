@@ -3519,6 +3519,15 @@ class Dispatcher:
             now = time.time()
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
+            try:   # an unreadable registry or inbox costs only this check, never the rest of the sweep
+                reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME, check=False)   # the ledger's own home
+                mine = handshake.project_named(reg, self.project)
+                if mine is not None:   # a project not in the registry has no inbox to check
+                    waiting = handshake.unread(handshake.read_notes(handshake.folder_of(mine)), mine, self.ledger)
+                    found += steward.unread_notes(waiting, now, self.policy_overrides.get(
+                        "unread_note_hours", policy_mod.DEFAULTS["unread_note_hours"]))
+            except Exception as exc:
+                self.log(f"   steward: the inbox check failed: {exc}")
             for f in found:
                 self.log(f"   steward: {f['invariant']}: {f['detail']}")
             self.ledger.record_findings(self.project, found)

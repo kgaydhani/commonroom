@@ -111,6 +111,15 @@ def trial_final(reports: list, ) -> list[dict]:
             for n, (t, res) in enumerate(reports, 1) if res["verdict"] != "running" and t.ended is None]
 
 
+def unread_notes(unread: list[dict], now: float, hours: int) -> list[dict]:
+    """One finding for each note in `unread` (a project's unread inbox notes, `handshake.unread`) older than `hours`
+    (commonroom#588): a note nobody has read wakes nobody. The number is the note's own time, so each keeps its `since`."""
+    return [finding("unread-note", int(n["at"]), f"The note {n['name']}"
+                    + (f" from {n['from']}" if n.get("from") else "")
+                    + f" has waited {int((now - n['at']) // 3600)} hours unread in the inbox: read it with `room notes`.")
+            for n in sorted(unread, key=lambda n: n["at"]) if now - n["at"] > hours * 3600]
+
+
 def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
           milestone: str | None = None, direction_at: float | None = None,
           reconciled: dict[int, float] | None = None) -> list[dict]:
