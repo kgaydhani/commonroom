@@ -66,14 +66,15 @@ WAYS_DIR = Path(__file__).resolve().parent / "ways"
 # selection, outside the job, where a variant would never apply (commonroom#352).
 TRIAL_POLICY = ("resume_window_seconds", "rework_resume_seconds", "run_timeout_seconds")
 TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at import (commonroom#352)
-PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-incomplete", "build-merge-main",
+PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-blocked", "build-blocked-pretest", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
            "review", "review-no-ci", "review-room-tested", "role", "role-local", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
            "why-milestone", "why-mission")
 # The text the room posts as issue comments, in ways/comments (commonroom#223).
-COMMENTS_NAMES = ("assess-escalate", "assess-retry", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
+COMMENTS_NAMES = ("assess-escalate", "assess-retry", "blocked-reason", "ci-red", "handoff-changed", "handoff-fresh", "merge-main",
                   "merge-main-changes", "merge-stands-approve", "merge-stands-review", "preserved", "rescue", "timeout",
+                  "to-review-no-blocked",
                   "timeout-kept", "timeout-lost")
 
 
@@ -106,6 +107,14 @@ def ways_for(cfg: dict) -> dict[str, str]:
             if unknown:
                 raise ValueError(f"{path} uses placeholders the room doesn't fill: {', '.join(sorted(unknown))}")
     return ways
+
+
+BLOCKED_LINE = re.compile(r"^[ 	]*(?:Blocked:|BLOCKER).*$", re.M | re.I)   # as sandbox_suite_incomplete reads it
+
+
+def blocked_lines(text: str) -> list[str]:
+    """The `Blocked:` / `BLOCKER` lines of a builder's report: the reason it gives for ending STATUS: BLOCKED."""
+    return [m.group(0).strip() for m in BLOCKED_LINE.finditer(text)]
 
 
 def fenced(text: str) -> str:
@@ -3923,6 +3932,12 @@ class Dispatcher:
             if pr and pr["state"] == "OPEN" and after and after != before:
                 if blocked and self.sandbox_suite_incomplete(job, result):
                     blocked = False
+                reason = blocked_lines(result.final_text or "")
+                if blocked and not reason:
+                    # Nothing says what blocks it: an unfinished suite or open items belong to the reviewer (#515).
+                    self.to_review(n)
+                    self.board.comment(n, f"{MARK} " + fill_way(COMMENTS["to-review-no-blocked"], pr=pr["number"]))
+                    return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (to review: no Blocked: line)"}], tail
                 if blocked:
                     # Pushed, but the builder says it can't finish: that goes to the director now, not to a review
                     # that would only find the same blocker (commonroom#319). A Codex build still hands off.
@@ -3930,6 +3945,9 @@ class Dispatcher:
                     if self.codex_handoff(job, branch, result.final_text or ""):
                         return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked, handed to Claude"}], tail
                     self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
+                    if reason:
+                        self.board.comment(n, f"{MARK} " + fill_way(COMMENTS["blocked-reason"], pr=pr["number"])
+                                           + "\n\n" + fenced("\n".join(reason)))
                     return "blocked", [{"kind": "pr", "ref": ref}], tail
                 self.to_review(n)
                 if job.role == "scout" and hasattr(self.board, "label_pr"):
@@ -4052,9 +4070,11 @@ class Dispatcher:
                 return fill_way(ways["build-scout"], n=n, repo=repo, branch=branch)
             if codex:
                 return fill_way(ways["build-codex"], n=n, repo=repo, branch=branch, codex_note=self.codex_note(),
-                                suite_note=self.suite_note() + (" " + ways["build-incomplete"] if self.pre_test else ""),
+                                suite_note=self.suite_note(),
+                                blocked_note=" " + ways["build-blocked-pretest" if self.pre_test else "build-blocked"],
                                 open_pr=open_pr)
-            return fill_way(ways["build"], n=n, repo=repo, branch=branch, suite_note=self.suite_note(), open_pr=open_pr)
+            return fill_way(ways["build"], n=n, repo=repo, branch=branch, open_pr=open_pr, suite_note=self.suite_note(),
+                            blocked_note=" " + ways["build-blocked-pretest" if self.pre_test else "build-blocked"])
         if job.kind == "role" and config_mod.board_kind(self.cfg) == "local":
             item = job.issue
             comments = "\n".join(f"- {(c.get('author') or {}).get('login', '?')}: {c.get('body', '')}"

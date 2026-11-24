@@ -129,6 +129,10 @@ class LabelBoard(FakeBoard):
                 i["labels"] = kept + [{"name": l} for l in add if l not in {k["name"] for k in kept}]
 
 
+def comments_on(board, n):
+    return [body for num, body in getattr(board, "comments", []) if num == n]
+
+
 def issue(n, labels, body="", state="OPEN", comments=(), milestone="M0"):
     return {"number": n, "title": f"Issue {n}", "labels": [{"name": l} for l in labels], "body": body,
             "state": state, "comments": list(comments), "milestone": {"title": milestone} if milestone else None}
@@ -2391,8 +2395,8 @@ class WithLedger(unittest.TestCase):
         d.assess(job, "i427-x", "old", "", workers.WorkerResult(ok=True, final_text="Nothing left.\nSTATUS: DONE"))
         self.assertEqual(state(), {"status:review"})
 
-    def test_pushed_build_ending_blocked_goes_to_the_director_not_review(self):
-        """commonroom#319: a push with STATUS: BLOCKED used to reach review; DONE still does."""
+    def test_pushed_build_ending_blocked_with_a_reason_goes_to_the_director_not_review(self):
+        """commonroom#319: a push with STATUS: BLOCKED and a `Blocked:` line escalates, quoting the line; DONE reaches review."""
         work = issue(319, ["status:in-progress", "role:builder"])
         fake = LabelBoard([work], prs=[{"number": 5, "headRefName": "i319-x"}], details={})
         fake.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN"}, pr=True)
@@ -2400,14 +2404,44 @@ class WithLedger(unittest.TestCase):
         d.remote_head = lambda branch: "new"
         job = dispatch.Job("build", "builder", issue=work, reason="ready")
         state = lambda: {l for l in dispatch.labels(work) if l.startswith(("status:", "needs:"))}
-        status, outputs, _ = d.assess(job, "i319-x", "old", "", workers.WorkerResult(ok=True, final_text="Part done.\nSTATUS: BLOCKED"))
+        text = "Part done.\nBlocked: needs the owner's key\nSTATUS: BLOCKED"
+        status, outputs, _ = d.assess(job, "i319-x", "old", "", workers.WorkerResult(ok=True, final_text=text))
         self.assertEqual(status, "blocked")
         self.assertEqual(state(), {"status:blocked", "needs:director"})
         self.assertIn("PR #5", outputs[0]["ref"])
+        self.assertTrue(any("Blocked: needs the owner's key" in c for c in comments_on(fake, 319)))
         work["labels"] = [{"name": "status:in-progress"}]
         status, _, _ = d.assess(job, "i319-x", "old", "", workers.WorkerResult(ok=True, final_text="Done.\nSTATUS: DONE"))
         self.assertEqual(status, "done")
         self.assertEqual(state(), {"status:review"})
+
+    def test_pushed_build_ending_blocked_without_a_reason_goes_to_review(self):
+        """commonroom#515: no `Blocked:` line means nothing blocks it; the room says so once and the reviewer takes it."""
+        for provider in ("claude", "codex"):
+            work = issue(515, ["status:in-progress", "role:builder"])
+            fake = LabelBoard([work], prs=[{"number": 5, "headRefName": "i515-x"}], details={})
+            fake.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN"}, pr=True)
+            d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+            d._provider = provider
+            d.remote_head = lambda branch: "new"
+            job = dispatch.Job("build", "builder", issue=work, reason="ready")
+            text = "Pushed.\nTESTS: INCOMPLETE suite timed out\nSTATUS: BLOCKED"
+            with self.subTest(provider=provider):
+                status, outputs, _ = d.assess(job, "i515-x", "old", "", workers.WorkerResult(ok=True, final_text=text))
+                self.assertEqual(status, "done")
+                self.assertEqual(outputs, [{"kind": "pr", "ref": "PR #5 (to review: no Blocked: line)"}])
+                self.assertEqual({l for l in dispatch.labels(work) if l.startswith(("status:", "needs:"))}, {"status:review"})
+                self.assertEqual(len([c for c in comments_on(fake, 515) if "No `Blocked:` line" in c]), 1)
+        # the head didn't move: nothing was pushed, so it still escalates as before
+        work = issue(516, ["status:in-progress", "role:builder"])
+        fake = LabelBoard([work], prs=[{"number": 6, "headRefName": "i516-x"}], details={})
+        fake.pr_for_branch = lambda branch: owned({"number": 6, "state": "OPEN"}, pr=True)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.remote_head = lambda branch: "old"
+        job = dispatch.Job("build", "builder", issue=work, reason="ready")
+        status, _, _ = d.assess(job, "i516-x", "old", "", workers.WorkerResult(ok=True, final_text="Stuck.\nSTATUS: BLOCKED"))
+        self.assertEqual(status, "blocked")
+        self.assertIn("needs:director", dispatch.labels(work))
 
     def test_housekeeping_clears_ready_from_issues_in_review_or_in_progress(self):
         """commonroom#93: a ready label next to review or in-progress invites a second builder."""
