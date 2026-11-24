@@ -2420,7 +2420,9 @@ class WithLedger(unittest.TestCase):
         for provider in ("claude", "codex"):
             work = issue(515, ["status:in-progress", "role:builder"])
             fake = LabelBoard([work], prs=[{"number": 5, "headRefName": "i515-x"}], details={})
-            fake.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN"}, pr=True)
+            fake.ready = []
+            fake.ready_pr = lambda n: fake.ready.append(n)
+            fake.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN", "isDraft": True}, pr=True)
             d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
             d._provider = provider
             d.remote_head = lambda branch: "new"
@@ -2432,6 +2434,7 @@ class WithLedger(unittest.TestCase):
                 self.assertEqual(outputs, [{"kind": "pr", "ref": "PR #5 (to review: no Blocked: line)"}])
                 self.assertEqual({l for l in dispatch.labels(work) if l.startswith(("status:", "needs:"))}, {"status:review"})
                 self.assertEqual(len([c for c in comments_on(fake, 515) if "No `Blocked:` line" in c]), 1)
+                self.assertEqual(fake.ready, [5])
         # a scout is not a builder: it still escalates as before, and gets no review
         work = issue(517, ["status:in-progress", "role:scout"])
         fake = LabelBoard([work], prs=[{"number": 7, "headRefName": "i517-x"}], details={})

@@ -3981,6 +3981,7 @@ class Dispatcher:
                 if blocked and not reason and job.role == "builder":
                     # Nothing says what blocks it: an unfinished suite or open items belong to the reviewer (#515).
                     self.to_review(n)
+                    self.undraft(pr)
                     self.board.comment(n, f"{MARK} " + fill_way(COMMENTS["to-review-no-blocked"], pr=pr["number"]))
                     return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (to review: no Blocked: line)"}], tail
                 if blocked:
