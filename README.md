@@ -20,6 +20,7 @@ The commands you run day to day:
 
 ```
 python D:/Dev/commonroom/room.py doctor                      # read-only first-run checks: tools, gh login, registry, each project's room.toml and roles
+python D:/Dev/commonroom/room.py init PATH [--goal "milestone"]   # write a starter room.toml and .claude/agents/ files into PATH (never overwrites; then run the `projects add` line it prints)
 python D:/Dev/commonroom/room.py projects                    # list the registered projects and their shares
 python D:/Dev/commonroom/room.py projects set myproject --share 40  # change a share or mode
 python D:/Dev/commonroom/room.py pie                         # each project's effective share and weekly standing

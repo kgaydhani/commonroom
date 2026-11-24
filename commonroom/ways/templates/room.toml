@@ -1,0 +1,24 @@
+# Starter room.toml written by `room init`. Edit it, then register the project with `room projects add`.
+# Each section says what it is for; the room's defaults fill in everything not listed here.
+
+[project]
+# The project's name in the room (the folder name unless you changed it).
+name = {name}
+# The GitHub repo whose issues and PRs the room works on, as OWNER/REPO. Replace this before the first run.
+repo = "OWNER/REPO"
+# One sentence on what this project is for. Agents read it to judge whether work serves it.
+mission = "Describe what this project is for."
+
+[goal]
+# The milestone the room works on: it only picks up issues in this milestone.
+milestone = {goal}
+
+[checks]
+# The command that runs the project's tests. A builder runs it before opening a PR; a reviewer runs it on the PR head.
+test = "python -m unittest discover -s tests"
+
+[roles]
+# Who does each role, as "provider:model" in order of preference. Each role needs a file in .claude/agents/.
+director = ["claude:opus"]
+builder = ["claude:sonnet"]
+reviewer = ["claude:opus"]
