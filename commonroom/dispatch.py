@@ -131,6 +131,7 @@ BULLETIN_REASON = WAYS["bulletin"]   # fill_way() it with due, issue and owner
 OWNER_COOLDOWN = POLICY["owner_cooldown_seconds"]
 ROOM_ERROR_BACKOFF = POLICY["room_error_backoff_seconds"]
 ROOM_ERROR_ESCALATE = POLICY["room_error_escalate"]
+HEARTBEAT_FAILURES = POLICY["heartbeat_failures"]
 SCOUT_INTERLEAVE = POLICY["scout_interleave_seconds"]
 # A scheduled issue's body carries this, so the schedule sees its last one is still open (commonroom#151).
 SCHEDULE_MARK = "<!-- room-schedule:{role} -->"
@@ -1346,7 +1347,7 @@ POLICY_CONSTANTS = {"review_rounds": "REVIEW_ROUNDS", "incomplete_rounds": "INCO
                     "owner_cooldown_seconds": "OWNER_COOLDOWN", "stale_claim_minutes": "STALE_CLAIM_MINUTES",
                     "room_error_backoff_seconds": "ROOM_ERROR_BACKOFF", "room_error_escalate": "ROOM_ERROR_ESCALATE",
                     "resume_window_seconds": "RESUME_WINDOW", "rework_resume_seconds": "REWORK_RESUME", "progress_min_work_seconds": "PROGRESS_MIN_WORK",
-                    "notify_max": "NOTIFY_MAX", "run_timeout_seconds": "RUN_TIMEOUT"}
+                    "notify_max": "NOTIFY_MAX", "heartbeat_failures": "HEARTBEAT_FAILURES", "run_timeout_seconds": "RUN_TIMEOUT"}
 
 
 def session_file(worktree, session_id: str, projects_dir: Path | None = None) -> Path:
@@ -3517,6 +3518,8 @@ class Dispatcher:
             found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                    self.milestone, direction_at, reconciled)
             now = time.time()
+            found += steward.heartbeat_failing(
+                self.ledger.heartbeat_runs(self.project), self.policy("heartbeat_failures"))
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
             for f in found:

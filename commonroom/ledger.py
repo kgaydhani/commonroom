@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS findings (
     since REAL NOT NULL,
     PRIMARY KEY (project, invariant, number)
 );
+CREATE TABLE IF NOT EXISTS heartbeat_runs (
+    project TEXT NOT NULL,
+    command TEXT NOT NULL,
+    at REAL NOT NULL,
+    exit_code INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS readings (
     project TEXT NOT NULL,
     at REAL NOT NULL,
@@ -443,6 +449,25 @@ class Ledger:
         rows = self.db.execute("SELECT at, label, exit_code, line FROM readings WHERE project=? ORDER BY at DESC LIMIT ?",
                                (project or "", limit)).fetchall()
         return [dict(r) for r in rows]
+
+    HEARTBEAT_KEEP = 20   # runs kept per command
+
+    def record_heartbeat(self, project: str | None, command: str, exit_code: int, at: float | None = None):
+        """One run of a `[heartbeat] commands` entry (commonroom#587); -1 when it couldn't start or timed out."""
+        with self.db:
+            self.db.execute("INSERT INTO heartbeat_runs (project, command, at, exit_code) VALUES (?,?,?,?)",
+                            (project or "", command, time.time() if at is None else at, exit_code))
+            self.db.execute("DELETE FROM heartbeat_runs WHERE project=? AND command=? AND rowid NOT IN (SELECT rowid "
+                            "FROM heartbeat_runs WHERE project=? AND command=? ORDER BY at DESC, rowid DESC LIMIT ?)",
+                            (project or "", command, project or "", command, self.HEARTBEAT_KEEP))
+
+    def heartbeat_runs(self, project: str | None) -> dict[str, list[int]]:
+        """Each command's exit codes, newest first."""
+        out: dict[str, list[int]] = {}
+        for r in self.db.execute("SELECT command, exit_code FROM heartbeat_runs WHERE project=? ORDER BY at DESC, rowid DESC",
+                                 (project or "",)):
+            out.setdefault(r["command"], []).append(r["exit_code"])
+        return out
 
     SWEEP = "steward-sweep"   # mark: when the steward last swept the project's board
 

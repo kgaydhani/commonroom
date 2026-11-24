@@ -627,7 +627,7 @@ def cmd_tick(args) -> int:
     if not cfg.get("_root"):
         print("No room.toml found; run inside a project")
         return 2
-    for line in services.tick(cfg):
+    for line in services.tick(cfg, ledger=Ledger()):
         print(time.strftime("%m-%d %H:%M:%S"), line, flush=True)
     return 0
 
