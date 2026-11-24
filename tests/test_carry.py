@@ -430,6 +430,25 @@ class MainSuite(Carry):
         (task,) = board.created
         self.assertIn("Failing:\n- `FAIL: test_x (tests.test_y.Y.test_x)`", task["body"])
 
+    def test_a_task_opened_on_a_later_pass_still_lists_the_failing_tests(self):
+        board = self.setup_ready_pr()
+        line = carry.Line("exit 1: FAILED (failures=1)")
+        line.failing = ("FAIL: test_x (tests.test_y.Y.test_x)",)
+        self.results = [("FAIL", line)] * 2
+        real = board.create_issue
+        def broken(*a, **kw):
+            raise RuntimeError("github down")
+        board.create_issue = broken
+        d = self.dispatcher(self.cfg(), board)
+        d.main_suite_red([], [])
+        d.main_suite_red([], [])
+        self.assertEqual(board.created, [])
+        board.create_issue = real
+        self.dispatcher(self.cfg(), board).main_suite_red([], [])      # a restarted dispatcher
+        self.assertEqual(len(self.calls), 2)
+        (task,) = board.created
+        self.assertIn("Failing:\n- `FAIL: test_x (tests.test_y.Y.test_x)`", task["body"])
+
     def test_the_red_task_names_the_kept_log_and_the_interpreter(self):
         board = self.setup_ready_pr()
         sha = self.sha()
