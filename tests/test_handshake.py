@@ -623,7 +623,7 @@ class WaitingOnYou(Room):
         self.assertEqual(section.strip().split("\n"), ["- #3 older, due 2026-11-19, overdue", "- #9 newer, no date"])
         args, timeout = self.calls[0]
         self.assertEqual((args[:2], "owner:human" in args, timeout), (["issue", "list"], True, handshake.TRAIL_TIMEOUT))
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len([c for c in self.calls if "open" in c[0]]), 1)
 
     def test_a_due_date_today_or_later_is_not_overdue(self):
         self.task(1, "today", "Due: 2026-11-20")
@@ -650,6 +650,77 @@ class WaitingOnYou(Room):
         self.task(1)
         self.assertNotIn("Waiting on you", self.digest())
         self.assertEqual(self.calls, [])
+
+
+class Interventions(Room):
+    """commonroom#509: the digest sets the owner's interventions against landings, this week and the week before."""
+    NOW = datetime(2026, 11, 20, 12, 0, tzinfo=timezone.utc).timestamp()
+    DAY = 86400
+
+    def setUp(self):
+        super().setUp()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\nrepo = "me/alpha"\n', encoding="utf-8")
+        self.register()
+        self.items = []
+
+    def note(self, days_ago):
+        handshake.write_note(handshake.prepare(registry.load().projects["alpha"]), "x", "kieran", None,
+                             self.NOW - days_ago * self.DAY, "correction")
+
+    def item(self, days_ago):
+        at = datetime.fromtimestamp(self.NOW - days_ago * self.DAY, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.items.append({"number": len(self.items) + 1, "createdAt": at})
+
+    def land(self, n, days_ago=1):
+        ledger = Ledger()
+        try:
+            for i in range(n):
+                at = self.NOW - days_ago * self.DAY
+                rid = ledger.start_run("alpha", f"t{i}", "merge", "claude", now=at)
+                ledger.finish_run(rid, "done", now=at + 60)
+        finally:
+            ledger.close()
+
+    def line(self, fail=False):
+        def gh(args, timeout=30):
+            if fail:
+                raise RuntimeError("down")
+            return self.items
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            with mock.patch.object(handshake.board, "gh", gh):
+                text = handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+                found = handshake.interventions(ledger, reg.projects["alpha"], self.NOW)
+        finally:
+            ledger.close()
+        return [l for l in text.split("\n") if l.startswith("Owner interventions")][0], found
+
+    def test_two_notes_and_one_item_against_four_landings(self):
+        self.note(1); self.note(2); self.item(3); self.item(10); self.note(9)
+        self.land(4)
+        line, found = self.line()
+        self.assertIn("3 in the last 7 days against 4 landings (0.75 per landing)", line)
+        self.assertIn("the 7 days before: 2, no landings.", line)
+        self.assertEqual((found["now"], found["before"], found["landings"]), (3, 2, 4))
+
+    def test_no_landings_prints_counts_and_no_ratio(self):
+        self.note(1)
+        line, _ = self.line()
+        self.assertIn("1 in the last 7 days, no landings", line)
+
+    def test_an_unreadable_board_still_counts_notes_and_says_so(self):
+        self.note(1); self.land(2)
+        line, _ = self.line(fail=True)
+        self.assertIn("1 in the last 7 days against 2 landings (0.5 per landing)", line)
+        self.assertIn("board part is missing", line)
+
+    def test_the_json_summary_carries_both_figures(self):
+        self.note(1); self.note(10); self.item(2)
+        cfg = config_mod.merge(config_mod.DEFAULTS, {"project": {"name": "alpha"}, "_path": None, "_root": None})
+        with mock.patch("time.time", return_value=self.NOW), mock.patch.object(handshake.board, "gh", lambda a, timeout=30: self.items):
+            summary = cli.digest(cfg, 24)["summary"]
+        self.assertEqual((summary["owner_interventions_7d"], summary["owner_interventions_prev_7d"]), (2, 1))
 
 
 class Trail(Room):
