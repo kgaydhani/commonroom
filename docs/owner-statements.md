@@ -166,6 +166,16 @@ How he said to treat these, after a session turned the last one into new wording
 
 24 Nov 2026. The synthesis he asked for is [layer.md](layer.md).
 
+> if i need to restart the pc or restart claude, i dont want to have to tell anything, i want it to just know or be checking any running tasks
+
+> i want to be able to just send this message and common room creates me a session with the perfect context and already briefed and prepped, and says ur session is ready for u, and that session has access to my entire life, and can ask for details and actively switch on other sessions and do full research based on the other sessions on things i have discussed, and will also manage its own session, like its not a 'stupid' session and its no tlimited to one job either, the important part is that its given the tools and the nudges to use said tools, so that when i mention something it doesnt have to wait for me to prompt it to do the research.
+
+> these sessions have their own ethics and guardrails just like u, but i never want to have rules that i have to fight, and like i dont want it not to be able to do something and then fight me over a rule i set
+
+> something that i want from common room is that when i have chats like this no matter where i am, its feeding useful information for common room back to it [...] so instead of just telling me this is a gap in common room, i want it to automatically feed that back to u or whoever can do something with that
+
+24 Nov 2026, later the same day, each said while using a session.
+
 ## His suggestions about how
 
 These are his guesses at mechanisms. He said how to treat them:

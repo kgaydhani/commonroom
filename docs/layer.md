@@ -42,6 +42,16 @@ One thin layer between him and the AI tools, on a workstation that is "claude fi
 - Starting the room needs a scheduled task made by hand and paths written for one machine.
 - Already built and reusable: notes between projects, handing work to another agent, handover briefs with lineage, the cold-return and second-compaction offers, booking his own sessions to projects, a local board for projects with no repository, the steward, one page.
 
+**One afternoon of real use** (a session prepared by hand for the owner on 24 Nov 2026, from one message that spanned his whole life; it sent its findings back through `room note`):
+
+- A prepared start worked. The session read his notes, calendar and each project's record before he arrived, and his first replies were corrections to facts already found. Neither side asked a set-up question.
+- Every real deadline came from joining sources: his list read against his email, his calendar and his notes. No single store held any of them.
+- Half his record is somewhere the layer cannot see. He uses another vendor's chat app on his phone for quick admin, and none of it had reached his notes or any session. A pasted share link was enough for a session to read it.
+- Notes with no reader are dead letters. His notes folder was set up to file its inbox whenever a session opened in it. None did for four weeks, so 24 notes dropped there by other sessions sat unfiled, and the map every session is told to read first described a month earlier. Each writer did its part and the whole failed silently.
+- His forward calendar was empty. Every dated fact lived in prose. Writing dates to the calendar he already gets alerts from was the change he noticed first.
+- The research pulled the conversation toward what can be looked up. The brief put the time on who he wants to be; an hour in, that question was still open.
+- The same was true of the room: a note in a project's inbox wakes nobody. It is seen when a director next runs for another reason.
+
 ## Conclusions
 
 **1. The package is the product.** Today the room is a checkout that one person runs by hand. A layer is installed once and is then present everywhere. Packaging was the last slice of design-v3; it moves to first.
@@ -59,6 +69,12 @@ One thin layer between him and the AI tools, on a workstation that is "claude fi
 **7. A few hard limits, in the vendor's own mechanism.** With permissions bypassed, instructions stop nothing. A short, readable list of what must never happen is installed as deny rules, which hold in every mode, plus the existing command guard extended from workers to his own sessions and to Codex. The list is his and he can edit it. This is the one place the layer blocks anything, and the test for axiom A0 changes to say so.
 
 **8. He can only sit back if he can see.** The page gains what the layer did today: what it routed and where, which sessions were offered a fresh start, the size and age of the person file, the limits in force, and how often he had to correct or repeat himself. That last count is the room's measure of whether it is improving the human part.
+
+**9. Nothing is written where nobody reads.** The person file, the map and every inbox need a reader that runs without him, in code where that is possible, and a visible sign on the page when it has not run. A note that has waited too long is a finding like any other the steward raises. This applies to the room's own inboxes first. *This is new:* the design above would have repeated the failure of his notes folder.
+
+**10. Every session feeds the room, without being asked.** When a session anywhere notices something the layer got wrong, could not see or made harder, it sends that to the room as a finding and carries on. It does not stop at telling him. His words: "instead of just telling me this is a gap in common room, i want it to automatically feed that back to u or whoever can do something with that". The session-start line says so in every place, a finding is one command, and a finding reaches the director the way an untriaged issue does. The count of findings, and how many led to a change, goes on the page.
+
+**11. What happened elsewhere comes in through one door.** The layer will never see inside another vendor's phone app, and should not try. It needs one cheap way for him to hand it something from anywhere (a link, a paragraph, a photo of a note) that lands as a note in the right place and is read. Dates found on the way go to the calendar he already uses.
 
 ## What the room does not build
 
@@ -83,6 +99,7 @@ Four things, and no more: start a session in a folder with a brief; accept added
 4. **Routes.** The map's active lines at session start, a route recorded in the ledger whenever a session sends something elsewhere, and the home place.
 5. **Limits.** The list, its installation as deny rules, and the guard for his own sessions and for Codex.
 6. **The glance.** The page's layer section and the corrections count.
+7. **Readers and findings.** A steward check for notes nobody has read, the finding route from any session, and the door for what happened elsewhere.
 
 Sharing with a second person (design-v3 slice 6) follows, on the same install.
 
@@ -99,4 +116,5 @@ Sharing with a second person (design-v3 slice 6) follows, on the same install.
 - **Wrong routes nobody notices.** Met by showing every route and by never routing silently.
 - **The person file goes stale or grows.** Met by the cap and the dated lines. If it cannot be kept under the cap, that is the signal to cut it.
 - **The vendor changes underneath.** Met by using only documented surfaces: plugins, hooks, user instruction files, deny rules. No wrapped process, no private endpoint, no parsing beyond the session records already read for booking.
+- **Research crowds out thinking.** A session nudged to look things up will steer toward what can be looked up. The brief template says what the conversation is for, and the session is told to notice when it has drifted from it.
 - **With permissions off, a fault in the layer reaches everything.** The hooks stay silent on any error, as they do now, and only the limits can block.
