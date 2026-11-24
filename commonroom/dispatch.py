@@ -2265,7 +2265,8 @@ class Dispatcher:
                 actions.append(note)
             result, line = carry_mod.run_suite(self.root, sha, checks["test"], self.worktree_base() / "main-suite",
                                                suite_lock(Path(self.ledger.path).parent, self.project),
-                                               float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+                                               float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES),
+                                               keep=(Path(self.ledger.path).parent / "suite-logs", self.project))
             if result == "BUSY":
                 actions.append(f"main's suite not run in code yet ({line}); next pass")
                 return False
@@ -2282,16 +2283,22 @@ class Dispatcher:
             if result == "FAIL":
                 self.ledger.mark(self.project, red_key)
                 self.ledger.mark(self.project, f"main-suite-line:{line}")
+                self.ledger.mark(self.project, f"main-suite-python:{getattr(line, 'interpreter', 'unknown')}")
+                for name in getattr(line, "failing", ()):
+                    self.ledger.mark(self.project, f"main-suite-failing:{sha}:{name}")
             actions.append(f"tests {result} on main {sha[:7]} in code ({line})")
             if result != "FAIL":
                 return False
             summary = line
             failing = tuple(getattr(line, "failing", ()))
+            interpreter = getattr(line, "interpreter", "unknown")
         elif self.ledger.marked(self.project, red_key) is None:
             return False
         else:
             summary = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-line:")), "")
-            failing = ()
+            failing = tuple(k for k, _ in reversed(self.ledger.marks(self.project, f"main-suite-failing:{sha}:")))
+            interpreter = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-python:")), "unknown")
+        log_path = carry_mod.kept_log(Path(self.ledger.path).parent / "suite-logs", self.project, sha)
         fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
         if fix:
             actions.append(f"merges held: the suite fails on main {sha[:7]}; #{fix['number']} fixes it")
@@ -2299,7 +2306,9 @@ class Dispatcher:
         test = checks["test"]
         names = "".join(f"- `{t}`\n" for t in failing)
         listed = f"Failing:\n{names}\n" if names else ""
+        kept = f"log: {log_path}\n" if log_path.exists() else ""
         body = (f"The suite (`{test}`) fails on main {sha[:7]}, run by the room: {summary}\n\n{listed}"
+                f"{kept}interpreter: {interpreter}\n\n"
                 f"The room holds every "
                 f"other merge until the suite passes on main again; this task's PR is the one exception. Find the cause "
                 f"(often two PRs that each passed alone), fix it on this issue's branch, run `{test}`, and open a PR. "
