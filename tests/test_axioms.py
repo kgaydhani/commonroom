@@ -314,6 +314,53 @@ class RoomKnowsNoProject(unittest.TestCase):
         self.assertNotIn("room", tokens)
 
 
+CREDENTIAL_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "CLAUDECODE", "CLAUDE_CONFIG_DIR", "CODEX_HOME")
+
+
+def credential_mentions(source: str) -> list[tuple[int, str]]:
+    """Lines where code writes one of the credential names: a string key in a subscript store, `setdefault`, `update`,
+    `putenv`, a dict literal, or a keyword argument. Reads, `pop` and comparisons are fine."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        names = []
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store):
+            names = [node.slice]
+        elif isinstance(node, ast.Dict):
+            names = [k for k in node.keys if k]
+        elif isinstance(node, ast.Call):
+            func = getattr(node.func, "attr", getattr(node.func, "id", ""))
+            if func in ("setdefault", "putenv"):
+                names = node.args[:1]
+            names += [ast.Constant(k.arg) for k in node.keywords if k.arg]
+        found += [(node.lineno, n.value) for n in names if isinstance(n, ast.Constant) and n.value in CREDENTIAL_NAMES]
+    return found
+
+
+class EachSubscriptStaysOnItsOwnersMachine(unittest.TestCase):
+    """A8: no code path accepts another person's credentials."""
+
+    def test_a_worker_environment_carries_none_of_the_api_keys(self):
+        parent = {name: "x" for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY", "CLAUDECODE")}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict("os.environ", parent):
+            for provider in ("claude", "codex"):
+                env = workers.worker_env(provider, Path(tmp) / "wt")
+                self.assertEqual(set(parent) & set(env), set(), provider)
+
+    def test_no_room_module_sets_a_credential_variable(self):
+        found = {}
+        for path in sorted((ROOT / "commonroom").rglob("*.py")):
+            hits = credential_mentions(path.read_text(encoding="utf-8"))
+            if hits:
+                found[path.name] = hits
+        self.assertEqual(found, {})
+
+    def test_the_scan_sees_a_store_a_literal_and_a_keyword(self):
+        source = ('env["CODEX_HOME"] = path\nenv.setdefault("ANTHROPIC_API_KEY", k)\n'
+                  'x = {"OPENAI_API_KEY": k}\nrun(CLAUDE_CONFIG_DIR=d)\nenv.pop("CLAUDECODE", None)\n')
+        self.assertEqual([n for _, n in credential_mentions(source)],
+                         ["CODEX_HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CLAUDE_CONFIG_DIR"])
+
+
 class CodeDecidesWhatRuns(unittest.TestCase):
     """A6: deciding what runs is plain code. A full pass picks a job with every way to a model shut."""
 
