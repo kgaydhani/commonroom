@@ -369,6 +369,11 @@ class Ledger:
                                (project,)).fetchall()
         return [dict(r) for r in rows]
 
+    def breakers_since(self, project: str | None, since: float) -> list[dict]:
+        """Breakers opened for a project at or after `since`, cleared or not."""
+        rows = self.db.execute("SELECT * FROM breakers WHERE project IS ? AND at >= ? ORDER BY at", (project, since)).fetchall()
+        return [dict(r) for r in rows]
+
     def clear_breakers(self, project: str | None, kind: str | None = None, now: float | None = None) -> int:
         now = time.time() if now is None else now
         query, params = "UPDATE breakers SET cleared_at=? WHERE project IS ? AND cleared_at IS NULL", [now, project]

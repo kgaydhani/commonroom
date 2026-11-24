@@ -674,12 +674,60 @@ def _waiting(p: registry.Project, now: float) -> str:
     return "\n".join(lines)
 
 
+def self_sufficient(ledger: Ledger, p: registry.Project, now: float) -> list[tuple[str, str, str]]:
+    """The checks behind the owner's "5 when it's self-sufficient" (commonroom#549): (name, value, `yes`/`no`/`unknown`).
+    The goal milestone comes from the project's `room.toml`; without one, the work-queue check is left out."""
+    rows = []
+    f = interventions(ledger, p, now)
+    if not f["board"]:
+        rows.append(("Owner interventions", "the board could not be read", "unknown"))
+    else:
+        rows.append(("Owner interventions", f"{f['now']} in the last 7 days, {f['landings']} landings",
+                     "yes" if f["now"] == 0 and f["landings"] >= 1 else "no"))
+    milestone = (room_toml(p).get("goal") or {}).get("milestone")
+    try:
+        found = _items(p, "open", None, 500, "number,title,labels,milestone,createdAt") if _readable(p) else None
+    except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
+        found = None
+    def names(i):
+        return {l.get("name") for l in i.get("labels") or []}
+    if found is None:
+        rows.append(("Main is not red", "the board could not be read", "unknown"))
+        rows.append(("Escalations wait under 24 h", "the board could not be read", "unknown"))
+    else:
+        red = [i for i in found if (i.get("title") or "").strip().lower().startswith("main is red")]
+        rows.append(("Main is not red", f"{len(red)} open", "no" if red else "yes"))
+        old = [i for i in found if "needs:director" in names(i) and (_created(i.get("createdAt")) or now) < now - 86400]
+        rows.append(("Escalations wait under 24 h", f"{len(old)} older than 24 h", "no" if old else "yes"))
+    opened = ledger.breakers_since(ledger_name(p), now - WEEK)
+    rows.append(("No breaker in 7 days", f"{len(opened)} opened", "no" if opened else "yes"))
+    if milestone:
+        if found is None:
+            rows.append(("Work queue fed", "the board could not be read", "unknown"))
+        else:
+            mine = [i for i in found if (i.get("milestone") or {}).get("title") == milestone]
+            ready = [i for i in mine if "status:ready" in names(i)]
+            live = [i for i in mine if "parked" not in names(i)]
+            rows.append(("Work queue fed", f"{len(ready)} ready, {len(live)} open not parked in the milestone",
+                         "yes" if ready or not live else "no"))
+    return rows
+
+
+def _self_sufficient(ledger: Ledger, p: registry.Project, now: float) -> str:
+    rows = self_sufficient(ledger, p, now)
+    held = sum(r[2] == "yes" for r in rows)
+    lines = [f"- {name}: {value}: {state}" for name, value, state in rows]
+    lines.append("Self-sufficient: yes" if held == len(rows) else f"Self-sufficient: no ({held} of {len(rows)} hold)")
+    return chr(10).join(lines)
+
+
 def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float | None = None) -> str:
     now = time.time() if now is None else now
     where = folder_of(p)
     text = fill_way(DIGEST, project=p.name, reply=_direction(ledger, p, where) + reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
                     decisions=_decisions(where, p), notes=_notes(where), work=chr(10).join(x for x in (_work(ledger, p, now), _interventions(ledger, p, now), _wakes(ledger, p, now)) if x)) + "\n"
+    text = text + chr(10) + f"## Self-sufficient?{chr(10)}{_self_sufficient(ledger, p, now)}" + chr(10)
     board = _board(ledger, p)
     if board:
         text = text + "\n" + f"## Board check, latest sweep\n{board}" + "\n"
