@@ -8,6 +8,17 @@ from commonroom import doctor
 TOML = '[project]\nname = "{n}"\n[roles]\ncodex_parallel_builds = false\nbuilder = ["{p}:sonnet"]\n'
 
 
+CHECKOUT = Path("D:/rooms/main")
+HEAD = '"HostName","TaskName","Status","Task To Run","Scheduled Task State"\n'
+BS = chr(92)
+VBS = ("wscript.exe \"D:/rooms/main/beat.vbs\"").replace("/", BS)
+
+
+def sched(action=VBS, state="Enabled", code=0, rows=None):
+    text = HEAD + (rows if rows is not None else f'"PC","{BS}Beat","Ready","{action}","{state}"' + chr(10))
+    return lambda args: (code, text)
+
+
 def tree(root: Path):
     return sorted(str(p) for p in root.rglob("*"))
 
@@ -34,9 +45,10 @@ class DoctorTests(unittest.TestCase):
         text = "".join(f'[projects.{r.name}]\npath = "{r.as_posix()}"\nshare = {share}\n' for r in projects)
         self.reg.write_text(text, encoding="utf-8")
 
-    def run_doctor(self, tools=("claude", "gh", "codex"), gh_code=0):
+    def run_doctor(self, tools=("claude", "gh", "codex"), gh_code=0, runner=None):
         code = doctor.run(self.reg, which=lambda n: n if n in tools else None, gh=lambda a: gh_code,
-                          version=(3, 12), out=self.lines.append)
+                          version=(3, 12), out=self.lines.append, runner=runner or sched(), windows=True,
+                          checkout=CHECKOUT)
         return code
 
     def test_all_present(self):
@@ -111,8 +123,37 @@ class DoctorTests(unittest.TestCase):
 
     def test_old_python(self):
         self.registry(self.project("alpha"))
-        code = doctor.run(self.reg, which=lambda n: n, gh=lambda a: 0, version=(3, 10), out=self.lines.append)
+        code = doctor.run(self.reg, which=lambda n: n, gh=lambda a: 0, version=(3, 10), out=self.lines.append,
+                          runner=sched(), windows=True, checkout=CHECKOUT)
         self.assertEqual(code, 1)
+
+    def beat_line(self, **kw):
+        if not self.reg.exists():
+            self.registry(self.project("alpha"))
+        code = self.run_doctor(tools=("claude", "gh"), runner=sched(**kw))
+        return code, [l for l in self.lines if l.startswith("scheduled beat")]
+
+    def test_beat_ok(self):
+        code, line = self.beat_line()
+        self.assertEqual((code, line), (0, ["scheduled beat: ok"]))
+        self.assertEqual(self.beat_line(action="D:/rooms/main/beat.cmd")[0], 0)
+
+    def test_beat_missing_cases(self):
+        for kw in ({"rows": ""}, {"state": "Disabled"}, {"action": VBS.replace("main", "other")}, {"code": 1}, {"code": 127}):
+            self.lines.clear()
+            code, line = self.beat_line(**kw)
+            self.assertEqual(code, 1, kw)
+            self.assertTrue(line and "missing" in line[0], (kw, line))
+
+    def test_beat_cron(self):
+        self.registry(self.project("alpha"))
+        def run(text, code=0):
+            self.lines.clear()
+            return doctor.run(self.reg, which=lambda n: n, gh=lambda a: 0, version=(3, 12), out=self.lines.append,
+                              runner=lambda a: (code, text), windows=False, checkout=CHECKOUT)
+        self.assertEqual(run("*/5 * * * * python D:/rooms/main/room.py beat"), 0, self.lines)
+        self.assertEqual(run("# */5 * * * * python D:/rooms/main/room.py beat"), 1)
+        self.assertEqual(run("", code=127), 1)
 
 
 if __name__ == "__main__":

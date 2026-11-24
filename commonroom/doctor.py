@@ -2,6 +2,8 @@
 It changes nothing, starts no model and writes nothing."""
 from __future__ import annotations
 
+import csv
+import io
 import shutil
 import subprocess
 import sys
@@ -18,6 +20,59 @@ def run_gh(args: list[str]) -> int:
         return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=30).returncode
     except (OSError, subprocess.SubprocessError):
         return 127
+
+
+def run_cmd(args: list[str]) -> tuple[int, str]:
+    """(exit code, stdout) of a read-only command; (127, "") when it cannot run."""
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=30)
+        return r.returncode, r.stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return 127, ""
+
+
+CHECKOUT = Path(__file__).resolve().parents[1]
+
+
+def _norm(text: str) -> str:
+    return text.replace("\\", "/").replace('"', "").lower()
+
+
+def beat_scheduled(checkout: Path, runner, windows: bool) -> tuple[bool, str]:
+    """(found, why not). Windows: an enabled task whose action runs this checkout's beat.vbs/beat.cmd.
+    Elsewhere: a crontab line running `room.py beat` from this checkout."""
+    root = _norm(str(checkout)).rstrip("/")
+    if windows:
+        code, text = runner(["schtasks", "/query", "/fo", "csv", "/v"])
+        if code != 0:
+            return False, "could not run `schtasks /query`"
+        rows = [r for r in csv.reader(io.StringIO(text)) if r]
+        header = next((r for r in rows if "Task To Run" in r), None)
+        if header is None:
+            return False, "no scheduled task runs this checkout's beat"
+        action, state, status = (header.index(c) if c in header else None
+                                 for c in ("Task To Run", "Scheduled Task State", "Status"))
+        disabled = False
+        for r in rows:
+            if r is header or len(r) <= action or r[action] == "Task To Run":
+                continue
+            cmd = _norm(r[action])
+            if not any(f"{root}/{b}" in cmd for b in ("beat.vbs", "beat.cmd")):
+                continue
+            flags = [r[i].strip().lower() for i in (state, status) if i is not None and i < len(r)]
+            if "disabled" in flags:
+                disabled = True
+                continue
+            return True, ""
+        return False, "the scheduled beat task is disabled" if disabled else "no scheduled task runs this checkout's beat"
+    code, text = runner(["crontab", "-l"])
+    if code != 0:
+        return False, "could not run `crontab -l`"
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "room.py beat" in line and root in _norm(line):
+            return True, ""
+    return False, "no crontab line runs `room.py beat` from this checkout"
 
 
 def agent_file_exists(root: Path, role: str) -> bool:
@@ -45,7 +100,8 @@ def codex_reason(cfg: dict) -> str | None:
     return None
 
 
-def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, version=None) -> list[tuple[bool, bool, str]]:
+def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, version=None,
+           runner=run_cmd, windows=None, checkout=None) -> list[tuple[bool, bool, str]]:
     """Each check as (ok, required, line text)."""
     out: list[tuple[bool, bool, str]] = []
 
@@ -60,6 +116,10 @@ def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, ve
     add(has_gh, "gh on PATH", "install the GitHub CLI and put `gh` on PATH")
     if has_gh:
         add(gh(["auth", "status"]) == 0, "gh logged in", "run `gh auth login`")
+
+    found_beat, why = beat_scheduled(Path(checkout) if checkout else CHECKOUT, runner,
+                                     sys.platform == "win32" if windows is None else windows)
+    add(found_beat, "scheduled beat", f"{why}; schedule `beat.vbs` (Windows Task Scheduler) or `room.py beat` (cron) for {checkout or CHECKOUT}")
 
     path = Path(reg_path) if reg_path else registry.default_path()
     reg = None
@@ -100,8 +160,9 @@ def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, ve
     return out
 
 
-def run(reg_path=None, which=shutil.which, gh=run_gh, version=None, out=print) -> int:
-    results = checks(reg_path, which, gh, version)
+def run(reg_path=None, which=shutil.which, gh=run_gh, version=None, out=print,
+        runner=run_cmd, windows=None, checkout=None) -> int:
+    results = checks(reg_path, which, gh, version, runner, windows, checkout)
     for _, _, line in results:
         out(line)
     return 1 if any(not ok and required for ok, required, _ in results) else 0
