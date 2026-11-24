@@ -543,6 +543,92 @@ class NoModel(Room):
                     self.assertEqual(self.room(*argv, cwd=self.alpha)[0], 0)
 
 
+class CheckoutBehind(Room):
+    """commonroom#524: the digest says when a project's checkout is behind its local origin/main."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git is not installed")
+        self.reg = self.register()
+        self.origin = self.tmp / "origin.git"
+        self.git(self.tmp, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(self.alpha, "init", "-q", "-b", "main")
+        self.git(self.alpha, "add", "-A")
+        self.git(self.alpha, "commit", "-qm", "first")
+        self.git(self.alpha, "remote", "add", "origin", str(self.origin))
+        self.git(self.alpha, "push", "-q", "origin", "main")
+        self.other = self.tmp / "other"
+        self.git(self.tmp, "clone", "-q", str(self.origin), str(self.other))
+
+    def git(self, cwd, *argv):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *argv], cwd=cwd, check=True,
+                       capture_output=True)
+
+    def push_two(self, room_toml=False):
+        for i in range(2):
+            (self.other / f"f{i}.txt").write_text("x", encoding="utf-8")
+            if room_toml and i == 1:
+                (self.other / "room.toml").write_text('[project]\nname = "alpha"\n[heartbeat]\ncommands = []\n', encoding="utf-8")
+            self.git(self.other, "add", "-A")
+            self.git(self.other, "commit", "-qm", f"c{i}")
+        self.git(self.other, "push", "-q", "origin", "main")
+        self.git(self.alpha, "fetch", "-q", "origin")
+
+    def digest(self):
+        ledger = Ledger()
+        try:
+            return handshake.build_digest(self.reg, self.reg.projects["alpha"], ledger)
+        finally:
+            ledger.close()
+
+    def test_two_behind_with_room_toml_changed(self):
+        self.push_two(room_toml=True)
+        out = self.digest()
+        self.assertIn("## Checkout behind main", out)
+        self.assertIn("(branch main) is 2 commits behind origin/main, tree clean; room.toml differs", out)
+
+    def test_two_behind_with_room_toml_unchanged(self):
+        self.push_two()
+        out = self.digest()
+        self.assertIn("(branch main) is 2 commits behind origin/main, tree clean; room.toml is the same", out)
+
+    def test_uncommitted_changes_are_named(self):
+        self.push_two()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n# mine\n', encoding="utf-8")
+        self.assertIn("uncommitted changes", self.digest())
+
+    def test_up_to_date_ahead_no_origin_or_no_repo_has_no_section(self):
+        self.assertNotIn("Checkout behind main", self.digest())
+        (self.alpha / "g.txt").write_text("x", encoding="utf-8")
+        self.git(self.alpha, "add", "-A")
+        self.git(self.alpha, "commit", "-qm", "ahead")
+        self.assertNotIn("Checkout behind main", self.digest())
+        self.git(self.alpha, "remote", "remove", "origin")
+        self.assertNotIn("Checkout behind main", self.digest())
+        self.assertEqual(handshake._checkout_behind(registry.Project("beta", str(self.beta), 20)), "")   # not a repo
+
+    def test_building_the_digest_runs_no_network_or_tree_changing_git(self):
+        self.push_two()
+        before = self.refs()
+        real, seen = subprocess.run, []
+        def record(argv, *a, **k):
+            seen.append(list(argv))
+            return real(argv, *a, **k)
+        with mock.patch.object(subprocess, "run", record):
+            self.digest()
+        banned = {"fetch", "pull", "checkout", "reset", "merge", "clone", "push"}
+        self.assertTrue(seen)
+        self.assertFalse([a for a in seen if banned & set(a[1:])], seen)
+        self.assertEqual(self.refs(), before)
+
+    def refs(self):
+        run = lambda *a: subprocess.run(["git", *a], cwd=self.alpha, capture_output=True, text=True).stdout
+        return run("rev-parse", "HEAD"), run("for-each-ref"), run("status", "--porcelain")
+
+
 class Corrections(Room):
     """commonroom#399: `--kind correction` notes, counted in the project digest and in the auditor's JSON summary."""
     NOW = datetime(2026, 11, 20, 12, 0).timestamp()
