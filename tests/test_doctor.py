@@ -5,7 +5,7 @@ from pathlib import Path
 
 from commonroom import doctor
 
-TOML = '[project]\nname = "{n}"\n[roles]\nbuilder = ["{p}:sonnet"]\n'
+TOML = '[project]\nname = "{n}"\n[roles]\ncodex_parallel_builds = false\nbuilder = ["{p}:sonnet"]\n'
 
 
 def tree(root: Path):
@@ -81,6 +81,33 @@ class DoctorTests(unittest.TestCase):
         self.registry(self.project("beta", provider="codex"))
         self.assertEqual(self.run_doctor(tools=("claude", "gh")), 1)
         self.assertTrue(any("codex on PATH: missing" in l for l in self.lines))
+
+    def write_toml(self, root, extra="", roles_extra=""):
+        (root / "room.toml").write_text(
+            f'[project]\nname = "{root.name}"\n{extra}[roles]\n{roles_extra}builder = ["claude:sonnet"]\n', encoding="utf-8")
+
+    def test_codex_parallel_builds_default_counts(self):
+        root = self.project("alpha")
+        self.write_toml(root)
+        self.registry(root)
+        self.assertEqual(self.run_doctor(tools=("claude", "gh")), 1)
+        self.assertTrue(any("codex on PATH: missing" in l and "codex_parallel_builds" in l for l in self.lines))
+
+    def test_codex_opt_outs(self):
+        root = self.project("alpha")
+        self.write_toml(root, extra="[parallel]\ncodex_slots = 0\n")
+        self.registry(root)
+        self.assertEqual(self.run_doctor(tools=("claude", "gh")), 0, self.lines)
+        self.assertFalse(any("codex" in l for l in self.lines))
+        self.lines.clear()
+        self.write_toml(root)
+        self.registry(root, share=0)
+        self.assertEqual(self.run_doctor(tools=("claude", "gh")), 0, self.lines)
+
+    def test_codex_named_hint_gives_reason(self):
+        self.registry(self.project("beta", provider="codex"))
+        self.run_doctor(tools=("claude", "gh"))
+        self.assertTrue(any("codex on PATH: missing" in l and "[roles] list names codex" in l for l in self.lines))
 
     def test_old_python(self):
         self.registry(self.project("alpha"))
