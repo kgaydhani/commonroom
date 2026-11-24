@@ -2238,6 +2238,12 @@ class Dispatcher:
             if result == "BUSY":
                 actions.append(f"main's suite not run in code yet ({line}); next pass")
                 return False
+            once_key = f"main-suite-fail1:{sha}"
+            if result == "FAIL" and self.ledger.marked(self.project, once_key) is None:
+                # One FAIL may be load, not main (commonroom#528): rerun on the next pass before opening a fix task.
+                self.ledger.mark(self.project, once_key)
+                actions.append(f"main's suite failed once on {sha[:7]}; rerunning before opening a fix task")
+                return True
             run = self.ledger.start_run(self.project, f"main {sha[:7]}", "carry", "none", now=started)
             self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"main {sha[:7]}", "head": sha,
                                                           "result": result}])
@@ -2249,16 +2255,20 @@ class Dispatcher:
             if result != "FAIL":
                 return False
             summary = line
+            failing = tuple(getattr(line, "failing", ()))
         elif self.ledger.marked(self.project, red_key) is None:
             return False
         else:
             summary = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-line:")), "")
+            failing = ()
         fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
         if fix:
             actions.append(f"merges held: the suite fails on main {sha[:7]}; #{fix['number']} fixes it")
             return True
         test = checks["test"]
-        body = (f"The suite (`{test}`) fails on main {sha[:7]}, run by the room: {summary}\n\n"
+        names = "".join(f"- `{t}`\n" for t in failing)
+        listed = f"Failing:\n{names}\n" if names else ""
+        body = (f"The suite (`{test}`) fails on main {sha[:7]}, run by the room: {summary}\n\n{listed}"
                 f"The room holds every "
                 f"other merge until the suite passes on main again; this task's PR is the one exception. Find the cause "
                 f"(often two PRs that each passed alone), fix it on this issue's branch, run `{test}`, and open a PR. "

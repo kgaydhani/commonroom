@@ -382,11 +382,13 @@ class MainSuite(Carry):
     def test_a_fail_on_a_new_sha_holds_merges_and_opens_one_task_and_a_pass_on_a_newer_sha_releases_it(self):
         board = self.setup_ready_pr()
         sha = self.sha()
-        self.results = [("FAIL", "exit 1: FAILED (errors=1)")]
+        self.results = [("FAIL", "exit 1: FAILED (errors=1)")] * 2
         d = self.dispatcher(self.cfg(), board)
-        d.housekeeping()
-        d.housekeeping()                                   # a second pass at the same sha
-        self.assertEqual((self.calls, board.merged), ([sha], []))
+        d.housekeeping()                                   # the first FAIL: rerun, no task yet
+        self.assertEqual((self.calls, board.created), ([sha], []))
+        d.housekeeping()                                   # the second FAIL marks it red
+        d.housekeeping()                                   # a third pass at the same sha: no rerun
+        self.assertEqual((self.calls, board.merged), ([sha, sha], []))
         (task,) = board.created
         self.assertEqual(task["title"], f"Main is red: exit 1: FAILED (errors=1) failing on {sha[:7]}")
         self.assertEqual((task["labels"], task["milestone"]),
@@ -394,13 +396,36 @@ class MainSuite(Carry):
         self.assertIn("exit 1: FAILED (errors=1)", task["body"])
         fresh = self.dispatcher(self.cfg(), board)         # a restarted dispatcher: no rerun, no second task
         fresh.housekeeping()
-        self.assertEqual((len(self.calls), len(board.created), board.merged), (1, 1, []))
+        self.assertEqual((len(self.calls), len(board.created), board.merged), (2, 1, []))
         self.write("later.md", "later\n")
         newer = self.commit("main moves again")
         self.results = [("PASS", "Ran 3 tests OK")]
         self.dispatcher(self.cfg(), board).housekeeping()
-        self.assertEqual(self.calls, [sha, newer])
+        self.assertEqual(self.calls, [sha, sha, newer])
         self.assertEqual((len(board.created), board.merged), (1, [222]))
+
+    def test_a_fail_then_a_pass_opens_no_task_and_releases_merges(self):
+        board = self.setup_ready_pr()
+        self.results = [("FAIL", "exit 1: FAILED (errors=1)"), ("PASS", "Ran 3 tests OK")]
+        d = self.dispatcher(self.cfg(), board)
+        actions = []
+        self.assertTrue(d.main_suite_red([], actions))
+        self.assertIn(f"main's suite failed once on {self.sha()[:7]}; rerunning before opening a fix task", actions)
+        self.assertFalse(d.main_suite_red([], []))
+        self.assertEqual((len(self.calls), board.created), (2, []))
+        d.housekeeping()
+        self.assertEqual((len(self.calls), board.created, board.merged), (2, [], [222]))
+
+    def test_the_red_task_lists_the_failing_tests(self):
+        board = self.setup_ready_pr()
+        line = carry.Line("exit 1: FAILED (failures=1)")
+        line.failing = ("FAIL: test_x (tests.test_y.Y.test_x)",)
+        self.results = [("FAIL", line)] * 2
+        d = self.dispatcher(self.cfg(), board)
+        d.main_suite_red([], [])
+        d.main_suite_red([], [])
+        (task,) = board.created
+        self.assertIn("Failing:\n- `FAIL: test_x (tests.test_y.Y.test_x)`", task["body"])
 
     def test_a_project_with_ci_never_runs_the_suite_on_main(self):
         board = self.setup_ready_pr()
