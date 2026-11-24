@@ -182,6 +182,12 @@ How he said to treat these, after a session turned the last one into new wording
 
 24 Nov 2026, after two sessions did another project's work themselves.
 
+> my problem isnt even that u tried to fix it, my problem is that u did so blind, and without using the capabilties that are the very thing we are trying to set up here, the whole point of this common room layer, is so that u can make a quick decision that says, is this something i could query quickly [...] and it very well could have been, say the pipeline was up to date, and had fresh crawls and was actually working, then by all means u could have spun up a shortlist for me, but 1. the moment u saw it was a mess and there was no wiring that should have been alarm bells that ok this is not my job, let me message the common room director or figure out whos job this is. and 2. even befor ethis, you should know that a big part of the magazine is these shortlists and u can assume its something i have done before and would have a lot of thought into how i want my picks done, yet u did none of that research and instead went in blind
+
+> a big point is that the chats should still have agency and never be stopped by hard rules, but it should be intelligent, that is the point. its like with this chat u keep asking me, should i make a rule, should i make y a ruile. i dont know. u were supposed to synthesise and reasech and make my vision and dream possible
+
+24 Nov 2026, the first to the session that had gone in blind, the second to the session that kept offering him rules.
+
 ## His suggestions about how
 
 These are his guesses at mechanisms. He said how to treat them:
