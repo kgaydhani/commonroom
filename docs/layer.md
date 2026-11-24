@@ -60,7 +60,11 @@ One thin layer between him and the AI tools, on a workstation that is "claude fi
 
 **3. A map of his folders, never a reorganisation.** Every folder he has worked in becomes a place the room knows: path, a line on what it is, when it was last used, whether it still exists. It is found from the session records the room already reads, with no registration step. Most places never run workers. *Differs from his line:* he asked whether Claude should decide how his folders are organised. A folder per piece of work suits the tools as they are, and moving files breaks sessions, memory and links. The map does the job of the tidy-up.
 
-**4. Routing is done by the session he is already in, and every route is shown.** No classifier sits in front. The session gets the map's few active lines at the start, and the model already running, which is the most capable thing present, says where something belongs. Sending it there uses what exists: a note to that place, a hand to another agent, a message to a live session there, or a fresh session started in that folder with a brief. Each route is written to the ledger and shown on the page, so a wrong one is seen. *Differs from his line:* "it is all triaged properly under the hood" would hide exactly the failure that the research says kills trust.
+**4. The session he is in decides where something belongs. The place that owns it does the work.** No classifier sits in front. The session gets the directory at the start: the few active places, what each is for, and who answers for it. When the conversation turns to something another place owns, the session sends it there and stays on its own purpose. It tells him in one line who has it and when to expect an answer, and offers a direct session if it looks like a long exchange. The answer comes back as a short message, and only the answer enters his conversation. Most of the time nothing needs sending. Each route is written to the ledger and shown on the page, so a wrong one is seen.
+
+His words: "the whole point of commonr oom is linking and decluterrign session contexts so that we have extremely able memory separation and we reduce hallucinations". The first draft of this conclusion had the session he was in doing the work with other sessions as sources. Two sessions did exactly that on 24 Nov: one meant for thinking through his life queried another project's database for a purchase, and the session that designs this layer spent an hour debugging another project's nightly job. Both were told to look things up without being told whose things they were.
+
+*Differs from his line in one place.* He named long-lived sessions as the ones with "the full context". Waking a session that has been idle for days rewrites all of its context, often hundreds of thousands of tokens, and the longest sessions are where quality is lowest. A place should answer from its record: its instructions, digest, charter and memory, read by a fresh session started there, or by its room's own director. Where a fresh session in a place cannot answer what the old one could, that is a gap in the place's record, and closing it is worth more than keeping the old session alive.
 
 **5. One home session, kept light, in place of one chat.** A place that is no project: the folder he opens to talk about anything. It holds the map and the person file and no project work, so it stays small and can be replaced at any time. *Differs from his line:* one long chat is the most expensive pattern in his own usage and the one that loses most. If the vendor's coordinator grows to cover local folders, the home session is dropped and the map stays.
 
@@ -94,9 +98,9 @@ Four things, and no more: start a session in a folder with a brief; accept added
 ## Build order
 
 1. **Install.** One command installs the plugin at user scope for Claude Code and the hooks for Codex, registers the beat, and removes machine-specific paths. `room doctor` checks all of it. Removing it is one command.
-2. **Places.** The registry accepts a folder with no `room.toml` and no share. Places are found from session records. The hooks answer in any place.
+2. **Places and the directory.** The registry accepts a folder with no `room.toml` and no share. Places are found from session records. Each place says what it is for and who answers for it. The hooks answer in any place.
 3. **The person file.** One capped file, loaded through the user-level instruction file of each vendor, with a command to see and edit it and a steward check for stale lines. Filling it from the scattered profiles is done once, with him.
-4. **Routes.** The map's active lines at session start, a route recorded in the ledger whenever a session sends something elsewhere, and the home place.
+4. **Routes.** The directory at session start; sending a question to the place that owns it and getting a short answer back; a route recorded in the ledger each time; the offer of a direct session; and the home place.
 5. **Limits.** The list, its installation as deny rules, and the guard for his own sessions and for Codex.
 6. **The glance.** The page's layer section and the corrections count.
 7. **Readers and findings.** A steward check for notes nobody has read, the finding route from any session, and the door for what happened elsewhere.
@@ -107,6 +111,7 @@ Sharing with a second person (design-v3 slice 6) follows, on the same install.
 
 - A new session in a folder the room has never seen knows who he is, and the layer added under 800 tokens to it.
 - Nothing on a second machine is set up by hand.
+- A session keeps to its purpose: questions that belong to another place are sent there, and the share of a session's work done in other places' folders falls.
 - Over two weeks of his use, the count of corrections and repeats falls, and no session lives past three days without having been offered a fresh one.
 - The share of his usage that is carrying context falls from the 90% measured on 20 Nov.
 - He has not edited a settings file to make any of it work.
