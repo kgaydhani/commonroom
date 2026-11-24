@@ -121,14 +121,20 @@ LAUNCHERS = ("python", "python3", "py")
 def probe_interpreter(command: str, worktree: Path, env: dict | None = None) -> str:
     """The Python version the test command runs under (commonroom#532): ask the command's first word, when it is a
     Python launcher (`python`, `py`, or a path ending `python.exe`). Otherwise, or if the probe fails, `unknown`."""
-    words = command.strip().split(None, 1)
-    first = words[0].strip("\"'") if words else ""
+    text = command.strip()
+    if text[:1] in ("\"", "'") and text.find(text[0], 1) > 0:
+        raw = text[:text.find(text[0], 1) + 1]   # a quoted path may hold spaces
+    else:
+        raw = text.split(None, 1)[0] if text else ""
+    first = raw.strip("\"'")
     base = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
     if not (base in LAUNCHERS or base in tuple(f"{n}.exe" for n in LAUNCHERS) or base.endswith("python.exe")):
         return "unknown"
     try:
-        done = subprocess.run([first, "-c", "import sys; print(sys.version)"], cwd=worktree, env=env, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=30)
+        # Through the shell, as the suite runs: the shell finds `python` by the worktree and the env's PATH.
+        done = subprocess.run(f'{raw} -c "import sys; print(sys.version)"', shell=True, cwd=worktree, env=env,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              stdin=subprocess.DEVNULL, timeout=30)
     except (OSError, subprocess.SubprocessError):
         return "unknown"
     version = " ".join(done.stdout.split())

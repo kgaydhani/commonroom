@@ -451,7 +451,26 @@ class MainSuite(Carry):
         with mock.patch.object(carry.subprocess, "run") as run:
             run.return_value = mock.Mock(returncode=0, stdout="3.12.1 (main) [GCC]\n")
             self.assertEqual(carry.probe_interpreter("py -m unittest", self.root), "3.12.1 (main) [GCC]")
-            self.assertEqual(run.call_args.args[0][:2], ["py", "-c"])
+            self.assertTrue(run.call_args.args[0].startswith("py -c "))
+            self.assertTrue(run.call_args.kwargs["shell"])
+
+    def test_the_probe_finds_python_the_way_the_shell_does(self):
+        shim = Path(self.tmp.name) / "shim dir"
+        shim.mkdir()
+        if os.name == "nt":
+            (shim / "python.bat").write_text("@echo FAKE-9.9 shim\n")
+        else:
+            (shim / "python").write_text("#!/bin/sh\necho FAKE-9.9 shim\n")
+            (shim / "python").chmod(0o755)
+        env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ.get("PATH", ""))
+        self.assertEqual(carry.probe_interpreter("python -m unittest", self.root, env), "FAKE-9.9 shim")
+
+    def test_the_probe_takes_a_quoted_launcher_path_with_spaces(self):
+        exe = r'"C:\Program Files\PyManager\python.exe"'
+        with mock.patch.object(carry.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="3.13.0 (x)\n")
+            self.assertEqual(carry.probe_interpreter(f"{exe} -m unittest", self.root), "3.13.0 (x)")
+            self.assertTrue(run.call_args.args[0].startswith(exe + " -c "))
 
     def stub_commands(self):
         self.commands = []
