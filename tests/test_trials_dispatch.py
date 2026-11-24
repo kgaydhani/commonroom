@@ -96,6 +96,16 @@ class TrialRuns(test_resume.Resume):
         self.assertTrue(text.split("|")[1].startswith(str(dispatch.POLICY["rework_resume_seconds"])))
         self.assertEqual(outs, ["trial:t1=control"])
 
+    def test_axiom_a7_a_declared_trial_and_ways_files_change_a_prompt_and_a_number_with_no_code_change(self):
+        both = PROMPT.replace('prompts = { review = "trials/review-v2.md" }',
+                              'prompts = { review = "trials/review-v2.md" }\npolicy = { rework_resume_seconds = 7 }')
+        text, outs = self.go(self.number_in("variant", both))
+        prompt, number = text.split("|")
+        self.assertEqual(prompt, "VARIANT REVIEW")
+        self.assertEqual(number[:1], "7")
+        text, outs = self.go(self.number_in("control", both))
+        self.assertTrue(text.startswith(f"{dispatch.WAYS['review']}|{dispatch.POLICY['rework_resume_seconds']}"))
+
     def test_a_project_ways_override_wins_and_records_nothing(self):
         n = self.number_in("variant")
         folder = self.root / "team" / "prompts"
