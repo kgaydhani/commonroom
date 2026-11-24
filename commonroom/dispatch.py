@@ -2054,11 +2054,14 @@ class Dispatcher:
             return False
         try:
             self.board.ready_pr(pr["number"])
-            if why and hasattr(self.board, "comment_pr"):
-                self.board.comment_pr(pr["number"], why)
         except RuntimeError as exc:
             self.log(f"   could not mark PR #{pr['number']} ready: {str(exc)[:160]}")
             return False
+        if why and hasattr(self.board, "comment_pr"):
+            try:
+                self.board.comment_pr(pr["number"], why)
+            except RuntimeError as exc:
+                self.log(f"   PR #{pr['number']} is ready, but the comment failed: {str(exc)[:160]}")
         self.log(f"   PR #{pr['number']} was a draft: marked ready for review")
         return True
 
@@ -2072,6 +2075,8 @@ class Dispatcher:
             if not pr.get("isDraft") or not issue or issue["state"] != "OPEN":
                 continue
             names = labels(issue)
+            if claimed(names) or EXTERNAL in names:
+                continue   # `room claim` or claim:external: the room moves nothing here
             if "status:review" not in names or "status:in-progress" in names or f"#{issue['number']}" in running:
                 continue
             if self.undraft(pr, "This PR was a draft, and the room doesn't review drafts. #%d is in review, so I marked "

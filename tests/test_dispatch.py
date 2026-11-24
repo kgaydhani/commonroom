@@ -2431,10 +2431,12 @@ class WithLedger(unittest.TestCase):
 
     def test_housekeeping_marks_stuck_room_drafts_ready_once_and_leaves_others(self):
         issues = [issue(1, ["status:review"]), issue(2, ["status:in-progress"]), issue(3, ["status:review"]),
-                  issue(4, ["status:review"])]
+                  issue(4, ["status:review"]), issue(5, ["status:review", "claimed:kieran"]),
+                  issue(6, ["status:review", dispatch.EXTERNAL])]
         prs = [{"number": 11, "headRefName": "i1-a", "isDraft": True}, {"number": 12, "headRefName": "i2-a", "isDraft": True},
                {"number": 13, "headRefName": "owner-work", "isDraft": True}, {"number": 14, "headRefName": "i3-a", "isDraft": False},
-               {"number": 15, "headRefName": "i4-a", "isDraft": True}]
+               {"number": 15, "headRefName": "i4-a", "isDraft": True},
+               {"number": 16, "headRefName": "i5-a", "isDraft": True}, {"number": 17, "headRefName": "i6-a", "isDraft": True}]
         details = {p["number"]: {"commits": [{"committedDate": "2026-10-11T12:00:00Z"}], "comments": []} for p in prs}
         fake = LabelBoard(issues, prs=prs, details=details)
         fake.ready, fake.pr_comments = [], []
