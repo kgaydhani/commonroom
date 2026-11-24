@@ -12,8 +12,18 @@ class ScheduleTest(unittest.TestCase):
         cmd, check = schedule.build("win32", r"C:\rooms\cr", 10)
         self.assertTrue(cmd.startswith("schtasks /create"))
         self.assertIn("/mo 10", cmd)
-        self.assertIn(r"wscript.exe C:\rooms\cr\beat.vbs", cmd)
+        self.assertIn(r'wscript.exe \"C:\rooms\cr\beat.vbs\"', cmd)
         self.assertTrue(check.startswith("schtasks /query /tn"))
+
+    def test_windows_1440_is_daily_not_minute(self):
+        cmd, _ = schedule.build("win32", r"C:\x", 1440)
+        self.assertIn("/sc daily", cmd)
+        self.assertNotIn("/sc minute", cmd)
+        self.assertIn("/sc minute /mo 1439", schedule.build("win32", r"C:\x", 1439)[0])
+
+    def test_windows_path_with_space_is_quoted_for_wscript(self):
+        cmd, _ = schedule.build("win32", r"C:\Users\Jo Smith\cr", 15)
+        self.assertIn(r'/tr "wscript.exe \"C:\Users\Jo Smith\cr\beat.vbs\""', cmd)
 
     def test_linux_and_macos_give_cron_line(self):
         for plat in ("linux", "darwin"):

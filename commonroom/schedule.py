@@ -15,7 +15,10 @@ def build(platform: str, checkout: str, minutes: int = DEFAULT_MINUTES) -> tuple
         raise ValueError(f"--minutes must be from 1 to 1440, not {minutes}")
     if platform.startswith("win"):
         vbs = str(PureWindowsPath(checkout) / "beat.vbs")
-        create = f'schtasks /create /sc minute /mo {minutes} /tn {TASK_NAME} /tr "wscript.exe {vbs}"'
+        # schtasks accepts /sc minute /mo 1-1439 only, so a whole day is /sc daily. The script path is quoted
+        # inside /tr (as \") so a checkout path with spaces still reaches wscript as one argument.
+        every = "/sc daily" if minutes == 1440 else f"/sc minute /mo {minutes}"
+        create = f'schtasks /create {every} /tn {TASK_NAME} /tr "wscript.exe \\"{vbs}\\""'
         return create, f"schtasks /query /tn {TASK_NAME}"
     if minutes < 60:
         when = f"*/{minutes} * * * *"
