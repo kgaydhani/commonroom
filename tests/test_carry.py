@@ -1,8 +1,11 @@
 """commonroom#226: an approval carries across a clean merge of main once the room has run the tests on the new head.
 Real git and a real (fake) test command; a fake board."""
 import copy
+import os
+import sys
 import subprocess
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from commonroom import carry, dispatch, metrics
@@ -427,6 +430,29 @@ class MainSuite(Carry):
         (task,) = board.created
         self.assertIn("Failing:\n- `FAIL: test_x (tests.test_y.Y.test_x)`", task["body"])
 
+    def test_the_red_task_names_the_kept_log_and_the_interpreter(self):
+        board = self.setup_ready_pr()
+        sha = self.sha()
+        line = carry.Line("exit 1: FAILED (failures=1)")
+        line.interpreter = "3.99.0 (mock)"
+        self.results = [("FAIL", line)] * 2
+        d = self.dispatcher(self.cfg(), board)
+        folder = Path(d.ledger.path).parent / "suite-logs"
+        folder.mkdir(parents=True, exist_ok=True)
+        log = carry.kept_log(folder, d.project, sha)
+        log.write_text("x")
+        d.main_suite_red([], [])
+        d.main_suite_red([], [])
+        (task,) = board.created
+        self.assertIn(f"log: {log}", task["body"])
+        self.assertIn("interpreter: 3.99.0 (mock)", task["body"])
+
+    def test_the_interpreter_probe_runs_the_command_python_in_the_worktree(self):
+        with mock.patch.object(carry.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="3.12.1 (main) [GCC]\n")
+            self.assertEqual(carry.probe_interpreter("py -m unittest", self.root), "3.12.1 (main) [GCC]")
+            self.assertEqual(run.call_args.args[0][:2], ["py", "-c"])
+
     def test_a_project_with_ci_never_runs_the_suite_on_main(self):
         board = self.setup_ready_pr()
         d = self.dispatcher(self.cfg(ci=True), board)
@@ -444,8 +470,51 @@ class MainSuite(Carry):
         self.assertEqual(len(self.calls), 2)
 
 
+class KeptLog(Carry):
+    """commonroom#532: a failing suite on main keeps its log, and the red task names it and the interpreter."""
+
+    def suite(self, code, keep=True, n=0):
+        folder = Path(self.tmp.name) / "ledger" / "suite-logs"
+        sha = self.sha()
+        cmd = f'"{sys.executable}" -c "import sys; print(1234); sys.exit({code})"'
+        result, line = carry.run_suite(self.root, sha, cmd,
+                                       Path(self.tmp.name) / "wt" / f"main-suite{n}", Path(self.tmp.name) / f"lock{n}", 1,
+                                       keep=(folder, "proj") if keep else None)
+        return result, line, folder, sha
+
+    def sha(self):
+        return self.git("rev-parse", "main")
+
+    def test_a_fail_keeps_its_log_and_only_the_newest_three_stay(self):
+        result, line, folder, sha = self.suite(1)
+        self.assertEqual(result, "FAIL")
+        self.assertIn("1234", (folder / f"proj-{sha[:7]}.log").read_text())
+        self.assertEqual(line.log, folder / f"proj-{sha[:7]}.log")
+        made = [folder / f"proj-{sha[:7]}.log"]
+        os.utime(made[0], (1000, 1000))
+        for i in range(1, 4):
+            self.write("n.txt", f"{i}\n")
+            self.commit(f"c{i}")
+            self.suite(1, n=i)
+            made.append(folder / f"proj-{self.sha()[:7]}.log")
+            os.utime(made[-1], (1000 + i, 1000 + i))
+        self.assertEqual([f.exists() for f in made], [False, True, True, True])
+
+    def test_pass_and_no_keep_leave_nothing(self):
+        self.assertEqual(self.suite(0)[0], "PASS")
+        self.assertEqual(self.suite(1, keep=False, n=1)[0], "FAIL")
+        self.assertFalse((Path(self.tmp.name) / "ledger" / "suite-logs").exists())
+
+    def test_the_interpreter_probe_only_asks_python_launchers(self):
+        self.assertEqual(carry.probe_interpreter("make test", self.root), "unknown")
+        self.assertEqual(carry.probe_interpreter("pytest -q", self.root), "unknown")
+        self.assertIn(sys.version.split()[0], carry.probe_interpreter(f'"{sys.executable}" -c pass', self.root)
+                      if sys.executable.lower().endswith("python.exe") else sys.version)
+
+
 for _name in [n for n in dir(Carry) if n.startswith("test_")]:
     setattr(MainSuite, _name, None)   # MainSuite builds on Carry's repo helpers, not its tests
+    setattr(KeptLog, _name, None)
 
 
 class DirectorDecided(Carry):

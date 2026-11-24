@@ -94,6 +94,8 @@ class Line(str):
     """The result line, with the names of the failing tests (`FAIL:`/`ERROR:` lines of unittest's output, at most 10)
     in `.failing`. A plain string where a caller or a test double has none."""
     failing: tuple = ()
+    log = None
+    interpreter = "unknown"
 
 
 def failing_tests(output: str) -> tuple:
@@ -112,10 +114,49 @@ def pre_review_comment(result: str, head: str, command: str, line: str) -> str:
     return f"{first}\n\n{PRE_REVIEW} A reviewer follows; this run doesn't approve the PR."
 
 
+KEEP_LOGS = 3
+LAUNCHERS = ("python", "python3", "py")
+
+
+def probe_interpreter(command: str, worktree: Path, env: dict | None = None) -> str:
+    """The Python version the test command runs under (commonroom#532): ask the command's first word, when it is a
+    Python launcher (`python`, `py`, or a path ending `python.exe`). Otherwise, or if the probe fails, `unknown`."""
+    words = command.strip().split(None, 1)
+    first = words[0].strip("\"'") if words else ""
+    base = first.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if not (base in LAUNCHERS or base in tuple(f"{n}.exe" for n in LAUNCHERS) or base.endswith("python.exe")):
+        return "unknown"
+    try:
+        done = subprocess.run([first, "-c", "import sys; print(sys.version)"], cwd=worktree, env=env, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    version = " ".join(done.stdout.split())
+    return version if done.returncode == 0 and version else "unknown"
+
+
+def kept_log(folder: Path, project: str, sha: str) -> Path:
+    return folder / f"{project}-{sha[:7]}.log"
+
+
+def keep_log(log: Path, folder: Path, project: str, sha: str) -> Path:
+    """Copy a failing suite's log to `folder`, and keep only the newest KEEP_LOGS of this project's."""
+    folder.mkdir(parents=True, exist_ok=True)
+    target = kept_log(folder, project, sha)
+    shutil.copyfile(log, target)
+    mine = re.compile(rf"{re.escape(project)}-[0-9a-f]{{7}}\.log")
+    old = sorted((f for f in folder.iterdir() if mine.fullmatch(f.name) and f != target),
+                 key=lambda f: f.stat().st_mtime, reverse=True)
+    for stale in old[KEEP_LOGS - 1:]:
+        stale.unlink(missing_ok=True)
+    return target
+
+
 def run_suite(root: Path, head: str, command: str, worktree: Path, lock: Path, max_minutes: float,
-              env_for=workers_mod.worker_env) -> tuple[str, str]:
+              env_for=workers_mod.worker_env, keep: tuple[Path, str] | None = None) -> tuple[str, str]:
     """Run `command` on commit `head` in a temporary detached worktree, under the per-project suite lock `room.py
-    check` uses. Returns (PASS|FAIL|INCOMPLETE|BUSY, result line). BUSY: another run holds the lock; nothing ran."""
+    check` uses. Returns (PASS|FAIL|INCOMPLETE|BUSY, result line). BUSY: another run holds the lock; nothing ran.
+    `keep` = (folder, project): a FAIL's log is kept there, and the interpreter it ran under is on the line."""
     try:
         if claim_lock(lock) is not None:
             return "BUSY", "the suite lock is held by another run"
@@ -140,6 +181,12 @@ def run_suite(root: Path, head: str, command: str, worktree: Path, lock: Path, m
         line = summary(output)
         found = Line(line if code == 0 else f"exit {code}: {line}")
         found.failing = failing_tests(output) if code else ()
+        if code and keep:
+            try:
+                found.log = keep_log(log, keep[0], keep[1], head)
+            except OSError:
+                pass
+            found.interpreter = probe_interpreter(command, worktree, env_for("claude", worktree))
         return ("PASS" if code == 0 else "FAIL"), found
     except OSError as exc:
         return "INCOMPLETE", f"{type(exc).__name__}: {str(exc)[:150]}"
