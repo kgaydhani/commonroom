@@ -89,3 +89,29 @@ class Handover(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReplacementStreams(unittest.TestCase):
+    def test_child_gets_this_process_output_streams(self):
+        with tempfile.TemporaryFile("w+") as out, tempfile.TemporaryFile("w+") as err:
+            with mock.patch.object(cli.sys, "stdout", out), mock.patch.object(cli.sys, "stderr", err), \
+                    mock.patch.object(cli.subprocess, "Popen") as popen:
+                cli.start_replacement(["x"], "somewhere")
+            popen.assert_called_once_with(["x"], cwd="somewhere", stdout=out, stderr=err)
+
+    def test_real_child_writes_to_the_same_file(self):
+        with tempfile.TemporaryFile("w+b") as out:
+            class S:
+                def flush(self): pass
+                def fileno(self): return out.fileno()
+            with mock.patch.object(cli.sys, "stdout", S()), mock.patch.object(cli.sys, "stderr", S()):
+                p = cli.start_replacement([sys.executable, "-c", "import sys;print('o');print('e',file=sys.stderr)"], os.getcwd())
+            p.wait()
+            out.seek(0)
+            self.assertEqual(sorted(out.read().split()), [b"e", b"o"])
+
+    def test_no_stream_handle_falls_back(self):
+        with mock.patch.object(cli.sys, "stdout", None), mock.patch.object(cli.sys, "stderr", None), \
+                mock.patch.object(cli.subprocess, "Popen") as popen:
+            cli.start_replacement(["x"], "d")
+        popen.assert_called_once_with(["x"], cwd="d")
