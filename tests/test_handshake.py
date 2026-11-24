@@ -543,6 +543,92 @@ class NoModel(Room):
                     self.assertEqual(self.room(*argv, cwd=self.alpha)[0], 0)
 
 
+class CheckoutBehind(Room):
+    """commonroom#524: the digest says when a project's checkout is behind its local origin/main."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            subprocess.run(["git", "--version"], capture_output=True, check=True)
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("git is not installed")
+        self.reg = self.register()
+        self.origin = self.tmp / "origin.git"
+        self.git(self.tmp, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        self.git(self.alpha, "init", "-q", "-b", "main")
+        self.git(self.alpha, "add", "-A")
+        self.git(self.alpha, "commit", "-qm", "first")
+        self.git(self.alpha, "remote", "add", "origin", str(self.origin))
+        self.git(self.alpha, "push", "-q", "origin", "main")
+        self.other = self.tmp / "other"
+        self.git(self.tmp, "clone", "-q", str(self.origin), str(self.other))
+
+    def git(self, cwd, *argv):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *argv], cwd=cwd, check=True,
+                       capture_output=True)
+
+    def push_two(self, room_toml=False):
+        for i in range(2):
+            (self.other / f"f{i}.txt").write_text("x", encoding="utf-8")
+            if room_toml and i == 1:
+                (self.other / "room.toml").write_text('[project]\nname = "alpha"\n[heartbeat]\ncommands = []\n', encoding="utf-8")
+            self.git(self.other, "add", "-A")
+            self.git(self.other, "commit", "-qm", f"c{i}")
+        self.git(self.other, "push", "-q", "origin", "main")
+        self.git(self.alpha, "fetch", "-q", "origin")
+
+    def digest(self):
+        ledger = Ledger()
+        try:
+            return handshake.build_digest(self.reg, self.reg.projects["alpha"], ledger)
+        finally:
+            ledger.close()
+
+    def test_two_behind_with_room_toml_changed(self):
+        self.push_two(room_toml=True)
+        out = self.digest()
+        self.assertIn("## Checkout behind main", out)
+        self.assertIn("(branch main) is 2 commits behind origin/main, tree clean; room.toml differs", out)
+
+    def test_two_behind_with_room_toml_unchanged(self):
+        self.push_two()
+        out = self.digest()
+        self.assertIn("(branch main) is 2 commits behind origin/main, tree clean; room.toml is the same", out)
+
+    def test_uncommitted_changes_are_named(self):
+        self.push_two()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n# mine\n', encoding="utf-8")
+        self.assertIn("uncommitted changes", self.digest())
+
+    def test_up_to_date_ahead_no_origin_or_no_repo_has_no_section(self):
+        self.assertNotIn("Checkout behind main", self.digest())
+        (self.alpha / "g.txt").write_text("x", encoding="utf-8")
+        self.git(self.alpha, "add", "-A")
+        self.git(self.alpha, "commit", "-qm", "ahead")
+        self.assertNotIn("Checkout behind main", self.digest())
+        self.git(self.alpha, "remote", "remove", "origin")
+        self.assertNotIn("Checkout behind main", self.digest())
+        self.assertEqual(handshake._checkout_behind(registry.Project("beta", str(self.beta), 20)), "")   # not a repo
+
+    def test_building_the_digest_runs_no_network_or_tree_changing_git(self):
+        self.push_two()
+        before = self.refs()
+        real, seen = subprocess.run, []
+        def record(argv, *a, **k):
+            seen.append(list(argv))
+            return real(argv, *a, **k)
+        with mock.patch.object(subprocess, "run", record):
+            self.digest()
+        banned = {"fetch", "pull", "checkout", "reset", "merge", "clone", "push"}
+        self.assertTrue(seen)
+        self.assertFalse([a for a in seen if banned & set(a[1:])], seen)
+        self.assertEqual(self.refs(), before)
+
+    def refs(self):
+        run = lambda *a: subprocess.run(["git", *a], cwd=self.alpha, capture_output=True, text=True).stdout
+        return run("rev-parse", "HEAD"), run("for-each-ref"), run("status", "--porcelain")
+
+
 class Corrections(Room):
     """commonroom#399: `--kind correction` notes, counted in the project digest and in the auditor's JSON summary."""
     NOW = datetime(2026, 11, 20, 12, 0).timestamp()
@@ -623,7 +709,7 @@ class WaitingOnYou(Room):
         self.assertEqual(section.strip().split("\n"), ["- #3 older, due 2026-11-19, overdue", "- #9 newer, no date"])
         args, timeout = self.calls[0]
         self.assertEqual((args[:2], "owner:human" in args, timeout), (["issue", "list"], True, handshake.TRAIL_TIMEOUT))
-        self.assertEqual(len([c for c in self.calls if "open" in c[0]]), 1)
+        self.assertEqual(len([c for c in self.calls if "open" in c[0] and "owner:human" in c[0]]), 1)
 
     def test_a_due_date_today_or_later_is_not_overdue(self):
         self.task(1, "today", "Due: 2026-11-20")
@@ -844,7 +930,7 @@ class Trail(Room):
 
     def test_no_notes_or_no_repo_means_no_board_call_and_no_line(self):
         def only_waiting(args, timeout=30):   # the one board call the digest makes for the owner's tasks (#409)
-            if "owner:human" not in args:
+            if "owner:human" not in args and "number,title,labels,milestone,createdAt" not in args:   # the self-sufficient read (#549)
                 raise AssertionError("board read")
             return []
         self.gh = mock.Mock(side_effect=only_waiting)
@@ -906,3 +992,109 @@ class LocalBoardDigest(Room):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelfSufficient(Interventions):
+    """commonroom#549: the digest's `## Self-sufficient?` section, one line per check."""
+
+    def setUp(self):
+        super().setUp()
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\nrepo = "me/alpha"\n[goal]\nmilestone = "M"\n', encoding="utf-8")
+        self.land(2)
+        self.ready = {"number": 9, "title": "work", "labels": [{"name": "status:ready"}], "milestone": {"title": "M"},
+                      "createdAt": "2026-11-20T00:00:00Z"}
+        self.items = [self.ready]
+
+    def section(self, fail=False):
+        def gh(args, timeout=30):
+            if fail:
+                raise RuntimeError("down")
+            if "--label" in args:   # a real `gh` filters by label
+                want = args[args.index("--label") + 1]
+                return [i for i in self.items if any(l["name"] == want for l in i.get("labels") or [])]
+            return self.items
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            with mock.patch.object(handshake.board, "gh", gh):
+                text = handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+        finally:
+            ledger.close()
+        return text.split("## Self-sufficient?\n")[1].split("\n\n")[0].strip().split("\n")
+
+    def breaker(self, days_ago, cleared=False):
+        ledger = Ledger()
+        try:
+            ledger.trip("alpha", "no_output", "x", now=self.NOW - days_ago * self.DAY)
+            if cleared:
+                ledger.clear_breakers("alpha", now=self.NOW)
+        finally:
+            ledger.close()
+
+    def test_all_five_hold(self):
+        lines = self.section()
+        self.assertEqual(len(lines), 6, lines)
+        self.assertEqual(lines[-1], "Self-sufficient: yes")
+        self.assertTrue(all(l.endswith(": yes") for l in lines[:-1]))
+
+    def failing(self, index):
+        lines = self.section()
+        self.assertTrue(lines[index].endswith(": no"), lines)
+        self.assertEqual(lines[-1], "Self-sufficient: no (4 of 5 hold)")
+
+    def test_an_intervention_fails_check_one(self):
+        self.note(1)
+        self.failing(0)
+
+    def test_no_landing_fails_check_one(self):
+        ledger = Ledger()
+        try:
+            ledger.db.execute("DELETE FROM runs")
+            ledger.db.commit()
+        finally:
+            ledger.close()
+        self.failing(0)
+
+    def test_red_main_fails_check_two(self):
+        self.items.append({"number": 3, "title": "Main is red: tests", "labels": [], "milestone": None, "createdAt": "2026-11-20T00:00:00Z"})
+        self.failing(1)
+
+    def test_old_escalation_fails_check_three_but_a_young_one_does_not(self):
+        esc = {"number": 4, "title": "e", "labels": [{"name": "needs:director"}], "milestone": None, "createdAt": "2026-11-20T00:00:00Z"}
+        self.items.append(dict(esc, createdAt="2026-11-19T11:00:00Z"))
+        self.failing(2)
+        self.items[-1] = dict(esc, createdAt="2026-11-20T01:00:00Z")
+        self.assertEqual(self.section()[-1], "Self-sufficient: yes")
+
+    def test_a_breaker_in_7_days_fails_check_four_even_when_cleared(self):
+        self.breaker(2, cleared=True)
+        self.failing(3)
+
+    def test_an_old_breaker_does_not(self):
+        self.breaker(9)
+        self.assertEqual(self.section()[-1], "Self-sufficient: yes")
+
+    def test_nothing_ready_fails_check_five_unless_only_parked_remain(self):
+        self.items = [dict(self.ready, labels=[])]
+        self.failing(4)
+        self.items = [dict(self.ready, labels=[{"name": "parked"}])]
+        self.assertEqual(self.section()[-1], "Self-sufficient: yes")
+
+    def test_an_unreadable_board_says_unknown_and_is_never_yes(self):
+        lines = self.section(fail=True)
+        for i in (0, 1, 2, 4):
+            self.assertTrue(lines[i].endswith(": unknown"), lines)
+        self.assertTrue(lines[3].endswith(": yes"))
+        self.assertEqual(lines[-1], "Self-sufficient: no (1 of 5 hold)")
+
+    def test_no_goal_milestone_counts_four_checks(self):
+        (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\nrepo = "me/alpha"\n', encoding="utf-8")
+        lines = self.section()
+        self.assertEqual(len(lines), 5)
+        self.assertEqual(lines[-1], "Self-sufficient: yes")
+        self.breaker(1)
+        self.assertEqual(self.section()[-1], "Self-sufficient: no (3 of 4 hold)")
+
+
+for _name in [n for n in dir(Interventions) if n.startswith("test_")]:   # SelfSufficient borrows the helpers, not the tests
+    setattr(SelfSufficient, _name, None)
