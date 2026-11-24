@@ -52,7 +52,8 @@ class HeartbeatFailing(unittest.TestCase):
         self.assertEqual([f["number"] for f in steward.heartbeat_failing(runs, 3, ["x", "b"])], [2])
 
     def test_unstartable_command_counts_as_failure(self):
-        cfg = {"_root": self.tmp.name, "project": {"name": "demo"}, "heartbeat": {"commands": [["no-such-tool-xyz"]]}}
+        self.commands = [["no-such-tool-xyz"]]
+        cfg = {"_root": self.tmp.name, "project": {"name": "demo"}, "heartbeat": {"commands": self.commands}}
         for _ in range(3):
             services.tick(cfg, ledger=self.ledger)
         self.assertEqual(len(self.found()), 1)
