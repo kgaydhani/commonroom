@@ -1,6 +1,6 @@
 [project]
 name = "commonroom"
-version = "2.0.0"
+version = "3.0.0.dev0"
 description = "Goal-driven AI studio: usage gating, ledger and dispatch for Claude Code and Codex workers"
 requires-python = ">=3.11"
 dependencies = []
@@ -20,4 +20,4 @@ include = ["commonroom*"]
 
 # What the room tells workers (commonroom#216) and its ways-of-working numbers (commonroom#217): read at import.
 [tool.setuptools.package-data]
-commonroom = ["ways/prompts/*.md", "ways/handshake/*.md", "ways/comments/*.md", "ways/pie/*.md", "ways/policy.toml", "ways/templates/*"]
+commonroom = ["ways/prompts/*.md", "ways/handshake/*.md", "ways/comments/*.md", "ways/pie/*.md", "ways/policy.toml", "ways/templates/*", "ways/trials.toml", "static/dashboard.html"]
