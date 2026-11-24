@@ -280,6 +280,8 @@ Each slice is a handful of small pull requests through the room's own process.
 
 Slice 1 is proved when three projects run for two weeks at different shares without the owner pausing the room.
 
+Since 24 Nov 2026 the order from here is set by [layer.md](layer.md): packaging moves first, as one install that is present in every session, followed by places, the person file, routes, limits and the page. Sharing with a second person follows on the same install.
+
 ## Open questions for the owner
 
 0. Are the eleven axioms yours? Which are wrong, missing or not really axioms?
