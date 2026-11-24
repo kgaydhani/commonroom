@@ -72,6 +72,15 @@ class StarterTests(unittest.TestCase):
         self.assertEqual((args.name, args.path), ("My-Proj-v2", str(self.root)))
         self.assertRegex(args.name, registry.NAME)
 
+    def test_goal_beyond_the_basic_plane_still_loads(self):
+        self.assertEqual(self.init("Launch \U0001F680"), 0)
+        self.assertEqual(config_mod.load(self.root / "room.toml")["goal"]["milestone"], "Launch \U0001F680")
+
+    def test_goal_toml_cannot_hold_writes_nothing(self):
+        self.assertNotEqual(self.init("bad\x7fgoal"), 0)
+        for t in starter.targets(self.root):
+            self.assertFalse(t.exists(), t)
+
     def test_not_a_folder_is_refused(self):
         self.assertNotEqual(starter.run(str(self.root / "nope"), out=self.lines.append), 0)
 

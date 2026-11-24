@@ -7,9 +7,8 @@ import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
-
-from commonroom import registry
 
 TEMPLATES = Path(__file__).parent / "ways" / "templates"
 AGENTS = ("builder", "reviewer", "director")
@@ -28,7 +27,9 @@ def targets(root: Path) -> list[Path]:
 def render(root: Path, goal: str) -> dict[Path, str]:
     """The text of each file to write. Name and goal are filled in as TOML strings."""
     toml = (TEMPLATES / "room.toml").read_text(encoding="utf-8")
-    toml = toml.replace("{name}", json.dumps(project_name(root))).replace("{goal}", json.dumps(goal))
+    # ensure_ascii=False: json's surrogate-pair escapes for characters above U+FFFF are not valid TOML.
+    toml = (toml.replace("{name}", json.dumps(project_name(root), ensure_ascii=False))
+            .replace("{goal}", json.dumps(goal, ensure_ascii=False)))
     files = {root / "room.toml": toml}
     for role in AGENTS:
         files[root / ".claude" / "agents" / f"{role}.md"] = (TEMPLATES / f"{role}.md").read_text(encoding="utf-8")
@@ -52,7 +53,13 @@ def run(path: str, goal: str | None = None, out=print, err=None) -> int:
         for t in existing:
             err(f"  {t}")
         return 1
-    for target, text in render(root, goal or DEFAULT_GOAL).items():
+    files = render(root, goal or DEFAULT_GOAL)
+    try:
+        tomllib.loads(files[root / "room.toml"])
+    except tomllib.TOMLDecodeError as exc:
+        err(f"refused: nothing written, the goal makes room.toml unreadable ({exc}); pick another --goal")
+        return 1
+    for target, text in files.items():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8", newline="\n")
         out(f"wrote {target}")
