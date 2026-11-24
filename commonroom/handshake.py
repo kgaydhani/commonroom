@@ -360,6 +360,52 @@ def _work(ledger: Ledger, p: registry.Project, now: float) -> str:
     return "\n".join(lines)
 
 
+def _created(text: str | None) -> float | None:
+    """An ISO `createdAt` as epoch seconds (a bare one is UTC), or None when it is missing or not a date."""
+    try:
+        at = datetime.fromisoformat((text or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (at if at.tzinfo else at.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def interventions(ledger: Ledger, p: registry.Project, now: float) -> dict:
+    """How often the owner had to step in, the last 7 days and the 7 days before, against what landed (commonroom#509).
+    An intervention is a `kind: correction` note or an `owner:human` item created on the board in the window.
+    `board` is False when the board could not be read: then only the notes are counted."""
+    last, before, _ = corrections(folder_of(p), now)
+    found, board_ok = [], False
+    if _readable(p):
+        try:
+            found = _items(p, "all", "owner:human", 500, "number,createdAt")
+            board_ok = True
+        except (RuntimeError, OSError, ValueError, TypeError, subprocess.SubprocessError):
+            pass
+    made = [_created(i.get("createdAt")) for i in found]
+    last += sum(t is not None and now - WEEK < t <= now for t in made)
+    before += sum(t is not None and now - 2 * WEEK < t <= now - WEEK for t in made)
+    rows = ledger.runs_since(ledger_name(p), now - 2 * WEEK)
+    local = _local(p)
+    return {"now": last, "before": before, "board": board_ok,
+            "landings": len(metrics.landings(rows, now - WEEK, now, local)),
+            "landings_before": len(metrics.landings(rows, now - 2 * WEEK, now - WEEK, local))}
+
+
+def _per(n: int, landings: int) -> str:
+    return f"{n / landings:.2f}".rstrip("0").rstrip(".") + " per landing" if landings else "no landings"
+
+
+def _interventions(ledger: Ledger, p: registry.Project, now: float) -> str:
+    """The one line under `## Ran and landed`: owner interventions against landings, this week and the week before."""
+    f = interventions(ledger, p, now)
+    def part(n: int, landings: int) -> str:
+        return f"{n} against {landings} landings ({_per(n, landings)})" if landings else f"{n}, no landings"
+    line = (f"Owner interventions: {f['now']} in the last 7 days against {f['landings']} landings ({_per(f['now'], f['landings'])})"
+            if f["landings"] else f"Owner interventions: {f['now']} in the last 7 days, no landings")
+    line += f"; the 7 days before: {part(f['before'], f['landings_before'])}."
+    return line + ("" if f["board"] else " The board part is missing: the board could not be read, so only notes are counted.")
+
+
 BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
 BOARD_FIRST = {"owner-overdue": 0, "blocked-on-nothing": 1}   # these lead; the rest follow in the order found
 
@@ -614,7 +660,7 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     where = folder_of(p)
     text = fill_way(DIGEST, project=p.name, reply=_direction(ledger, p, where) + reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
-                    decisions=_decisions(where, p), notes=_notes(where), work=_work(ledger, p, now)) + "\n"
+                    decisions=_decisions(where, p), notes=_notes(where), work=_work(ledger, p, now) + chr(10) + _interventions(ledger, p, now)) + "\n"
     board = _board(ledger, p)
     if board:
         text = text + "\n" + f"## Board check, latest sweep\n{board}" + "\n"
