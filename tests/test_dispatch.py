@@ -493,6 +493,24 @@ class WithLedger(unittest.TestCase):
         issues[-1] = issue(40, [], body="Owner wrote this", milestone=None)
         self.assertIsNone(d.director_trigger())
 
+    def test_director_log_issue_is_not_untriaged_agent_work(self):
+        cfg = cfg_with(self.tmp.name)
+        cfg["director"]["log_issue"] = 41
+        issues = [issue(30, ["status:ready", "role:builder"]), issue(41, [], body="[agent:director] log", milestone=None)]
+        d = dispatch.Dispatcher(cfg, self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(d.director_trigger())
+        issues.append(issue(42, [], body="[agent:scout] found", milestone=None))
+        self.assertEqual(d.director_trigger(),
+                         "#42 was filed by an agent and is untriaged: make it ready, park it or close it")
+        # Without the setting, the same issue still counts.
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues[:2]), log=lambda *_: None)
+        self.assertIn("#41 was filed by an agent", d.director_trigger())
+        # `owner/repo#N` naming this repo works; another repo's issue number excludes nothing here.
+        cfg["director"]["log_issue"] = "o/t#41"
+        self.assertEqual(dispatch.log_issue_number(cfg), 41)
+        cfg["director"]["log_issue"] = "o/other#41"
+        self.assertIsNone(dispatch.log_issue_number(cfg))
+
     def test_unlabelled_agent_issues_are_capped_at_five_oldest_first(self):
         issues = [issue(n, [], body="[agent:scout] x", milestone=None) for n in (57, 51, 52, 53, 54, 55, 56)]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)

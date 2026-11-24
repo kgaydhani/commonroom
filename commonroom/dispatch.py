@@ -3417,6 +3417,9 @@ class Dispatcher:
             return None
         return "the steward found: " + "; ".join(f["detail"] for f in new[:5])
 
+    def log_issue_number(self) -> int | None:
+        return log_issue_number(self.cfg)
+
     def director_trigger(self) -> str | None:
         last = next((r for r in self.ledger.recent_runs(self.project, limit=50) if r["role"] == "director"), None)
         since = last["started_at"] if last else 0
@@ -3450,8 +3453,10 @@ class Dispatcher:
             if "kind:suggestion" in names and "triaged" not in names:
                 reasons.append(f"#{issue['number']} is an untriaged owner suggestion")
         # Agents file the work they find with no labels and no milestone; nobody else would notice it.
+        # The project's Director log is the director's own writing and can never be made ready: leave it out.
+        log_issue = self.log_issue_number()
         untriaged = sorted(i["number"] for i in every_open
-                           if not labels(i) and (i.get("body") or "").lstrip().startswith("[agent:"))
+                           if i["number"] != log_issue and not labels(i) and (i.get("body") or "").lstrip().startswith("[agent:"))
         reasons += [f"#{n} was filed by an agent and is untriaged: make it ready, park it or close it"
                     for n in untriaged[:5]]
         open_issues = [i for i in every_open
@@ -4461,6 +4466,18 @@ class Dispatcher:
         if self.tell_owner(f"{project}: room stopped ({trip['kind'].replace('_', ' ')})", trip["detail"],
                            url=self.issue_url(number), priority=4):
             self.ledger.mark(self.project, f"owner-task:{number}")
+
+
+def log_issue_number(cfg: dict) -> int | None:
+    """The number of this project's own Director log issue from `[director] log_issue` (a number, or `owner/repo#N`
+    naming this project's repo); None when unset or when it lives in another repo."""
+    log = (cfg.get("director") or {}).get("log_issue")
+    if isinstance(log, int):
+        return log
+    repo, _, num = str(log or "").rpartition("#")
+    if num.isdigit() and repo in ("", str((cfg.get("project") or {}).get("repo") or "")):
+        return int(num)
+    return None
 
 
 def steer_reason(cfg: dict, ways: dict | None = None) -> str:
