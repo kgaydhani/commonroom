@@ -31,6 +31,20 @@ def codex_named(cfg: dict) -> bool:
                for spec in (cfg.get("roles") or {}).values())
 
 
+def codex_reason(cfg: dict) -> str | None:
+    """Why a project with a share uses Codex, or None when it opts out. The beat starts Codex slots unless
+    `[parallel] codex_slots = 0`, and `codex_parallel_builds` (in `[roles]`) defaults to true."""
+    if codex_named(cfg):
+        return "a [roles] list names codex"
+    try:
+        slots = int((cfg.get("parallel") or {}).get("codex_slots", 2))
+    except (TypeError, ValueError):
+        slots = 2
+    if slots != 0 and (cfg.get("roles") or {}).get("codex_parallel_builds", True):
+        return "parallel builds use codex: set `codex_parallel_builds = false` in [roles] or `codex_slots = 0` in [parallel] to opt out"
+    return None
+
+
 def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, version=None) -> list[tuple[bool, bool, str]]:
     """Each check as (ok, required, line text)."""
     out: list[tuple[bool, bool, str]] = []
@@ -58,7 +72,7 @@ def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, ve
         add(not found, "registry valid", "; ".join(found) + f" (edit {path} or use `room projects set`)")
         if not reg.projects:
             add(False, "registry has projects", "add one with `room projects add <name> <path> --share N`")
-    codex = False
+    codex: list[str] = []
     for name, project in sorted((reg.projects if reg else {}).items()):
         root = Path(project.path)
         label = f"project {name}"
@@ -75,12 +89,14 @@ def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, ve
             add(False, f"{label} room.toml", f"fix {toml}: {exc}")
             continue
         add(True, f"{label} room.toml")
-        codex = codex or codex_named(cfg)
+        why = codex_reason(cfg) if project.share > 0 else None
+        if why:
+            codex.append(f"{name}: {why}")
         lacking = sorted(r for r, spec in (cfg.get("roles") or {}).items()
                          if isinstance(spec, list) and not agent_file_exists(root, r))
         add(not lacking, f"{label} roles", f"add {', '.join(f'.claude/agents/{r}.md' for r in lacking)} in {root}")
     if codex:
-        add(bool(which("codex")), "codex on PATH", "install Codex and put `codex` on PATH (a project's roles name it)")
+        add(bool(which("codex")), "codex on PATH", "install Codex and put `codex` on PATH (" + "; ".join(codex) + ")")
     return out
 
 
