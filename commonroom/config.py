@@ -160,6 +160,15 @@ def load(path: Path | None = None, follow_host: bool = True) -> dict:
     return cfg
 
 
+def load_text(text: str) -> dict:
+    """The merged config of a `room.toml` given as text (a file read from a commit), with no host followed.
+    Raises tomllib.TOMLDecodeError or ConfigError when it doesn't parse or has a value the room doesn't accept."""
+    cfg = merge(DEFAULTS, tomllib.loads(text))
+    approve(cfg)
+    board_kind(cfg)
+    return cfg
+
+
 def _same_file(a: Path, b: Path) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
