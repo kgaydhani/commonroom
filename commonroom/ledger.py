@@ -120,7 +120,7 @@ class Ledger:
         for name, kind in (("weekly_start", "REAL"), ("weekly_end", "REAL"), ("pid", "INTEGER"), ("worktree", "TEXT"),
                            ("five_hour_start", "REAL"), ("unverified", "TEXT NOT NULL DEFAULT '[]'"),
                            ("actions_checked", "INTEGER"), ("cache_read_tokens", "INTEGER"),
-                           ("cache_write_tokens", "INTEGER"), ("compactions", "INTEGER")):
+                           ("cache_write_tokens", "INTEGER"), ("compactions", "INTEGER"), ("wake_reason", "TEXT")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
@@ -188,8 +188,9 @@ class Ledger:
     # Runs ------------------------------------------------------------------
     def start_run(self, project: str | None, task: str | None, role: str, provider: str, model: str | None = None,
                   effort: str | None = None, autonomous: bool = True, session_id: str | None = None,
-                  now: float | None = None, exclusive: bool = False) -> str | None:
-        """With `exclusive`, claim the task atomically across dispatchers: None if it is already running."""
+                  now: float | None = None, exclusive: bool = False, wake_reason: str | None = None) -> str | None:
+        """With `exclusive`, claim the task atomically across dispatchers: None if it is already running.
+        `wake_reason` is why a director run was woken (commonroom#495), so a query can count runs by reason."""
         run_id = uuid.uuid4().hex[:12]
         now_ts = time.time() if now is None else now
         with self.db:
@@ -202,9 +203,10 @@ class Ledger:
                                    (project, task, now_ts - 7200)).fetchone():
                     return None
             self.db.execute(
-                "INSERT INTO runs (id, project, task, role, provider, model, effort, autonomous, started_at, status, session_id, pid) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run_id, project, task, role, provider, model, effort, int(autonomous), now_ts, "running", session_id, os.getpid()))
+                "INSERT INTO runs (id, project, task, role, provider, model, effort, autonomous, started_at, status, session_id, pid, wake_reason) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (run_id, project, task, role, provider, model, effort, int(autonomous), now_ts, "running", session_id, os.getpid(),
+                 wake_reason))
         return run_id
 
     def running_tasks(self, project: str | None, now: float | None = None) -> set[str]:

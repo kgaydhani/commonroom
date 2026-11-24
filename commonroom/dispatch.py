@@ -3535,7 +3535,8 @@ class Dispatcher:
         effort = job.effort or (self.cfg.get("effort") or {}).get(job.role)
         run_id = self.ledger.start_run(self.project, task, job.role, provider,
                                        model or (role.model if provider == "claude" else "default"),
-                                       effort=effort or "default", exclusive=bool(task))
+                                       effort=effort or "default", exclusive=bool(task),
+                                       wake_reason=job.reason if job.kind == "direct" else None)
         if run_id is None:
             self.log(f"   {task} is already being worked on; skipped")
             return {"status": "skipped", "outputs": [], "note": "already running"}
