@@ -16,7 +16,7 @@ from commonroom import beat as beat_mod, board, config as config_mod, gate, guar
 from commonroom import away, owner_reserve, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
-from commonroom import handshake, hook, jobtree, roomconfig, trials
+from commonroom import doctor, handshake, hook, jobtree, roomconfig, trials
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
@@ -884,6 +884,11 @@ def cmd_breaker(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    """Read-only first-run checks: tools, gh login, registry, each project's room.toml and roles."""
+    return doctor.run()
+
+
 def cmd_projects(args) -> int:
     """List, add, change or remove the projects in the registry (`<room home>/projects.toml`). No model or GitHub call.
     A change that would break a rule is refused with the reason, and the file is left as it was."""
@@ -1225,6 +1230,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", help="run the project's [checks] test under a per-project lock").set_defaults(func=cmd_check)
     p = sub.add_parser("config", help="show or change a project's room.toml; `set` prints the diff and writes only with --yes"); p.add_argument("action", choices=("show", "set")); p.add_argument("project"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?"); p.add_argument("--yes", action="store_true"); p.set_defaults(func=cmd_config)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
+    sub.add_parser("doctor", help="read-only first-run checks: tools, gh login, registry, each project's room.toml and roles").set_defaults(func=cmd_doctor)
     p = sub.add_parser("projects", help="list or change the projects and their shares (no model call)"); p.set_defaults(func=cmd_projects)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("add", help="add a project"); q.add_argument("name"); q.add_argument("path"); q.add_argument("--share", type=float, required=True)

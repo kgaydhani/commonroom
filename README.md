@@ -19,6 +19,7 @@ The beat runs every registered project. Every 15 minutes the scheduled heartbeat
 The commands you run day to day:
 
 ```
+python D:/Dev/commonroom/room.py doctor                      # read-only first-run checks: tools, gh login, registry, each project's room.toml and roles
 python D:/Dev/commonroom/room.py projects                    # list the registered projects and their shares
 python D:/Dev/commonroom/room.py projects set myproject --share 40  # change a share or mode
 python D:/Dev/commonroom/room.py pie                         # each project's effective share and weekly standing
