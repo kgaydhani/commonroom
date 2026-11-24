@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import away, owner_reserve, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
+from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, trials
@@ -1178,6 +1178,32 @@ def cmd_pie(args) -> int:
     return 0
 
 
+def cmd_person(args) -> int:
+    """`room person`, `room person add "line"`, `room person remove <n>`: the owner's capped, dated person file."""
+    try:
+        if args.action == "add":
+            if not args.value:
+                print("usage: room person add \"line\"")
+                return 2
+            lines = person_mod.add(args.value)
+            print(f"added line {len(lines)}: {lines[-1]}")
+        elif args.action == "remove":
+            if not (args.value or "").isdigit():
+                print("usage: room person remove <n>")
+                return 2
+            print(f"removed: {person_mod.remove(int(args.value))}")
+        else:
+            lines = person_mod.load()
+            for i, line in enumerate(lines, 1):
+                print(f"{i}. {line}")
+            print(f"({len(lines)} of {person_mod.MAX_LINES} lines, about {person_mod.tokens(lines)} of "
+                  f"{person_mod.MAX_TOKENS} tokens)")
+    except person_mod.PersonError as e:
+        print(e)
+        return 1
+    return 0
+
+
 def cmd_away(args) -> int:
     """`room away until <date>`, `room away`, `room away --clear`: the owner's return, kept beside the registry. It only
     changes shares and reserves; it never resumes, clears a breaker or starts anything."""
@@ -1287,6 +1313,7 @@ def build_parser() -> argparse.ArgumentParser:
     timing.add_argument("--cancel-pending", action="store_true", help="drop this project's pending changes")
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
+    p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove")); p.add_argument("value", nargs="?"); p.set_defaults(func=cmd_person)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")
