@@ -1,12 +1,20 @@
 import re
 import shlex
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from commonroom import cli, config as config_mod, starter
+from commonroom import cli, config as config_mod, registry, starter
 
 OWNER_LOGIN = "kgaydhani"
+
+
+def split(line):
+    """Split as the platform's shell would: cmd quoting on Windows, POSIX elsewhere."""
+    if sys.platform == "win32":
+        return [a.strip('"') for a in shlex.split(line, posix=False)]
+    return shlex.split(line)
 
 
 class StarterTests(unittest.TestCase):
@@ -48,10 +56,21 @@ class StarterTests(unittest.TestCase):
     def test_next_step_is_a_projects_add_the_parser_accepts(self):
         self.init()
         line = next(l.strip() for l in self.lines if l.strip().startswith("room "))
-        argv = shlex.split(line)[1:]
+        argv = split(line)[1:]
         self.assertEqual(argv[:2], ["projects", "add"])
         args = cli.build_parser().parse_args(argv)
         self.assertEqual((args.action, args.name, args.path), ("add", "demo", str(self.root)))
+
+    def test_awkward_folder_name_gives_a_registry_name_and_a_working_command(self):
+        self.root = Path(self.tmp.name) / "My Proj.v2"
+        self.root.mkdir()
+        self.assertEqual(self.init(), 0)
+        self.assertEqual(config_mod.load(self.root / "room.toml")["project"]["name"], "My-Proj-v2")
+        line = next(l.strip() for l in self.lines if l.strip().startswith("room "))
+        argv = split(line)[1:]
+        args = cli.build_parser().parse_args(argv)
+        self.assertEqual((args.name, args.path), ("My-Proj-v2", str(self.root)))
+        self.assertRegex(args.name, registry.NAME)
 
     def test_not_a_folder_is_refused(self):
         self.assertNotEqual(starter.run(str(self.root / "nope"), out=self.lines.append), 0)

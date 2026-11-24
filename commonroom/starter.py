@@ -3,11 +3,22 @@ It never overwrites, starts no model and does not register the project."""
 from __future__ import annotations
 
 import json
+import re
+import shlex
+import subprocess
+import sys
 from pathlib import Path
+
+from commonroom import registry
 
 TEMPLATES = Path(__file__).parent / "ways" / "templates"
 AGENTS = ("builder", "reviewer", "director")
 DEFAULT_GOAL = "First milestone"
+
+
+def project_name(root: Path) -> str:
+    """The folder name with every character the registry refuses replaced by `-`."""
+    return re.sub(r"[^A-Za-z0-9_-]", "-", root.name) or "project"
 
 
 def targets(root: Path) -> list[Path]:
@@ -17,7 +28,7 @@ def targets(root: Path) -> list[Path]:
 def render(root: Path, goal: str) -> dict[Path, str]:
     """The text of each file to write. Name and goal are filled in as TOML strings."""
     toml = (TEMPLATES / "room.toml").read_text(encoding="utf-8")
-    toml = toml.replace("{name}", json.dumps(root.name)).replace("{goal}", json.dumps(goal))
+    toml = toml.replace("{name}", json.dumps(project_name(root))).replace("{goal}", json.dumps(goal))
     files = {root / "room.toml": toml}
     for role in AGENTS:
         files[root / ".claude" / "agents" / f"{role}.md"] = (TEMPLATES / f"{role}.md").read_text(encoding="utf-8")
@@ -25,7 +36,8 @@ def render(root: Path, goal: str) -> dict[Path, str]:
 
 
 def next_step(root: Path) -> str:
-    return f'room projects add {root.name} "{root}" --share 10'
+    quote = subprocess.list2cmdline if sys.platform == "win32" else shlex.join
+    return "room projects add " + quote([project_name(root), str(root)]) + " --share 10"
 
 
 def run(path: str, goal: str | None = None, out=print, err=None) -> int:
