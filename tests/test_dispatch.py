@@ -1165,6 +1165,27 @@ class WithLedger(unittest.TestCase):
         row = self.ledger.db.execute("SELECT five_hour_start FROM runs WHERE task='#5'").fetchone()
         self.assertEqual(row["five_hour_start"], 61)                          # recorded before any work, even on a room error
 
+    def test_director_run_records_why_it_was_woken_and_builds_do_not(self):
+        root = Path(self.tmp.name)
+        (root / ".claude" / "agents").mkdir(parents=True)
+        for role in ("director", "builder"):
+            (root / ".claude" / "agents" / f"{role}.md").write_text("---\nmodel: sonnet\n---\nGo.\n")
+        d = dispatch.Dispatcher(cfg_with(root), self.ledger, board=FakeBoard([]), log=lambda *_: None)
+        d.prepare_worktree = lambda j, provider=None: (_ for _ in ()).throw(RuntimeError("stop"))
+        why = "the milestone has open work but nothing is ready: unblock, re-plan or split tasks"
+        orig = dispatch.git
+        dispatch.git = lambda args, cwd: ""
+        try:
+            for job in (dispatch.Job("direct", "director", reason=why),
+                        dispatch.Job("build", "builder", issue=issue(7, ["status:ready"]), reason="#7 is ready")):
+                with self.assertRaises(RuntimeError):
+                    d.run_job(job, "claude", "sonnet")
+        finally:
+            dispatch.git = orig
+        rows = {r["role"]: r["wake_reason"] for r in self.ledger.db.execute("SELECT role, wake_reason FROM runs")}
+        self.assertEqual(rows, {"director": why, "builder": None})
+        self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM runs WHERE wake_reason=?", (why,)).fetchone()[0], 1)
+
     def test_run_rows_record_the_runs_own_provider_weekly_window(self):
         root = Path(self.tmp.name)
         (root / ".claude" / "agents").mkdir(parents=True)
