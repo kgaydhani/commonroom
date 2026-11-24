@@ -723,6 +723,44 @@ class Interventions(Room):
         self.assertEqual((summary["owner_interventions_7d"], summary["owner_interventions_prev_7d"]), (2, 1))
 
 
+class DirectorWakes(Interventions):
+    """commonroom#503: director runs counted by wake reason, the 7 days before against the last 7 days."""
+
+    def wake(self, days_ago, reason, role="director"):
+        ledger = Ledger()
+        try:
+            at = self.NOW - days_ago * self.DAY
+            rid = ledger.start_run("alpha", None, role, "claude", now=at, wake_reason=reason)
+            ledger.finish_run(rid, "done", now=at + 60)
+        finally:
+            ledger.close()
+
+    def lines(self):
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            with mock.patch.object(handshake.board, "gh", lambda a, timeout=30: []):
+                text = handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+        finally:
+            ledger.close()
+        return [l for l in text.split(chr(10)) if l.startswith("Director wakes")]
+
+    def test_three_reasons_across_two_weeks(self):
+        self.wake(1, "empty queue"); self.wake(2, "empty queue"); self.wake(10, "empty queue")
+        self.wake(1, "review wanted: PR #5"); self.wake(3, "review wanted: PR #9")
+        self.wake(9, "owner note"); self.wake(1, None); self.wake(12, None)
+        self.wake(1, "empty queue", role="builder")
+        self.assertEqual(self.lines(), [
+            "Director wakes, empty queue: 1 in the 7 days before, 2 in the last 7 days.",
+            "Director wakes, review wanted: 0 in the 7 days before, 2 in the last 7 days.",
+            "Director wakes, unknown: 1 in the 7 days before, 1 in the last 7 days.",
+            "Director wakes, owner note: 1 in the 7 days before, 0 in the last 7 days."])
+
+    def test_no_director_runs_adds_no_line(self):
+        self.wake(1, "x", role="builder")
+        self.assertEqual(self.lines(), [])
+
+
 class Trail(Room):
     """commonroom#400: `room trail` links each owner note to the issues filed from it; the digest counts notes with none."""
     NOW = datetime(2026, 11, 20, 12, 0).timestamp()

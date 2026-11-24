@@ -406,6 +406,25 @@ def _interventions(ledger: Ledger, p: registry.Project, now: float) -> str:
     return line + ("" if f["board"] else " The board part is missing: the board could not be read, so only notes are counted.")
 
 
+def wake_counts(ledger: Ledger, p: registry.Project, now: float) -> dict[str, tuple[int, int]]:
+    """Director runs by why they were woken: reason -> (the 7 days before, the last 7 days) (commonroom#503).
+    Reasons are grouped by the text before the first `:`, so issue numbers don't split them; runs from before
+    the reason was stored count as `unknown`."""
+    counts: dict[str, list[int]] = {}
+    for r in ledger.runs_since(ledger_name(p), now - 2 * WEEK):
+        if r.get("role") != "director" or r["started_at"] > now:
+            continue
+        reason = (r.get("wake_reason") or "").split(":", 1)[0].strip() or "unknown"
+        counts.setdefault(reason, [0, 0])[r["started_at"] > now - WEEK] += 1
+    return {k: (v[0], v[1]) for k, v in sorted(counts.items(), key=lambda kv: (-sum(kv[1]), kv[0]))}
+
+
+def _wakes(ledger: Ledger, p: registry.Project, now: float) -> str:
+    """One line per wake reason under `## Ran and landed`; nothing when the director did not run in either week."""
+    return chr(10).join(f"Director wakes, {reason}: {then} in the 7 days before, {nowc} in the last 7 days."
+                     for reason, (then, nowc) in wake_counts(ledger, p, now).items())
+
+
 BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
 BOARD_FIRST = {"owner-overdue": 0, "blocked-on-nothing": 1}   # these lead; the rest follow in the order found
 
@@ -660,7 +679,7 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     where = folder_of(p)
     text = fill_way(DIGEST, project=p.name, reply=_direction(ledger, p, where) + reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
-                    decisions=_decisions(where, p), notes=_notes(where), work=_work(ledger, p, now) + chr(10) + _interventions(ledger, p, now)) + "\n"
+                    decisions=_decisions(where, p), notes=_notes(where), work=chr(10).join(x for x in (_work(ledger, p, now), _interventions(ledger, p, now), _wakes(ledger, p, now)) if x)) + "\n"
     board = _board(ledger, p)
     if board:
         text = text + "\n" + f"## Board check, latest sweep\n{board}" + "\n"
