@@ -624,8 +624,15 @@ class GitHubBoard:
     def pr_for_branch(self, branch: str) -> dict | None:
         """The newest PR from this repository's own `branch`: a fork's PR can carry the same branch name."""
         prs = board_mod.gh(["pr", "list", "--repo", self.repo, "--head", branch, "--state", "all",
-                            "--json", f"number,state,url,headRefName,{PR_ORIGIN}"]) or []
+                            "--json", f"number,state,url,headRefName,isDraft,{PR_ORIGIN}"]) or []
         return next((pr for pr in prs if pr.get("isCrossRepository") is False), None)
+
+    def ready_pr(self, number: int):
+        """Take a draft PR out of draft: `review_order` skips drafts, so a draft is never reviewed (commonroom#518)."""
+        board_mod.gh(["pr", "ready", str(number), "--repo", self.repo])
+
+    def comment_pr(self, number: int, body: str):
+        board_mod.gh(["pr", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
 
     def close_pr(self, number: int, body: str):
         """Close a PR unmerged with a room comment. Its branch stays, so nothing on it is lost."""
@@ -1533,6 +1540,7 @@ class Dispatcher:
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
                 actions.append(f"#{n} was in review with no open PR; back to ready")
+        actions += self.undraft_stuck(everything, prs, running)
         for claim in stale_claims(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                   stale_minutes=self.policy("stale_claim_minutes")):
             n = claim["number"]
@@ -2038,6 +2046,38 @@ class Dispatcher:
     def to_review(self, n: int):
         """Every move to status:review drops the other statuses and needs:changes in the same call (commonroom#93)."""
         self.board.set_labels(n, add=["status:review"], remove=list(LEAVES_REVIEW))
+
+    def undraft(self, pr: dict, why: str | None = None) -> bool:
+        """Mark a room branch's draft PR ready for review (commonroom#518). A board without `ready_pr` (the local board)
+        does nothing; a failure is logged, never raised: the issue is already in review."""
+        if not pr or not pr.get("isDraft") or not hasattr(self.board, "ready_pr") or self.dry_run:
+            return False
+        try:
+            self.board.ready_pr(pr["number"])
+            if why and hasattr(self.board, "comment_pr"):
+                self.board.comment_pr(pr["number"], why)
+        except RuntimeError as exc:
+            self.log(f"   could not mark PR #{pr['number']} ready: {str(exc)[:160]}")
+            return False
+        self.log(f"   PR #{pr['number']} was a draft: marked ready for review")
+        return True
+
+    def undraft_stuck(self, everything: list[dict], prs: list[dict], running: set) -> list[str]:
+        """An open draft PR on a room branch whose issue is in review with no build running is marked ready, once:
+        nothing else would ever review it (commonroom#518). The owner's own branches are left alone."""
+        actions, by_number = [], {i["number"]: i for i in everything}
+        for pr in prs:
+            m = BRANCH.match(pr["headRefName"])
+            issue = by_number.get(int(m.group(1))) if m else None
+            if not pr.get("isDraft") or not issue or issue["state"] != "OPEN":
+                continue
+            names = labels(issue)
+            if "status:review" not in names or "status:in-progress" in names or f"#{issue['number']}" in running:
+                continue
+            if self.undraft(pr, "This PR was a draft, and the room doesn't review drafts. #%d is in review, so I marked "
+                                "it ready for review." % issue["number"]):
+                actions.append(f"PR #{pr['number']} was a draft with #{issue['number']} in review: marked ready")
+        return actions
 
     def mark_unstatused_top(self, everything: list[dict], state: dict[int, str]) -> list[str]:
         """A prio:top issue raised without a status label is invisible to the dispatcher, which only picks
@@ -3932,6 +3972,7 @@ class Dispatcher:
                     self.board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
                     return "blocked", [{"kind": "pr", "ref": ref}], tail
                 self.to_review(n)
+                self.undraft(pr)
                 if job.role == "scout" and hasattr(self.board, "label_pr"):
                     self.board.label_pr(pr["number"], "review:skip")
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
@@ -3940,6 +3981,7 @@ class Dispatcher:
                 # The builder checked and found nothing left to change (e.g. the fix already landed and was approved
                 # while the issue sat in the queue). That's a finished task, not a failed attempt.
                 self.to_review(n)
+                self.undraft(pr)
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (no changes needed)"}], tail
             if blocked and self.codex_handoff(job, branch, result.final_text or ""):
                 return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked, handed to Claude"}], tail
