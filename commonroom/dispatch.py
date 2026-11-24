@@ -26,7 +26,7 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
-from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
+from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, services, sessions
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, trials as trials_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
@@ -3519,7 +3519,8 @@ class Dispatcher:
                                    self.milestone, direction_at, reconciled)
             now = time.time()
             found += steward.heartbeat_failing(
-                self.ledger.heartbeat_runs(self.project), self.policy("heartbeat_failures"))
+                self.ledger.heartbeat_runs(self.project), self.policy("heartbeat_failures"),
+                [services.command_key(c) for c in (self.cfg.get("heartbeat") or {}).get("commands") or []])
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
             for f in found:

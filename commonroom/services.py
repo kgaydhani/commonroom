@@ -87,6 +87,11 @@ def restart_after_deploy(cfg: dict, log_dir: Path) -> list[str]:
     return lines
 
 
+def command_key(command: list) -> str:
+    """How a heartbeat command is named in the ledger and in findings."""
+    return " ".join(str(p) for p in command)
+
+
 def tick(cfg: dict, timeout: float = 600, ledger=None) -> list[str]:
     """Run the project's `[heartbeat] commands` once, in order, from its folder (commonroom#151): per-project jobs
     that ride the heartbeat, like a queue runner. Each is an argv list; "{python}" is the room's interpreter. A failing
@@ -104,5 +109,5 @@ def tick(cfg: dict, timeout: float = 600, ledger=None) -> list[str]:
             lines.append(f"{' '.join(argv)}: {type(exc).__name__}: {exc}")
             code = -1
         if ledger is not None:
-            ledger.record_heartbeat(cfg["project"].get("name"), " ".join(str(p) for p in command), code)
+            ledger.record_heartbeat(cfg["project"].get("name"), command_key(command), code)
     return lines
