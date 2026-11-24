@@ -1,3 +1,6 @@
+# Git stores LF whatever a worker's core.autocrlf is (commonroom#513). Binary files are detected and left alone.
+* text=auto eol=lf
+
 # Prompt fixtures are compared byte for byte (commonroom#216): never convert their line endings.
 tests/golden_prompts/*.txt -text
 # The prompt templates stay LF in every checkout, whatever core.autocrlf says (commonroom#216).
