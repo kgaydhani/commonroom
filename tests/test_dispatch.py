@@ -2453,6 +2453,46 @@ class WithLedger(unittest.TestCase):
         self.assertEqual(status, "blocked")
         self.assertIn("needs:director", dispatch.labels(work))
 
+    def test_draft_pr_of_a_room_branch_is_marked_ready_for_review(self):
+        """commonroom#518: review_order skips drafts, so a room branch's draft in review is taken out of draft."""
+        work = issue(518, ["status:in-progress", "role:builder"])
+        fake = LabelBoard([work], prs=[], details={})
+        fake.ready, fake.pr_comments = [], []
+        fake.ready_pr = lambda n: fake.ready.append(n)
+        fake.comment_pr = lambda n, body: fake.pr_comments.append((n, body))
+        fake.pr_for_branch = lambda branch: owned({"number": 7, "state": "OPEN", "isDraft": True}, pr=True)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.remote_head = lambda branch: "new"
+        job = dispatch.Job("build", "builder", issue=work, reason="ready")
+        d.assess(job, "i518-x", "old", "", workers.WorkerResult(ok=True, final_text="Done.\nSTATUS: DONE"))
+        self.assertEqual(fake.ready, [7])
+        # A board without the method (the local board) does nothing and raises nothing.
+        plain = LabelBoard([issue(518, ["status:in-progress"])], prs=[], details={})
+        plain.pr_for_branch = fake.pr_for_branch
+        d2 = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=plain, log=lambda *_: None)
+        d2.remote_head = lambda branch: "new"
+        self.assertEqual(d2.assess(job, "i518-x", "old", "", workers.WorkerResult(ok=True, final_text="STATUS: DONE"))[0], "done")
+
+    def test_housekeeping_marks_stuck_room_drafts_ready_once_and_leaves_others(self):
+        issues = [issue(1, ["status:review"]), issue(2, ["status:in-progress"]), issue(3, ["status:review"]),
+                  issue(4, ["status:review"]), issue(5, ["status:review", "claimed:kieran"]),
+                  issue(6, ["status:review", dispatch.EXTERNAL])]
+        prs = [{"number": 11, "headRefName": "i1-a", "isDraft": True}, {"number": 12, "headRefName": "i2-a", "isDraft": True},
+               {"number": 13, "headRefName": "owner-work", "isDraft": True}, {"number": 14, "headRefName": "i3-a", "isDraft": False},
+               {"number": 15, "headRefName": "i4-a", "isDraft": True},
+               {"number": 16, "headRefName": "i5-a", "isDraft": True}, {"number": 17, "headRefName": "i6-a", "isDraft": True}]
+        details = {p["number"]: {"commits": [{"committedDate": "2026-10-11T12:00:00Z"}], "comments": []} for p in prs}
+        fake = LabelBoard(issues, prs=prs, details=details)
+        fake.ready, fake.pr_comments = [], []
+        fake.ready_pr = lambda n: fake.ready.append(n)
+        fake.comment_pr = lambda n, body: fake.pr_comments.append((n, body))
+        self.ledger.start_run("t", "#4", "builder", "claude")                # #4's builder is still running
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.housekeeping()
+        self.assertEqual(fake.ready, [11])
+        self.assertEqual([n for n, _ in fake.pr_comments], [11])
+        self.assertTrue(fake.pr_comments[0][1].startswith("This PR was a draft"))
+
     def test_housekeeping_clears_ready_from_issues_in_review_or_in_progress(self):
         """commonroom#93: a ready label next to review or in-progress invites a second builder."""
         both = [issue(1, ["status:ready", "status:review"]), issue(2, ["status:ready", "status:in-progress"]),

@@ -66,7 +66,7 @@ WAYS_DIR = Path(__file__).resolve().parent / "ways"
 # selection, outside the job, where a variant would never apply (commonroom#352).
 TRIAL_POLICY = ("resume_window_seconds", "rework_resume_seconds", "run_timeout_seconds")
 TRIALS_FILE = WAYS_DIR / "trials.toml"   # read again for each job, not only at import (commonroom#352)
-PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-blocked", "build-blocked-pretest", "build-merge-main",
+PROMPTS = ("audit", "build", "build-codex", "build-conflicts", "build-conflicts-codex", "build-blocked", "build-blocked-pretest", "build-blocked-suite", "build-merge-main",
            "build-open-pr", "build-push", "build-push-codex", "build-raised", "build-scout", "bulletin", "continue",
            "continue-board", "continue-branch", "continue-review", "continue-rework", "deadline", "default-test", "director", "headless",
            "review", "review-no-ci", "review-room-tested", "role", "role-local", "steer", "suite", "sweep-issue", "trust", "trust-none", "why",
@@ -633,8 +633,15 @@ class GitHubBoard:
     def pr_for_branch(self, branch: str) -> dict | None:
         """The newest PR from this repository's own `branch`: a fork's PR can carry the same branch name."""
         prs = board_mod.gh(["pr", "list", "--repo", self.repo, "--head", branch, "--state", "all",
-                            "--json", f"number,state,url,headRefName,{PR_ORIGIN}"]) or []
+                            "--json", f"number,state,url,headRefName,isDraft,{PR_ORIGIN}"]) or []
         return next((pr for pr in prs if pr.get("isCrossRepository") is False), None)
+
+    def ready_pr(self, number: int):
+        """Take a draft PR out of draft: `review_order` skips drafts, so a draft is never reviewed (commonroom#518)."""
+        board_mod.gh(["pr", "ready", str(number), "--repo", self.repo])
+
+    def comment_pr(self, number: int, body: str):
+        board_mod.gh(["pr", "comment", str(number), "--repo", self.repo, "--body", f"{MARK} {body}"])
 
     def close_pr(self, number: int, body: str):
         """Close a PR unmerged with a room comment. Its branch stays, so nothing on it is lost."""
@@ -1542,6 +1549,7 @@ class Dispatcher:
                 self.board.comment(n, "[room] This issue was in review but has no open PR (it was closed without merging). "
                                       "Back to ready: the next builder continues from the issue's branch and opens a new PR.")
                 actions.append(f"#{n} was in review with no open PR; back to ready")
+        actions += self.undraft_stuck(everything, prs, running)
         for claim in stale_claims(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                   stale_minutes=self.policy("stale_claim_minutes")):
             n = claim["number"]
@@ -2047,6 +2055,43 @@ class Dispatcher:
     def to_review(self, n: int):
         """Every move to status:review drops the other statuses and needs:changes in the same call (commonroom#93)."""
         self.board.set_labels(n, add=["status:review"], remove=list(LEAVES_REVIEW))
+
+    def undraft(self, pr: dict, why: str | None = None) -> bool:
+        """Mark a room branch's draft PR ready for review (commonroom#518). A board without `ready_pr` (the local board)
+        does nothing; a failure is logged, never raised: the issue is already in review."""
+        if not pr or not pr.get("isDraft") or not hasattr(self.board, "ready_pr") or self.dry_run:
+            return False
+        try:
+            self.board.ready_pr(pr["number"])
+        except RuntimeError as exc:
+            self.log(f"   could not mark PR #{pr['number']} ready: {str(exc)[:160]}")
+            return False
+        if why and hasattr(self.board, "comment_pr"):
+            try:
+                self.board.comment_pr(pr["number"], why)
+            except RuntimeError as exc:
+                self.log(f"   PR #{pr['number']} is ready, but the comment failed: {str(exc)[:160]}")
+        self.log(f"   PR #{pr['number']} was a draft: marked ready for review")
+        return True
+
+    def undraft_stuck(self, everything: list[dict], prs: list[dict], running: set) -> list[str]:
+        """An open draft PR on a room branch whose issue is in review with no build running is marked ready, once:
+        nothing else would ever review it (commonroom#518). The owner's own branches are left alone."""
+        actions, by_number = [], {i["number"]: i for i in everything}
+        for pr in prs:
+            m = BRANCH.match(pr["headRefName"])
+            issue = by_number.get(int(m.group(1))) if m else None
+            if not pr.get("isDraft") or not issue or issue["state"] != "OPEN":
+                continue
+            names = labels(issue)
+            if claimed(names) or EXTERNAL in names:
+                continue   # `room claim` or claim:external: the room moves nothing here
+            if "status:review" not in names or "status:in-progress" in names or f"#{issue['number']}" in running:
+                continue
+            if self.undraft(pr, "This PR was a draft, and the room doesn't review drafts. #%d is in review, so I marked "
+                                "it ready for review." % issue["number"]):
+                actions.append(f"PR #{pr['number']} was a draft with #{issue['number']} in review: marked ready")
+        return actions
 
     def mark_unstatused_top(self, everything: list[dict], state: dict[int, str]) -> list[str]:
         """A prio:top issue raised without a status label is invisible to the dispatcher, which only picks
@@ -3950,6 +3995,7 @@ class Dispatcher:
                                            + "\n\n" + fenced("\n".join(reason)))
                     return "blocked", [{"kind": "pr", "ref": ref}], tail
                 self.to_review(n)
+                self.undraft(pr)
                 if job.role == "scout" and hasattr(self.board, "label_pr"):
                     self.board.label_pr(pr["number"], "review:skip")
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
@@ -3958,6 +4004,7 @@ class Dispatcher:
                 # The builder checked and found nothing left to change (e.g. the fix already landed and was approved
                 # while the issue sat in the queue). That's a finished task, not a failed attempt.
                 self.to_review(n)
+                self.undraft(pr)
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (no changes needed)"}], tail
             if blocked and self.codex_handoff(job, branch, result.final_text or ""):
                 return "blocked", [{"kind": "blocked-report", "ref": f"#{n} blocked, handed to Claude"}], tail
@@ -4044,6 +4091,10 @@ class Dispatcher:
         room_py = (Path(self.room_root) / "room.py").as_posix()
         return " " + fill_way(self.ways["suite"], room_py=room_py, test=test)
 
+    def blocked_note(self) -> str:
+        """What counts as blocked (one sentence for every build), then who runs the suite."""
+        return " " + self.ways["build-blocked"] + " " + self.ways["build-blocked-pretest" if self.pre_test else "build-blocked-suite"]
+
     def codex_note(self) -> str:
         """The project's Codex sandbox and tooling note (test command, engine, rendering), ending in a space."""
         extra = self.prompt_text("codex")
@@ -4071,10 +4122,10 @@ class Dispatcher:
             if codex:
                 return fill_way(ways["build-codex"], n=n, repo=repo, branch=branch, codex_note=self.codex_note(),
                                 suite_note=self.suite_note(),
-                                blocked_note=" " + ways["build-blocked-pretest" if self.pre_test else "build-blocked"],
+                                blocked_note=self.blocked_note(),
                                 open_pr=open_pr)
             return fill_way(ways["build"], n=n, repo=repo, branch=branch, open_pr=open_pr, suite_note=self.suite_note(),
-                            blocked_note=" " + ways["build-blocked-pretest" if self.pre_test else "build-blocked"])
+                            blocked_note=self.blocked_note())
         if job.kind == "role" and config_mod.board_kind(self.cfg) == "local":
             item = job.issue
             comments = "\n".join(f"- {(c.get('author') or {}).get('login', '?')}: {c.get('body', '')}"
