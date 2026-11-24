@@ -240,7 +240,16 @@ def room_head() -> str | None:
 
 def start_replacement(argv: list[str], cwd: str):
     """Start the process that takes over this dispatcher's slot. It shares this process's output."""
-    return subprocess.Popen(argv, cwd=cwd)
+    # Pass the handles explicitly: with no console (Task Scheduler) the child doesn't inherit them on its own.
+    streams = {}
+    for key, stream in (("stdout", sys.stdout), ("stderr", sys.stderr)):
+        try:
+            stream.flush()
+            stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            continue
+        streams[key] = stream
+    return subprocess.Popen(argv, cwd=cwd, **streams)
 
 
 def cmd_run(args) -> int:
