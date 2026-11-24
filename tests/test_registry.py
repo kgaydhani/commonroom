@@ -132,6 +132,43 @@ class ProjectsCommand(Home):
         self.assertEqual(self.room("remove", "beta")[0], 0)
         self.assertEqual(sorted(registry.load().projects), ["alpha"])
 
+    def test_shared_folder_on_add_and_set_and_removed(self):
+        from commonroom import handshake
+        alpha, beta = self.project_dir("alpha"), self.project_dir("beta")
+        plain = self.root / "plain"
+        sync = self.root / "sync" / "alpha"
+        (self.root / "sync").mkdir()
+        self.assertEqual(self.room("add", "alpha", alpha, "--share", "10", "--shared", str(sync))[0], 0)
+        self.assertEqual(self.room("add", "beta", beta, "--share", "10")[0], 0)
+        reg = registry.load()
+        self.assertEqual(reg.projects["alpha"].shared, str(sync))
+        self.assertTrue(sync.is_dir())
+        self.assertEqual(handshake.folder_of(reg.projects["alpha"]), sync)
+        self.assertIsNone(reg.projects["beta"].shared)
+        self.assertEqual(handshake.folder_of(reg.projects["beta"]), self.home / "projects" / "beta")
+        code, out = self.room("set", "beta", "--shared", str(plain.parent / "b2"))
+        self.assertEqual(code, 0)
+        self.assertIn("created", out); self.assertIn("not copied", out)
+        self.assertIn(str(self.home / "projects" / "beta"), out)
+        self.assertEqual(registry.load().projects["beta"].shared, str(plain.parent / "b2"))
+        self.assertEqual(self.room("set", "alpha", "--shared", "")[0], 0)
+        reg = registry.load()
+        self.assertIsNone(reg.projects["alpha"].shared)
+        self.assertEqual(handshake.folder_of(reg.projects["alpha"]), self.home / "projects" / "alpha")
+
+    def test_shared_relative_or_scheduled_is_refused(self):
+        alpha = self.project_dir("alpha")
+        self.room("add", "alpha", alpha, "--share", "10")
+        before = self.file.read_bytes()
+        for argv, reason in ((("set", "alpha", "--shared", "rel/dir"), "'shared' must be the full path"),
+                             (("add", "b", alpha, "--share", "5", "--shared", "rel"), "'shared' must be the full path"),
+                             (("set", "alpha", "--shared", str(self.root), "--at", "2030-01-01 10:00"), "can't be scheduled")):
+            with self.subTest(argv=argv):
+                code, out = self.room(*argv)
+                self.assertEqual(code, 1)
+                self.assertIn(reason, out)
+                self.assertEqual(self.file.read_bytes(), before)
+
     def test_a_refused_command_leaves_the_file_unchanged(self):
         alpha, beta = self.project_dir("alpha"), self.project_dir("beta")
         self.room("add", "alpha", alpha, "--share", "60")

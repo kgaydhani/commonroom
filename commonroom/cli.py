@@ -932,6 +932,10 @@ def cmd_projects(args) -> int:
             return 1
         return 1 if found else 0
     name = args.name
+    if args.action == "set" and args.shared is not None and (args.at is not None or args.cancel_pending):
+        print("refused: --shared changes where the project's notes live and can't be scheduled; "
+              "run it without --at or --cancel-pending", file=sys.stderr)
+        return 1
     if args.action == "set" and (args.at is not None or args.cancel_pending):
         changes = {key: getattr(args, key) for key in pending.FIELDS if getattr(args, key) is not None}
         try:
@@ -946,12 +950,14 @@ def cmd_projects(args) -> int:
             print(f"refused: {exc}", file=sys.stderr)
             return 1
         return 0
+    old_folder = handshake.folder_of(reg.projects[name]) if args.action == "set" and name in reg.projects else None
     if args.action == "add":
         if any(n.lower() == name.lower() for n in reg.projects):
             print(f"refused: project {name!r} already exists; use `room projects set`", file=sys.stderr)
             return 1
         reg.projects[name] = registry.Project(name, os.path.abspath(args.path), args.share,
-                                              args.work or "open", args.when or "paced", bool(args.strict))
+                                              args.work or "open", args.when or "paced", bool(args.strict),
+                                              args.shared or None)
     elif name not in reg.projects:
         print(f"refused: no project {name!r} in {path}", file=sys.stderr)
         return 1
@@ -962,6 +968,8 @@ def cmd_projects(args) -> int:
         for key in ("share", "work", "when", "strict"):
             if getattr(args, key) is not None:
                 setattr(p, key, getattr(args, key))
+        if args.shared is not None:
+            p.shared = args.shared or None
     try:
         warnings = registry.save(reg, path, changing=name)
     except registry.RegistryError as exc:
@@ -970,6 +978,17 @@ def cmd_projects(args) -> int:
     for warning in warnings:
         print(f"warning: {warning}", file=sys.stderr)
     print(f"{args.action} {name}: saved {path}; owner's own slice is {registry.fmt_number(reg.owner_share())}")
+    if args.action != "remove" and args.shared is not None:
+        folder = handshake.folder_of(reg.projects[name])
+        if args.shared and not folder.exists() and folder.parent.is_dir():
+            try:
+                folder.mkdir()
+                print(f"created {folder}")
+            except OSError as exc:
+                print(f"warning: could not create {folder}: {exc}", file=sys.stderr)
+        print(f"{name}: digest and inbox now live in {folder}")
+        if old_folder is not None and old_folder != folder:
+            print(f"{name}: old folder was {old_folder}; files there are not copied")
     return 0
 
 
@@ -1249,8 +1268,10 @@ def main(argv: list[str] | None = None) -> int:
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("add", help="add a project"); q.add_argument("name"); q.add_argument("path"); q.add_argument("--share", type=float, required=True)
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
+    q.add_argument("--shared", metavar="FOLDER", help="the project's room folder (digest, inbox, reply.md): a full path, e.g. a synced OneDrive folder; '' removes it")
     q = ps.add_parser("set", help="change a project's share or mode"); q.add_argument("name"); q.add_argument("--share", type=float)
     q.add_argument("--work", choices=registry.WORK); q.add_argument("--when", choices=registry.WHEN); q.add_argument("--strict", action=argparse.BooleanOptionalAction)
+    q.add_argument("--shared", metavar="FOLDER", help="the project's room folder (digest, inbox, reply.md): a full path, e.g. a synced OneDrive folder; '' removes it")
     timing = q.add_mutually_exclusive_group()
     timing.add_argument("--at", help="schedule at ISO 8601 with a zone, or local YYYY-MM-DD HH:MM")
     timing.add_argument("--cancel-pending", action="store_true", help="drop this project's pending changes")
