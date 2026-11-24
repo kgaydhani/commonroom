@@ -2432,6 +2432,16 @@ class WithLedger(unittest.TestCase):
                 self.assertEqual(outputs, [{"kind": "pr", "ref": "PR #5 (to review: no Blocked: line)"}])
                 self.assertEqual({l for l in dispatch.labels(work) if l.startswith(("status:", "needs:"))}, {"status:review"})
                 self.assertEqual(len([c for c in comments_on(fake, 515) if "No `Blocked:` line" in c]), 1)
+        # a scout is not a builder: it still escalates as before, and gets no review
+        work = issue(517, ["status:in-progress", "role:scout"])
+        fake = LabelBoard([work], prs=[{"number": 7, "headRefName": "i517-x"}], details={})
+        fake.pr_for_branch = lambda branch: owned({"number": 7, "state": "OPEN"}, pr=True)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=fake, log=lambda *_: None)
+        d.remote_head = lambda branch: "new"
+        job = dispatch.Job("build", "scout", issue=work, reason="ready")
+        status, _, _ = d.assess(job, "i517-x", "old", "", workers.WorkerResult(ok=True, final_text="Pushed.\nSTATUS: BLOCKED"))
+        self.assertEqual(status, "blocked")
+        self.assertIn("needs:director", dispatch.labels(work))
         # the head didn't move: nothing was pushed, so it still escalates as before
         work = issue(516, ["status:in-progress", "role:builder"])
         fake = LabelBoard([work], prs=[{"number": 6, "headRefName": "i516-x"}], details={})

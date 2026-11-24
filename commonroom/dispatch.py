@@ -3933,7 +3933,7 @@ class Dispatcher:
                 if blocked and self.sandbox_suite_incomplete(job, result):
                     blocked = False
                 reason = blocked_lines(result.final_text or "")
-                if blocked and not reason:
+                if blocked and not reason and job.role == "builder":
                     # Nothing says what blocks it: an unfinished suite or open items belong to the reviewer (#515).
                     self.to_review(n)
                     self.board.comment(n, f"{MARK} " + fill_way(COMMENTS["to-review-no-blocked"], pr=pr["number"]))
