@@ -1005,17 +1005,33 @@ def areas(issue: dict) -> set[str]:
     return {l for l in labels(issue) if l.startswith(AREA_PREFIX) or l == GOLDEN}
 
 
+def room_latest(issue: dict) -> dict | None:
+    """The room's latest comment on an issue that still stands as the reason it went back to its builder. A CHANGES
+    review on its PR posted after that comment is a later word, and it posts no room comment, so the older comment
+    no longer counts (commonroom#552). `changes_at` is that review's time, put on the issue by `mark_changes`."""
+    room = [c for c in issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
+    last = room[-1] if room else None
+    if last and (issue.get("changes_at") or "") > (last.get("createdAt") or ""):
+        return None
+    return last
+
+
 def merge_main_only(issue: dict) -> bool:
     """Did the room's latest word on this issue send it back only to merge main into its PR (commonroom#14)?"""
-    room = [c for c in issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
-    return bool(room) and MERGE_MAIN in (room[-1].get("body") or "")
+    room = room_latest(issue)
+    return bool(room) and MERGE_MAIN in (room.get("body") or "")
 
 
 def conflicts_main(issue: dict) -> bool:
     """Did the room's latest word on this issue say its PR conflicts with main (commonroom#51)? Merging main needs
     `git fetch` and a commit, which Codex's sandbox can't do, so such an issue never goes to Codex."""
-    room = [c for c in issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
-    return bool(room) and CONFLICTS_MAIN in (room[-1].get("body") or "")
+    room = room_latest(issue)
+    return bool(room) and CONFLICTS_MAIN in (room.get("body") or "")
+
+
+def changes_time(detail: dict) -> str:
+    """When the newest REVIEW: CHANGES verdict on a PR was posted ('' when there is none)."""
+    return max((c.get("createdAt") or "" for c in detail.get("comments") or [] if verdict_of(c.get("body")) == "CHANGES"), default="")
 
 
 REVIEW_ROUNDS = POLICY["review_rounds"]
@@ -2217,6 +2233,16 @@ class Dispatcher:
         """No GitHub CI to read, but a test command and a checkout: the room runs the suite on main itself."""
         return not self.ci and bool(self.root and (self.cfg.get("checks") or {}).get("test"))
 
+    def checks_at(self, sha: str, live: dict) -> tuple[dict, str]:
+        """`[checks]` from the `room.toml` at `sha`, with a note for the action line when the live one is used instead."""
+        try:
+            tested = (config_mod.load_text(git(["show", f"{sha}:room.toml"], self.root)).get("checks") or {})
+            if not tested.get("test"):
+                raise ValueError("no [checks] test")
+        except (RuntimeError, ValueError, OSError) as exc:     # TOMLDecodeError and ConfigError are ValueErrors
+            return live, f"main {sha[:7]}'s room.toml unusable ({str(exc)[:60]}); testing with the live checks"
+        return tested, ""
+
     def main_suite_red(self, everything: list[dict], actions: list[str]) -> bool:
         """The no-CI `main_red` (commonroom#303): run the suite on main's head once per sha, in code with no model, and
         hold merges while the latest result is FAIL, with the one `Main is red` task open. The result is a ledger mark per
@@ -2232,9 +2258,15 @@ class Dispatcher:
         red_key, seen_key = f"main-suite-red:{sha}", f"main-suite:{sha}"
         if self.ledger.marked(self.project, seen_key) is None:
             started = time.time()
+            # The command comes from the room.toml at the sha under test, so a fix to the command can land while main
+            # is red (commonroom#533). Nothing else is read from it.
+            checks, note = self.checks_at(sha, checks)
+            if note:
+                actions.append(note)
             result, line = carry_mod.run_suite(self.root, sha, checks["test"], self.worktree_base() / "main-suite",
                                                suite_lock(Path(self.ledger.path).parent, self.project),
-                                               float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+                                               float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES),
+                                               keep=(Path(self.ledger.path).parent / "suite-logs", self.project))
             if result == "BUSY":
                 actions.append(f"main's suite not run in code yet ({line}); next pass")
                 return False
@@ -2251,16 +2283,20 @@ class Dispatcher:
             if result == "FAIL":
                 self.ledger.mark(self.project, red_key)
                 self.ledger.mark(self.project, f"main-suite-line:{line}")
+                self.ledger.mark(self.project, f"main-suite-python:{getattr(line, 'interpreter', 'unknown')}")
             actions.append(f"tests {result} on main {sha[:7]} in code ({line})")
             if result != "FAIL":
                 return False
             summary = line
             failing = tuple(getattr(line, "failing", ()))
+            interpreter = getattr(line, "interpreter", "unknown")
         elif self.ledger.marked(self.project, red_key) is None:
             return False
         else:
             summary = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-line:")), "")
             failing = ()
+            interpreter = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-python:")), "unknown")
+        log_path = carry_mod.kept_log(Path(self.ledger.path).parent / "suite-logs", self.project, sha)
         fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
         if fix:
             actions.append(f"merges held: the suite fails on main {sha[:7]}; #{fix['number']} fixes it")
@@ -2268,7 +2304,9 @@ class Dispatcher:
         test = checks["test"]
         names = "".join(f"- `{t}`\n" for t in failing)
         listed = f"Failing:\n{names}\n" if names else ""
+        kept = f"log: {log_path}\n" if log_path.exists() else ""
         body = (f"The suite (`{test}`) fails on main {sha[:7]}, run by the room: {summary}\n\n{listed}"
+                f"{kept}interpreter: {interpreter}\n\n"
                 f"The room holds every "
                 f"other merge until the suite passes on main again; this task's PR is the one exception. Find the cause "
                 f"(often two PRs that each passed alone), fix it on this issue's branch, run `{test}`, and open a PR. "
@@ -2982,6 +3020,30 @@ class Dispatcher:
                    if now - ended < self.policy("room_error_backoff_seconds") * 2 ** min(count - 1, 4)}
         return self.ledger.running_tasks(self.project) | resting
 
+    def mark_changes(self, issues: list[dict]) -> list[dict]:
+        """Put `changes_at` on each ready, sent-back issue whose open PR has a CHANGES review: the CHANGES bounce posts
+        no room comment, so an older merge-main or CI comment would otherwise still read as the reason the issue went
+        back (commonroom#552). Decided from the PR's reviews against the comment's time, so it also holds for an issue
+        already in that state. A PR that can't be read leaves the issue as it was."""
+        wanted = {i["number"]: i for i in issues if {"status:ready", "needs:changes"} <= labels(i)
+                  and room_latest(i) and "changes_at" not in i}
+        if not wanted:
+            return issues
+        try:
+            prs = self.board.open_prs()
+        except Exception:
+            return issues
+        for pr in prs:
+            m = BRANCH.match(pr.get("headRefName") or "")
+            issue = wanted.get(int(m.group(1))) if m else None
+            if not issue:
+                continue
+            try:
+                issue["changes_at"] = changes_time(self.reviewer_view(self.board.pr_detail(pr["number"])))
+            except Exception as exc:
+                self.log(f"   #{issue['number']}: PR #{pr['number']} reviews unreadable ({str(exc)[:80]})")
+        return issues
+
     def ready_builds(self, open_now: list[dict]) -> list[dict]:
         running = self.busy_tasks()
         # An issue in an area (`area:*`, or `risk:golden`) that is held (in progress, in review, running, or sent back
@@ -3179,7 +3241,7 @@ class Dispatcher:
         review = self.pick_review(allowed)   # full verdicts: a review meant for the other provider stays its own
         if review:
             return review
-        open_now = self.board.open_issues(None)
+        open_now = self.mark_changes(self.board.open_issues(None))
         ready = sorted(self.ready_builds(open_now), key=priority)
         if len(ready) >= par.get("min_ready", 3):
             for issue in ready:
@@ -3249,7 +3311,7 @@ class Dispatcher:
         if review:
             return review
         builder_spec = self.roles.get("builder", ["claude:sonnet"])
-        open_now = self.board.open_issues(None)
+        open_now = self.mark_changes(self.board.open_issues(None))
         ready = self.ready_builds(open_now)
         running = self.busy_tasks()
         scouting = [i for i in open_now if {"status:ready", "role:scout"} <= labels(i) and f"#{i['number']}" not in running
@@ -3723,8 +3785,8 @@ class Dispatcher:
             return None   # the older stopped/limited path takes over
         if not last or last["status"] != "done":
             return no("the task's newest builder run did not end done")
-        room = [c for c in job.issue.get("comments") or [] if (c.get("body") or "").lstrip().startswith(MARK)]
-        if room and (merge_main_only(job.issue) or conflicts_main(job.issue) or "CI is red" in (room[-1].get("body") or "")):
+        room = room_latest(job.issue)
+        if room and (merge_main_only(job.issue) or conflicts_main(job.issue) or "CI is red" in (room.get("body") or "")):
             return no("sent back for merge-main/CI, not a review")
         if last["provider"] != "claude":
             return no("the last build was not Claude")

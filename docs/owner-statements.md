@@ -136,6 +136,58 @@ After the first handover between two director sessions:
 
 20 Nov 2026
 
+## The layer
+
+> id like the magazine work back on and it actually running, crawling, improving, researching etc
+
+23 Nov 2026
+
+> i think with common room u should only put it to 5 when its like ready to be self sufficient and its done
+
+23 Nov 2026, on the room's own share of the week.
+
+> i think what i realised im really looking from common room is to be a thin layer for everything i do, and maybe this is stupid and maybe shouldnt be the mainthing, or maybe shouldnt be forced on the user, and maybe it breaks the point which is that i need to be able to make use of all of anthropics work and not put in things that will clash with things where anthropic clearly knows best. BUT. in my own life everything i do is all in my brain, whether its personal, work, hobbies, even between different projects and work, theres so much cross over, and sometimes i want to take things out of one project, or refer to something ive worked on in a completely different session.
+
+> i am by no means qualified to know how my claude sessions should actually be managed and organised, or how my computer folders should actually be organised, or how my own thinking ought to be orhganised [...] all i do is starta new session everytime in a new folder ive created, and still have no idea if this is making it harder or easier for claude code, and then we have the same thing, where i never really know when to start a new session, or how to delegate, or whether different sessions should have different responsibilities. and often one session has so much context about my personal life or my job or whatever, that even if its completely different to the task at hand, i will use that one for something new, just because i like that it knows stuff.
+
+> i almost only ever want to have one singular chat on the go(well  maybe this is being extreme and exaggherating and would make life difficult), but the point is like i dont want ot have to keep managing where sessions should exist, and what they should have access to and who knows what and who doesnt know what [...] when i am just the user, and surely u/claude would know better when given the entire context of the local machine.
+
+> common room is made for me and people like me, people who want their entire ecosystem to be digital and AI first, people who dont mind giving claude access to every single thing on their pc, and they have multiple projects onthe go, and they want to be optimised and have easy fast switching [...] this is what i want from common room, and maybe thats a pipe dream, but at least it gives u the understanding
+
+> basically common room is for the person who puts bypass permissions, and wants their workstation to be claude first and human second, and i can talk about anything and it is all triaged properly via sessions and contexts that are managed under the hood, and i just sit back and know that it will all be used optimally and efficiently and that the best possible outcomes are used.
+
+> right now common room is more of a label of a collection of layers that dont necessarily exist as one package, i think i do want it as a fundamental and substatial layer [...] my workstation is the hardware [...] then the OS and software on the hardware, then the filesystem and applications that exists on the OS, then on top of those applications or files or repos we have the AI layer, which is in my case my claude code or Codex, but it could be a local LLM it could be Grok, its essentially just an API token pipe (but not api because this is for vibecoders who pay direct subscriptions) which is why common room therefore exists on top of (rather than below) the AI layer as a layer inbetween the AI and the user (human).
+
+24 Nov 2026
+
+How he said to treat these, after a session turned the last one into new wording for an axiom:
+
+> i say these things to prompt u do to research and come to your own conclusions about what is best and then throw my original line in the bin, if anything the whole point of me giving u my vision is for u to go back (and partly this is potentially how i want common room to act) is so that u see my lines, and then do a load of research and synthesis with all ur prev research and figure out how to integrate it all into what we actually would like, and can begin building, not to just take my line and turn it into an axiom/rule for later that is inevitably going to clash since its so basic and black and white. the whole point of a vision is not to be so dogmatic, its so u can actually figure out a way of making the best possible product. the law after all is not dogma, it is a label
+
+24 Nov 2026. The synthesis he asked for is [layer.md](layer.md).
+
+> if i need to restart the pc or restart claude, i dont want to have to tell anything, i want it to just know or be checking any running tasks
+
+> i want to be able to just send this message and common room creates me a session with the perfect context and already briefed and prepped, and says ur session is ready for u, and that session has access to my entire life, and can ask for details and actively switch on other sessions and do full research based on the other sessions on things i have discussed, and will also manage its own session, like its not a 'stupid' session and its no tlimited to one job either, the important part is that its given the tools and the nudges to use said tools, so that when i mention something it doesnt have to wait for me to prompt it to do the research.
+
+> these sessions have their own ethics and guardrails just like u, but i never want to have rules that i have to fight, and like i dont want it not to be able to do something and then fight me over a rule i set
+
+> something that i want from common room is that when i have chats like this no matter where i am, its feeding useful information for common room back to it [...] so instead of just telling me this is a gap in common room, i want it to automatically feed that back to u or whoever can do something with that
+
+24 Nov 2026, later the same day, each said while using a session.
+
+> that is like the most basic thing about common room, is that i can talk about anything, and it will direct my question to the place that will have the best and quickest answers, and maybe 90% fi the time it doesnt need to 'communicate' with any other sessions, but in cases like this [...] what i want is for it to communicate with a separate session, and then all it says to me is, i personally dont know [...], but ive sent a message over to Agent XYZ who the common room directory told me is in charge or keeping the pipeline running, and he will get back to me in an hour or so with someanswers, if u want i can start a session where u can talk directly to him so our chat doesnt get cluttered, or if its a super quick thing, then theres no need for me to have a direct interface with that session.
+
+> the whole point of commonr oom is linking and decluterrign session contexts so that we have extremely able memory separation and we reduce hallucinations and we keep all our projects and memories way more organised., the moment my session that is helping me organise my life and thoughts spends signifcant context buig fixing the magazine or doing something completely tangential from its original purpose everything becomes messy
+
+24 Nov 2026, after two sessions did another project's work themselves.
+
+> my problem isnt even that u tried to fix it, my problem is that u did so blind, and without using the capabilties that are the very thing we are trying to set up here, the whole point of this common room layer, is so that u can make a quick decision that says, is this something i could query quickly [...] and it very well could have been, say the pipeline was up to date, and had fresh crawls and was actually working, then by all means u could have spun up a shortlist for me, but 1. the moment u saw it was a mess and there was no wiring that should have been alarm bells that ok this is not my job, let me message the common room director or figure out whos job this is. and 2. even befor ethis, you should know that a big part of the magazine is these shortlists and u can assume its something i have done before and would have a lot of thought into how i want my picks done, yet u did none of that research and instead went in blind
+
+> a big point is that the chats should still have agency and never be stopped by hard rules, but it should be intelligent, that is the point. its like with this chat u keep asking me, should i make a rule, should i make y a ruile. i dont know. u were supposed to synthesise and reasech and make my vision and dream possible
+
+24 Nov 2026, the first to the session that had gone in blind, the second to the session that kept offering him rules.
+
 ## His suggestions about how
 
 These are his guesses at mechanisms. He said how to treat them:
