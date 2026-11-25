@@ -26,7 +26,7 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
-from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
+from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, services, sessions
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, trials as trials_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
@@ -131,6 +131,7 @@ BULLETIN_REASON = WAYS["bulletin"]   # fill_way() it with due, issue and owner
 OWNER_COOLDOWN = POLICY["owner_cooldown_seconds"]
 ROOM_ERROR_BACKOFF = POLICY["room_error_backoff_seconds"]
 ROOM_ERROR_ESCALATE = POLICY["room_error_escalate"]
+HEARTBEAT_FAILURES = POLICY["heartbeat_failures"]
 SCOUT_INTERLEAVE = POLICY["scout_interleave_seconds"]
 # A scheduled issue's body carries this, so the schedule sees its last one is still open (commonroom#151).
 SCHEDULE_MARK = "<!-- room-schedule:{role} -->"
@@ -191,6 +192,7 @@ def claimed(names) -> bool:
 
 # An issue in review carries no other status and no needs:changes: gamemirage#427 had ready, review and needs:changes
 # at once, and a ready label invites a second builder (commonroom#93).
+PARKED_LABELS = {"needs:director", "status:blocked", "parked"}
 LEAVES_REVIEW = ("status:ready", "status:in-progress", "status:blocked", "needs:changes")
 
 
@@ -493,6 +495,14 @@ class GitHubBoard:
     def close_not_planned(self, number: int, body: str):
         board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--reason", "not planned",
                       "--comment", f"{DIRECTOR_MARK} {body}"])
+
+    def issue_labels(self, number: int) -> list[str] | None:
+        """The label names on issue `number` now, None when it can't be read."""
+        try:
+            data = board_mod.gh(["issue", "view", str(number), "--repo", self.repo, "--json", "labels"]) or {}
+        except RuntimeError:
+            return None
+        return [l["name"] for l in data.get("labels") or []]
 
     def issue_state(self, number: int) -> str | None:
         """'OPEN' or 'CLOSED' for issue `number`, None when it can't be read (missing, or a PR)."""
@@ -1346,7 +1356,7 @@ POLICY_CONSTANTS = {"review_rounds": "REVIEW_ROUNDS", "incomplete_rounds": "INCO
                     "owner_cooldown_seconds": "OWNER_COOLDOWN", "stale_claim_minutes": "STALE_CLAIM_MINUTES",
                     "room_error_backoff_seconds": "ROOM_ERROR_BACKOFF", "room_error_escalate": "ROOM_ERROR_ESCALATE",
                     "resume_window_seconds": "RESUME_WINDOW", "rework_resume_seconds": "REWORK_RESUME", "progress_min_work_seconds": "PROGRESS_MIN_WORK",
-                    "notify_max": "NOTIFY_MAX", "run_timeout_seconds": "RUN_TIMEOUT"}
+                    "notify_max": "NOTIFY_MAX", "heartbeat_failures": "HEARTBEAT_FAILURES", "run_timeout_seconds": "RUN_TIMEOUT"}
 
 
 def session_file(worktree, session_id: str, projects_dir: Path | None = None) -> Path:
@@ -2068,6 +2078,16 @@ class Dispatcher:
             actions.append(f"#{n} had status:ready while {other}: removed status:ready")
         return actions
 
+    def parked_during_build(self, n: int) -> bool:
+        """True when someone parked issue `n` while its build ran (needs:director, status:blocked or parked on the board
+        now): the build's result must not move it back to review (commonroom#553). Unreadable labels mean not parked."""
+        read = getattr(self.board, "issue_labels", None)
+        try:
+            names = read(n) if read else None
+        except Exception:
+            names = None
+        return bool(set(names or ()) & PARKED_LABELS)
+
     def to_review(self, n: int):
         """Every move to status:review drops the other statuses and needs:changes in the same call (commonroom#93)."""
         self.board.set_labels(n, add=["status:review"], remove=list(LEAVES_REVIEW))
@@ -2233,10 +2253,21 @@ class Dispatcher:
         """No GitHub CI to read, but a test command and a checkout: the room runs the suite on main itself."""
         return not self.ci and bool(self.root and (self.cfg.get("checks") or {}).get("test"))
 
+    def show_room_toml(self, sha: str) -> str:
+        """The project's `room.toml` at `sha`. `git_env` stops git at the project folder's parent, which is where the
+        repository is when the folder is a subfolder of it, so this read-only call lifts that ceiling."""
+        env = {k: v for k, v in os.environ.items() if k != "GIT_CEILING_DIRECTORIES"}
+        done = subprocess.run(["git", "show", f"{sha}:./room.toml"], cwd=self.root, capture_output=True, text=True,
+                              encoding="utf-8", env=env)
+        if done.returncode != 0:
+            raise RuntimeError(f"git show {sha[:7]}:./room.toml: {done.stderr.strip()}")
+        return done.stdout.strip()
+
     def checks_at(self, sha: str, live: dict) -> tuple[dict, str]:
-        """`[checks]` from the `room.toml` at `sha`, with a note for the action line when the live one is used instead."""
+        """`[checks]` from the `room.toml` at `sha` (`./` makes git read it relative to the project folder, which need not be
+        the repository root; commonroom#539), with a note for the action line when the live one is used instead."""
         try:
-            tested = (config_mod.load_text(git(["show", f"{sha}:room.toml"], self.root)).get("checks") or {})
+            tested = (config_mod.load_text(self.show_room_toml(sha)).get("checks") or {})
             if not tested.get("test"):
                 raise ValueError("no [checks] test")
         except (RuntimeError, ValueError, OSError) as exc:     # TOMLDecodeError and ConfigError are ValueErrors
@@ -3519,8 +3550,20 @@ class Dispatcher:
             found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                    self.milestone, direction_at, reconciled)
             now = time.time()
+            found += steward.heartbeat_failing(
+                self.ledger.heartbeat_runs(self.project), self.policy("heartbeat_failures"),
+                [services.command_key(c) for c in (self.cfg.get("heartbeat") or {}).get("commands") or []])
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
+            try:   # an unreadable registry or inbox costs only this check, never the rest of the sweep
+                reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME, check=False)   # the ledger's own home
+                mine = handshake.project_named(reg, self.project)
+                if mine is not None:   # a project not in the registry has no inbox to check
+                    waiting = handshake.unread(handshake.read_notes(handshake.folder_of(mine)), mine, self.ledger)
+                    found += steward.unread_notes(waiting, now, self.policy_overrides.get(
+                        "unread_note_hours", policy_mod.DEFAULTS["unread_note_hours"]))
+            except Exception as exc:
+                self.log(f"   steward: the inbox check failed: {exc}")
             for f in found:
                 self.log(f"   steward: {f['invariant']}: {f['detail']}")
             self.ledger.record_findings(self.project, found)
@@ -4051,6 +4094,8 @@ class Dispatcher:
             if pr and pr["state"] == "OPEN" and after and after != before:
                 if blocked and self.sandbox_suite_incomplete(job, result):
                     blocked = False
+                if not (blocked and blocked_lines(result.final_text or "")) and self.parked_during_build(n):
+                    return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (issue parked during the build)"}], tail
                 reason = blocked_lines(result.final_text or "")
                 if blocked and not reason and job.role == "builder":
                     # Nothing says what blocks it: an unfinished suite or open items belong to the reviewer (#515).
@@ -4076,6 +4121,8 @@ class Dispatcher:
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
             if (pr and pr["state"] == "OPEN" and not blocked
                     and re.search(r"STATUS:\s*DONE", result.final_text or "", re.I)):
+                if self.parked_during_build(n):
+                    return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (issue parked during the build)"}], tail
                 # The builder checked and found nothing left to change (e.g. the fix already landed and was approved
                 # while the issue sat in the queue). That's a finished task, not a failed attempt.
                 self.to_review(n)

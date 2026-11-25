@@ -425,6 +425,56 @@ def _wakes(ledger: Ledger, p: registry.Project, now: float) -> str:
                      for reason, (then, nowc) in wake_counts(ledger, p, now).items())
 
 
+BLOCKED_KINDS = (("escalated to the director", "blocked-escalated"), ("handed to Claude", "blocked-handoff"),
+                 ("sent to review with no Blocked: line", "blocked-to-review"))
+
+
+def blocked_builds(ledger: Ledger, p: registry.Project, now: float) -> dict[str, dict[str, list[int]]]:
+    """Builder runs that ended STATUS: BLOCKED, by where they went, from the ledger's output refs only (commonroom#521).
+    kind -> {"n": [before, now], "landed": [before, now], "changes": [before, now]}; the last two are only filled for
+    builds sent to review: a later `merge` run for the same task, or a later run whose ref is `PR #N CHANGES`."""
+    runs = ledger.runs_since(ledger_name(p), now - 2 * WEEK)
+    out: dict[str, dict[str, list[int]]] = {}
+    for r in runs:
+        if r.get("role") != "builder" or r["started_at"] > now:
+            continue
+        refs = [str(o.get("ref") or "") for o in r["outputs"]]
+        if any("to review: no Blocked: line" in x for x in refs):
+            kind = "blocked-to-review"
+        elif r["status"] == "blocked":
+            kind = "blocked-handoff" if any("handed to Claude" in x for x in refs) else "blocked-escalated"
+        else:
+            continue
+        week = int(r["started_at"] > now - WEEK)
+        row = out.setdefault(kind, {"n": [0, 0], "landed": [0, 0], "changes": [0, 0]})
+        row["n"][week] += 1
+        if kind != "blocked-to-review":
+            continue
+        prs = {m.group(0) for x in refs for m in [re.search(r"PR #\d+", x)] if m}
+        later = [q for q in runs if q["started_at"] > r["started_at"]]
+        if any(q.get("role") == "merge" and (q.get("task") == r.get("task") or q.get("task") in prs) for q in later):
+            row["landed"][week] += 1
+        if any(str(o.get("ref") or "") == f"{pr} CHANGES" for q in later for o in q["outputs"] for pr in prs):
+            row["changes"][week] += 1
+    return out
+
+
+def _blocked_builds(ledger: Ledger, p: registry.Project, now: float) -> str:
+    """One line per place a blocked build went, under `## Ran and landed`; nothing when there were none in either week."""
+    found = blocked_builds(ledger, p, now)
+    lines = []
+    for label, kind in BLOCKED_KINDS:
+        row = found.get(kind)
+        if not row:
+            continue
+        line = f"Blocked builds, {label}: {row['n'][0]} in the 7 days before, {row['n'][1]} in the last 7 days"
+        if kind == "blocked-to-review":
+            line += (f" (last 7 days: {row['landed'][1]} landed, {row['changes'][1]} came back with CHANGES;"
+                     f" the 7 days before: {row['landed'][0]} landed, {row['changes'][0]} with CHANGES)")
+        lines.append(line + ".")
+    return chr(10).join(lines)
+
+
 BOARD_CAP = 8   # findings the digest shows; the rest are counted, so the digest stays small (A9, A10)
 BOARD_FIRST = {"owner-overdue": 0, "blocked-on-nothing": 1}   # these lead; the rest follow in the order found
 
@@ -726,7 +776,7 @@ def build_digest(reg: registry.Registry, p: registry.Project, ledger: Ledger, no
     where = folder_of(p)
     text = fill_way(DIGEST, project=p.name, reply=_direction(ledger, p, where) + reply_line(p), built=f"{datetime.fromtimestamp(now):%a %d %b %Y %H:%M} (local time)",
                     charter=_charter(where, p), share=_share(reg, p), attached=_attached(ledger, p),
-                    decisions=_decisions(where, p), notes=_notes(where), work=chr(10).join(x for x in (_work(ledger, p, now), _interventions(ledger, p, now), _wakes(ledger, p, now)) if x)) + "\n"
+                    decisions=_decisions(where, p), notes=_notes(where), work=chr(10).join(x for x in (_work(ledger, p, now), _interventions(ledger, p, now), _wakes(ledger, p, now), _blocked_builds(ledger, p, now)) if x)) + "\n"
     text = text + chr(10) + f"## Self-sufficient?{chr(10)}{_self_sufficient(ledger, p, now)}" + chr(10)
     board = _board(ledger, p)
     if board:
@@ -772,7 +822,7 @@ def _checkout_behind(p: registry.Project) -> str:
     if not count or not count.isdigit() or int(count) == 0:
         return ""
     branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
-    tree = "uncommitted changes" if _git(path, "status", "--porcelain", "--untracked-files=no") else "tree clean"
+    tree = "uncommitted changes" if _git(path, "--no-optional-locks", "status", "--porcelain", "--untracked-files=no") else "tree clean"
     differs = bool(_git(path, "diff", "--name-only", "HEAD", "origin/main", "--", "room.toml"))
     n = int(count)
     tail = ("room.toml differs, so merged room.toml changes are not live. Pull it from an interactive session." if differs
@@ -809,6 +859,19 @@ def unread(notes: list[dict], p: registry.Project, ledger: Ledger | None) -> lis
     """The notes in the project's inbox newer than its own last read, not written by the project itself."""
     seen = int(last_read(ledger, p))   # a note is dated to the second: one in the read's own second counts as unread
     return [n for n in notes if n["at"] >= seen and (n["from"] or "").lower() != p.name.lower()]
+
+
+def unread_summary(reg: registry.Registry, p: registry.Project, ledger: Ledger, now: float) -> dict:
+    """What the page shows of a project's unread inbox: the count, and the oldest one's time and name (None if none)."""
+    found = unread(read_notes(folder_of(p)), p, ledger)
+    oldest = min(found, key=lambda n: n["at"], default=None)
+    return {"count": len(found), "oldest_at": oldest["at"] if oldest else None,
+            "oldest_name": oldest["name"] if oldest else None}
+
+
+def project_named(reg: registry.Registry, ledger_project: str) -> registry.Project | None:
+    """The registered project the ledger records under `ledger_project`, or None."""
+    return next((p for p in reg.projects.values() if ledger_name(p) == ledger_project), None)
 
 
 def _here(reg: registry.Registry) -> registry.Project | None:
