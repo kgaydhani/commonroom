@@ -1,5 +1,5 @@
 {
   "name": "commonroom",
-  "description": "Common Room beside Claude Code: at session start, in a registered project's folder, adds a pointer to the project's room folder (its digest, unread notes and how to reply). It only adds context. Load it in place (--plugin-dir, or a marketplace added from a local path), because the hook runs the room.py one folder up.",
+  "description": "Common Room beside Claude Code: at session start, in a registered project's folder, adds a pointer to the project's room folder (its digest, unread notes and how to reply). It only adds context. It runs from a user-scope install: the hook finds the room's code beside the plugin, or at the path in `room-path` in the room home.",
   "version": "0.1.0"
 }

@@ -1,0 +1,11 @@
+{
+  "name": "commonroom",
+  "owner": {"name": "Common Room"},
+  "plugins": [
+    {
+      "name": "commonroom",
+      "source": "./plugin",
+      "description": "Common Room beside Claude Code: at session start, in a registered project's folder, adds a pointer to the project's room folder."
+    }
+  ]
+}
