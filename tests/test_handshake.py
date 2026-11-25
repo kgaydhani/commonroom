@@ -595,6 +595,21 @@ class CheckoutBehind(Room):
         out = self.digest()
         self.assertIn("(branch main) is 2 commits behind origin/main, tree clean; room.toml is the same", out)
 
+    def test_status_runs_without_optional_locks(self):
+        self.push_two()
+        calls = []
+        real = handshake._git
+
+        def spy(cwd, *argv):
+            calls.append(argv)
+            return real(cwd, *argv)
+
+        with mock.patch.object(handshake, "_git", spy):
+            self.digest()
+        status = [c for c in calls if "status" in c]
+        self.assertTrue(status)
+        self.assertTrue(all(c[0] == "--no-optional-locks" for c in status))
+
     def test_uncommitted_changes_are_named(self):
         self.push_two()
         (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n# mine\n', encoding="utf-8")

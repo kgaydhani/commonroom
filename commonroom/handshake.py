@@ -822,7 +822,7 @@ def _checkout_behind(p: registry.Project) -> str:
     if not count or not count.isdigit() or int(count) == 0:
         return ""
     branch = _git(path, "rev-parse", "--abbrev-ref", "HEAD") or "HEAD"
-    tree = "uncommitted changes" if _git(path, "status", "--porcelain", "--untracked-files=no") else "tree clean"
+    tree = "uncommitted changes" if _git(path, "--no-optional-locks", "status", "--porcelain", "--untracked-files=no") else "tree clean"
     differs = bool(_git(path, "diff", "--name-only", "HEAD", "origin/main", "--", "room.toml"))
     n = int(count)
     tail = ("room.toml differs, so merged room.toml changes are not live. Pull it from an interactive session." if differs
