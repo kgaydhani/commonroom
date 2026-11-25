@@ -4,7 +4,8 @@ It sits beside Claude Code, never between (axiom A0): its only output is `hookSp
 a decision, a rewrite or a permission. In a registered project's folder, or a git worktree of one, it adds one short
 paragraph from commonroom/ways/handshake/session-start.md (axiom A1): where the project's digest is, how many notes in
 its inbox are unread and who they are from, and how to reply. With no unread note and no charter, only the template's
-first line. Elsewhere, with an empty registry, in a room worker's folder, or on any error, it prints nothing and exits
+first line. In a known place (commonroom#571: a folder in places.json, no project) it adds one short line from
+place-start.md. Elsewhere, with an empty registry, in a room worker's folder, or on any error, it prints nothing and exits
 0. It calls no model and no network: its one subprocess is handshake.find's `git rev-parse`, it opens the ledger
 read-only, and it gives up after LIMIT seconds.
 
@@ -25,13 +26,14 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from commonroom import handshake, policy, registry, sessions
+from commonroom import handshake, places, policy, registry, sessions
 from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
 SESSION_START = read_way(handshake.TEMPLATES / "session-start.md")
 COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
+PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
@@ -178,6 +180,19 @@ def cold_return(data: dict, now: float | None = None) -> str:
     return fill_way(COLD_RETURN, gap=_ago(now - turn[0]), context=f"{turn[1] // 1000}k", brief=named)
 
 
+def place_line(data: dict) -> str:
+    """One short line for a folder that is a known place (and no project), or "" for any other folder or worker."""
+    cwd = data.get("cwd")
+    if os.environ.get("COMMONROOM_WORKER") or not isinstance(cwd, str) or not os.path.isdir(cwd):
+        return ""
+    place = places.find(places.load(), cwd)
+    if place is None:
+        return ""
+    name = Path(place["path"]).name or place["path"]
+    described = " ".join(str(place.get("description") or "").split())
+    return fill_way(PLACE_START, place=name, description=f": {described.rstrip('.')}" if described else "")
+
+
 def context(data: dict, now: float | None = None) -> str:
     """The text to add for one SessionStart input, or "" to add nothing."""
     now = time.time() if now is None else now
@@ -185,7 +200,7 @@ def context(data: dict, now: float | None = None) -> str:
     try:
         p = _project(data, now, ledger)
         if p is None:
-            return ""
+            return place_line(data)
         unread = handshake.unread(handshake.read_notes(handshake.folder_of(p)), p, ledger)
         brief = handshake.offer(p, ledger, data.get("session_id"))
         path = data.get("transcript_path")

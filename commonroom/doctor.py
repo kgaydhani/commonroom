@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
+import re
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from commonroom import config as config_mod, registry, usage
+from commonroom import config as config_mod, install, registry, usage, wire
 
 MIN_PYTHON = (3, 11)
 
@@ -113,8 +115,62 @@ def codex_reason(cfg: dict) -> str | None:
     return None
 
 
+def _json(path: Path):
+    """(parsed object or None, problem or None) for a settings or hooks file."""
+    if not path.is_file():
+        return None, f"{path} does not exist"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, f"{path} is unreadable: {exc}"
+    return (data, None) if isinstance(data, dict) else (None, f"{path} is not a JSON object")
+
+
+def install_checks(home: Path, claude: Path, codex: Path) -> list[tuple[str, str]]:
+    """(name, problem) for each user-level install check; an empty problem means it passes. Reads only."""
+    fix = "run `room install`"
+    rows: list[tuple[str, str]] = []
+    settings, bad = _json(claude / "settings.json")
+    enabled = bool(settings and (settings.get("enabledPlugins") or {}).get(install.PLUGIN_KEY) is True)
+    rows.append(("plugin enabled", "" if enabled else f"{bad or 'the plugin is not enabled in ' + str(claude / 'settings.json')}; {fix}"))
+    market = ((settings or {}).get("extraKnownMarketplaces") or {}).get(install.MARKETPLACE) or {}
+    src = (market.get("source") or {}).get("path") if isinstance(market, dict) else None
+    runner = Path(src) / "plugin" / "hooks" / "run.py" if src else None
+    if not src:
+        problem = f"no `{install.MARKETPLACE}` marketplace in {claude / 'settings.json'}; {fix}"
+    elif not runner.is_file():
+        problem = f"{runner} does not exist; the checkout moved, run `room install` from it"
+    else:
+        problem = ""
+    rows.append(("claude hooks", problem))
+    hooks, bad = _json(codex / "hooks.json")
+    problem = bad and f"{bad}; {fix}" or ""
+    if hooks is not None:
+        for event in wire.EVENTS:
+            groups = (hooks.get("hooks") or {}).get(event)
+            cmds = [h.get("command", "") for g in groups if isinstance(g, dict) for h in g.get("hooks", [])
+                    if isinstance(h, dict)] if isinstance(groups, list) else []
+            ours = [c for c in cmds if "plugin/hooks/run.py" in str(c)]
+            if not ours:
+                problem = f"hooks.{event} in {codex / 'hooks.json'} has no Common Room entry; {fix}"
+                break
+            m = re.search(r'"([^"]*plugin/hooks/run\.py)"', ours[0])
+            if m and not Path(m.group(1)).is_file():
+                problem = f"{m.group(1)} does not exist; run `room install` from the current checkout"
+                break
+    rows.append(("Codex hooks", problem))
+    path_file = home / "room-path"
+    if not path_file.is_file():
+        problem = f"{path_file} is missing; {fix}"
+    else:
+        named = path_file.read_text(encoding="utf-8").strip()
+        problem = "" if named and Path(named).is_file() else f"{path_file} names {named or 'nothing'}, which is not a room.py; {fix} from the current checkout"
+    rows.append(("room-path", problem))
+    return rows
+
+
 def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, version=None,
-           runner=run_cmd, windows=None, checkout=None) -> list[tuple[bool, bool, str]]:
+           runner=run_cmd, windows=None, checkout=None, home=None, claude=None, codex=None) -> list[tuple[bool, bool, str]]:
     """Each check as (ok, required, line text)."""
     out: list[tuple[bool, bool, str]] = []
 
@@ -142,6 +198,11 @@ def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, ve
         if win:
             fix += ", and disable any per-project heartbeat tasks first"
         add(False, "scheduled beat", fix)
+
+    for name, problem in install_checks(Path(home) if home else install.room_home(),
+                                        Path(claude) if claude else install.claude_dir(),
+                                        Path(codex) if codex else wire.codex_dir()):
+        add(not problem, name, problem)
 
     path = Path(reg_path) if reg_path else registry.default_path()
     reg = None
@@ -183,8 +244,8 @@ def checks(reg_path: Path | str | None = None, which=shutil.which, gh=run_gh, ve
 
 
 def run(reg_path=None, which=shutil.which, gh=run_gh, version=None, out=print,
-        runner=run_cmd, windows=None, checkout=None) -> int:
-    results = checks(reg_path, which, gh, version, runner, windows, checkout)
+        runner=run_cmd, windows=None, checkout=None, home=None, claude=None, codex=None) -> int:
+    results = checks(reg_path, which, gh, version, runner, windows, checkout, home, claude, codex)
     for _, _, line in results:
         out(line)
     return 1 if any(not ok and required for ok, required, _ in results) else 0

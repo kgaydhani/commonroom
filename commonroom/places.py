@@ -155,3 +155,10 @@ def describe(data: dict, which: str, line: str) -> dict:
         raise KeyError(f"no place {which!r}" if not matches else f"{which!r} names {len(matches)} places: give the path")
     data["places"][matches[0]]["description"] = " ".join(line.split())
     return data
+
+
+def find(data: dict, cwd) -> dict | None:
+    """The saved place that `cwd` is, or is inside, as its record; None when none. Reads only `data`."""
+    key = sessions.path_key(cwd)
+    root = sessions._within(key, list(data["places"]))
+    return data["places"][root] if root else None

@@ -1,3 +1,4 @@
+import json
 import sys
 import os
 import tempfile
@@ -34,6 +35,24 @@ class DoctorTests(unittest.TestCase):
         self.home = Path(self.tmp.name)
         self.reg = self.home / "projects.toml"
         self.lines = []
+        self.install_ok()
+
+    def install_ok(self):
+        """A scratch install: plugin enabled, hooks present, room-path naming a real room.py."""
+        self.rc = self.home / "rc"
+        (self.rc / "plugin" / "hooks").mkdir(parents=True)
+        (self.rc / "plugin" / "hooks" / "run.py").write_text("", encoding="utf-8")
+        (self.rc / "room.py").write_text("", encoding="utf-8")
+        self.rh, self.claude, self.codex = (self.home / n for n in ("rh", "cl", "cx"))
+        for d in (self.rh, self.claude, self.codex):
+            d.mkdir()
+        run_py = (self.rc / "plugin" / "hooks" / "run.py").as_posix()
+        (self.claude / "settings.json").write_text(json.dumps({
+            "enabledPlugins": {"commonroom@commonroom": True},
+            "extraKnownMarketplaces": {"commonroom": {"source": {"source": "directory", "path": self.rc.as_posix()}}}}), encoding="utf-8")
+        ev = lambda e: [{"hooks": [{"type": "command", "command": f'python "{run_py}" {e}'}]}]
+        (self.codex / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": ev("session-start"), "UserPromptSubmit": ev("prompt-submit")}}), encoding="utf-8")
+        (self.rh / "room-path").write_text((self.rc / "room.py").as_posix() + "\n", encoding="utf-8")
 
     def project(self, name, provider="claude", toml=True, agent=True):
         root = self.home / name
@@ -52,7 +71,7 @@ class DoctorTests(unittest.TestCase):
     def run_doctor(self, tools=("claude", "gh", "codex"), gh_code=0, runner=None):
         code = doctor.run(self.reg, which=lambda n: n if n in tools else None, gh=lambda a: gh_code,
                           version=(3, 12), out=self.lines.append, runner=runner or sched(), windows=True,
-                          checkout=CHECKOUT)
+                          checkout=CHECKOUT, home=self.rh, claude=self.claude, codex=self.codex)
         return code
 
     def test_all_present(self):
@@ -128,7 +147,8 @@ class DoctorTests(unittest.TestCase):
     def test_old_python(self):
         self.registry(self.project("alpha"))
         code = doctor.run(self.reg, which=lambda n: n, gh=lambda a: 0, version=(3, 10), out=self.lines.append,
-                          runner=sched(), windows=True, checkout=CHECKOUT)
+                          runner=sched(), windows=True, checkout=CHECKOUT,
+                          home=self.rh, claude=self.claude, codex=self.codex)
         self.assertEqual(code, 1)
 
     def beat_line(self, **kw):
@@ -185,10 +205,65 @@ class DoctorTests(unittest.TestCase):
         def run(text, code=0):
             self.lines.clear()
             return doctor.run(self.reg, which=lambda n: n, gh=lambda a: 0, version=(3, 12), out=self.lines.append,
-                              runner=lambda a: (code, text), windows=False, checkout=CHECKOUT)
+                              runner=lambda a: (code, text), windows=False, checkout=CHECKOUT,
+                              home=self.rh, claude=self.claude, codex=self.codex)
         self.assertEqual(run("*/5 * * * * python D:/rooms/main/room.py beat"), 0, self.lines)
         self.assertEqual(run("# */5 * * * * python D:/rooms/main/room.py beat"), 1)
         self.assertEqual(run("", code=127), 1)
+
+    def failing(self, name):
+        if not self.reg.exists():
+            self.registry(self.project("alpha"))
+        self.lines.clear()
+        code = self.run_doctor(tools=("claude", "gh"))
+        return code, [l for l in self.lines if l.startswith(name + ":")]
+
+    def test_install_ok_prints_four_ok_lines(self):
+        code, _ = self.failing("room-path")
+        self.assertEqual(code, 0, self.lines)
+        for n in ("plugin enabled", "claude hooks", "Codex hooks", "room-path"):
+            self.assertIn(f"{n}: ok", self.lines)
+
+    def test_plugin_not_enabled(self):
+        s = self.claude / "settings.json"
+        s.write_text(json.dumps({"enabledPlugins": {"commonroom@commonroom": False}}), encoding="utf-8")
+        code, line = self.failing("plugin enabled")
+        self.assertEqual(code, 1)
+        self.assertIn("room install", line[0])
+        s.unlink()
+        self.assertIn("missing", self.failing("plugin enabled")[1][0])
+
+    def test_claude_hooks_do_not_resolve(self):
+        (self.rc / "plugin" / "hooks" / "run.py").unlink()
+        code, line = self.failing("claude hooks")
+        self.assertEqual(code, 1)
+        self.assertIn("run.py does not exist", line[0])
+
+    def test_codex_hooks_absent_or_dangling(self):
+        h = self.codex / "hooks.json"
+        text = h.read_text(encoding="utf-8")
+        h.write_text(text.replace("UserPromptSubmit", "Other"), encoding="utf-8")
+        code, line = self.failing("Codex hooks")
+        self.assertEqual(code, 1)
+        self.assertIn("UserPromptSubmit", line[0])
+        h.unlink()
+        self.assertIn("missing", self.failing("Codex hooks")[1][0])
+        h.write_text(text, encoding="utf-8")
+        (self.rc / "plugin" / "hooks" / "run.py").unlink()
+        self.assertIn("does not exist", self.failing("Codex hooks")[1][0])
+
+    def test_room_path_missing_or_stale(self):
+        p = self.rh / "room-path"
+        p.write_text("D:/gone/room.py\n", encoding="utf-8")
+        code, line = self.failing("room-path")
+        self.assertEqual(code, 1)
+        self.assertIn("D:/gone/room.py", line[0])
+        p.unlink()
+        self.assertIn("is missing", self.failing("room-path")[1][0])
+
+    def test_beat_failure_still_reported_with_install_ok(self):
+        self.registry(self.project("alpha"))
+        self.assertEqual(self.run_doctor(tools=("claude", "gh"), runner=sched(rows="")), 1)
 
 
 if __name__ == "__main__":
