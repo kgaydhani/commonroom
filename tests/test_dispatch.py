@@ -3105,6 +3105,29 @@ class WorktreeLifecycle(unittest.TestCase):
         for other in others:
             self.assertTrue((other / "keep.txt").exists(), other)                   # not the room's, or not this task's
 
+    def test_previous_bases_are_searched_after_the_current_one_and_never_built_in(self):
+        old = Path(self.tmp.name) / "old-wt"
+        new = Path(self.tmp.name) / "new-wt"
+        self.assertEqual(self.d.worktree_bases(), [self.base, self.legacy])         # without the key: as before
+        self.d.cfg["project"]["worktrees"] = str(new)
+        self.d.cfg["project"]["worktrees_previous"] = [str(old)]
+        self.assertEqual(self.d.worktree_bases(), [new, old])
+        self.assertEqual(self.d.worktree_base(), new)
+        wt = old / "i5-x"
+        self.git("worktree", "add", "-q", "-b", "i5-x", str(wt), "main")
+        (wt / "work.txt").write_text("unsaved")
+        self.ledger.start_run("t", "#5", "builder", "claude", now=time.time() - 3 * 3600)   # its dispatcher died
+        self.assertEqual(len(self.d.recover_orphans()), 1)
+        self.assertFalse(wt.exists())                                               # recovered and removed from the old base
+        self.assertIn("unfinished work preserved", self.git("log", "-1", "--format=%B", "i5-x"))
+        self.git("init", "-q", "--bare", str(Path(self.tmp.name) / "origin.git"))
+        self.git("remote", "add", "origin", str(Path(self.tmp.name) / "origin.git"))
+        self.git("push", "-q", "origin", "main")
+        self.git("fetch", "-q", "origin")
+        path, _ = self.d.prepare_worktree(dispatch.Job("audit", "auditor"), "claude")
+        self.assertEqual(path.parent, new)                                          # new worktrees only in the current base
+        self.assertFalse(old.exists() and any(p.name.startswith("auditor") for p in old.iterdir()))
+
     def test_the_audit_report_path_is_absolute_and_picked_up(self):
         self.d._worktree = self.base / "auditor-3"
         job = dispatch.Job("audit", "auditor", reason="periodic audit")

@@ -187,3 +187,7 @@ role, a never-run one as `null`.
 - **v2.1:** dispatcher, worker runner, issue comments, Codex reviewer.
 - **v2.2:** dashboard, approvals, the owner's queue, digests and notifications.
 - **v2.3:** estimate calibration from the ledger, breaker tuning, more projects.
+
+## Moving a project's worktrees
+
+Set `[project] worktrees` to the new base and list the old one in `worktrees_previous = ["<old base>"]`. Recovery and clean-up search the current base, then each previous base, so builds and reviews live at the switch are still found and removed; new worktrees are made only in the current base. Remove the old path from `worktrees_previous` once no run lives there. Without the key nothing changes.
