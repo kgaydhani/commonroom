@@ -661,10 +661,10 @@ class GitHubBoard:
         board_mod.gh(["pr", "edit", str(number), "--repo", self.repo, "--add-label", name])
 
     def merge(self, number: int, *, head: str | None = None):
-        """Squash-merge, then delete the head branch. With `head`, GitHub merges only if the PR head is that commit: a
-        merge train pushes the commit it tested and lands exactly that (commonroom#612). Main's commit is the PR's title and body, whatever the branch's
+        """Squash-merge, then delete the head branch. Main's commit is the PR's title and body, whatever the branch's
         commits say: GitHub's default takes a lone commit's message, which once made the room's WIP placeholder the
-        permanent description of a change (commonroom#21). PRs stacked on that branch move to its base first: GitHub
+        permanent description of a change (commonroom#21). With `head`, GitHub merges only if the PR head is still that
+        commit: a merge train lands exactly the commit it pushed (commonroom#612). PRs stacked on that branch move to its base first: GitHub
         closes a PR whose base branch is deleted through the API rather than retargeting it (gamemirage#368)."""
         pr = board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                            "--json", "headRefName,baseRefName,title,body"]) or {}
