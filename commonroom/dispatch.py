@@ -2233,10 +2233,21 @@ class Dispatcher:
         """No GitHub CI to read, but a test command and a checkout: the room runs the suite on main itself."""
         return not self.ci and bool(self.root and (self.cfg.get("checks") or {}).get("test"))
 
+    def show_room_toml(self, sha: str) -> str:
+        """The project's `room.toml` at `sha`. `git_env` stops git at the project folder's parent, which is where the
+        repository is when the folder is a subfolder of it, so this read-only call lifts that ceiling."""
+        env = {k: v for k, v in os.environ.items() if k != "GIT_CEILING_DIRECTORIES"}
+        done = subprocess.run(["git", "show", f"{sha}:./room.toml"], cwd=self.root, capture_output=True, text=True,
+                              encoding="utf-8", env=env)
+        if done.returncode != 0:
+            raise RuntimeError(f"git show {sha[:7]}:./room.toml: {done.stderr.strip()}")
+        return done.stdout.strip()
+
     def checks_at(self, sha: str, live: dict) -> tuple[dict, str]:
-        """`[checks]` from the `room.toml` at `sha`, with a note for the action line when the live one is used instead."""
+        """`[checks]` from the `room.toml` at `sha` (`./` makes git read it relative to the project folder, which need not be
+        the repository root; commonroom#539), with a note for the action line when the live one is used instead."""
         try:
-            tested = (config_mod.load_text(git(["show", f"{sha}:room.toml"], self.root)).get("checks") or {})
+            tested = (config_mod.load_text(self.show_room_toml(sha)).get("checks") or {})
             if not tested.get("test"):
                 raise ValueError("no [checks] test")
         except (RuntimeError, ValueError, OSError) as exc:     # TOMLDecodeError and ConfigError are ValueErrors
