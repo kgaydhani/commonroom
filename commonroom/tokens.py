@@ -10,6 +10,15 @@ written once per content block, so calls are deduplicated on message id, keeping
 only: each run totals what the transcripts hold now, compares it with the sum of the rows already written for that
 key, and appends one row with the difference when a count grew. A grown transcript so adds only its new counts, and a
 run with nothing new adds nothing. Consumers sum the rows of a key.
+
+Codex's session records (`$CODEX_HOME/sessions`, else `~/.codex/sessions`, one JSONL per session, found by walking the
+folder) go into the same rows. Its `token_count` events carry a running total for the session, so a row holds the
+growth between one total and the next, put on the UTC day of the event that grew it; a repeated total adds nothing
+and a total that falls is not counted again. Codex's input includes its cached part, so `input` is its input minus
+cached input (cached and uncached kept apart), `cache_read` is cached input, `cache_write` its cache-write count, and
+reasoning output stays inside `output` (Codex's own total is input plus output). The model is the latest
+`turn_context` model, the folder is the last part of the session's working directory, and only counts, models,
+times and that folder name are read. A missing Codex folder is not an error.
 """
 from __future__ import annotations
 
@@ -22,6 +31,10 @@ from commonroom import sessions
 
 FILENAME = "token-rows.jsonl"
 FIELDS = ("input", "output", "cache_write", "cache_read")
+
+
+def codex_dir() -> Path:
+    return Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex") / "sessions"
 
 
 def rows_file() -> Path:
@@ -95,17 +108,80 @@ def _totals(projects_dir: Path, cache: Path | None) -> dict:
     return totals
 
 
+def _stamp(text) -> float | None:
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _codex_file(path: Path, totals: dict) -> None:
+    """Add one Codex session record's per-day growth to `totals`."""
+    session, folder, model = path.stem, "codex", "unknown"
+    seen = [0, 0, 0, 0]       # highest running total so far: input (uncached), output, cache write, cache read
+    try:
+        handle = open(path, encoding="utf-8")
+    except OSError:
+        sessions.stats["unreadable"] += 1
+        return
+    with handle:
+        while True:
+            try:
+                raw = handle.readline()
+            except (OSError, UnicodeDecodeError):
+                sessions.stats["unreadable"] += 1
+                return
+            if not raw:
+                return
+            try:
+                obj = json.loads(raw)
+                kind, body = obj.get("type"), obj.get("payload") or {}
+                if kind == "session_meta":
+                    session = str(body.get("id") or session)
+                    folder = Path(str(body.get("cwd") or "codex").replace("\\", "/")).name or "codex"
+                elif kind == "turn_context":
+                    model = str(body.get("model") or model)
+                elif kind == "event_msg" and body.get("type") == "token_count":
+                    use = (body.get("info") or {}).get("total_token_usage")
+                    at = _stamp(obj.get("timestamp"))
+                    if not use or at is None:
+                        continue
+                    cached = int(use.get("cached_input_tokens") or 0)
+                    now = [max(0, int(use.get("input_tokens") or 0) - cached), int(use.get("output_tokens") or 0),
+                           int(use.get("cache_write_input_tokens") or 0), cached]
+                    delta = [max(0, a - b) for a, b in zip(now, seen)]
+                    seen = [max(a, b) for a, b in zip(now, seen)]
+                    if any(delta):
+                        day = datetime.fromtimestamp(at, timezone.utc).strftime("%Y-%m-%d")
+                        t = totals.setdefault((session, model, day), {"folder": folder, "first": at, "last": at,
+                                                                      "counts": [0, 0, 0, 0]})
+                        t["first"], t["last"] = min(t["first"], at), max(t["last"], at)
+                        t["counts"] = [a + b for a, b in zip(t["counts"], delta)]
+            except (ValueError, AttributeError, TypeError):
+                sessions.stats["bad"] += 1
+
+
+def _codex(root: Path, totals: dict) -> None:
+    if not root.is_dir():
+        return
+    for path in sorted(root.rglob("*.jsonl")):
+        _codex_file(path, totals)
+
+
 def _iso(at: float) -> str:
     return datetime.fromtimestamp(at, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
-def collect(projects_dir: Path | None = None, out: Path | None = None, cache: Path | None = None) -> dict:
+def collect(projects_dir: Path | None = None, out: Path | None = None, cache: Path | None = None,
+            codex: Path | None = None) -> dict:
     """Append the rows the transcripts hold that the rows file does not. Returns {"added", "bad", "unreadable"}:
     rows appended, lines that could not be parsed and files that could not be opened (all skipped, none raised)."""
     out = out or rows_file()
     done = _written(out)
     new = []
-    for (session, model, day), t in sorted(_totals(projects_dir or sessions.default_dir(), cache).items(),
+    totals = _totals(projects_dir or sessions.default_dir(), cache)
+    _codex(codex or codex_dir(), totals)
+    for (session, model, day), t in sorted(totals.items(),
                                            key=lambda item: (item[1]["first"], item[0])):
         have = done.get((session, model, day), [0, 0, 0, 0])
         delta = [max(0, a - b) for a, b in zip(t["counts"], have)]
