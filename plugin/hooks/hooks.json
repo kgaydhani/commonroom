@@ -1,5 +1,5 @@
 {
-  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only (session start; a cold return to a large context, #367).",
+  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only (session start; a cold return to a large context, #367). Runs hooks/run.py, which finds the room's code beside the plugin or at the path in the room home's room-path file (#565).",
   "hooks": {
     "SessionStart": [
       {
@@ -7,8 +7,8 @@
           {
             "type": "command",
             "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"],
-            "commandWindows": "if exist \"%PLUGIN_ROOT%\\..\\room.py\" python \"%PLUGIN_ROOT%\\..\\room.py\" hook session-start",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "session-start"],
+            "commandWindows": "if exist \"%PLUGIN_ROOT%\\hooks\\run.py\" python \"%PLUGIN_ROOT%\\hooks\\run.py\" session-start",
             "timeout": 5
           }
         ]
@@ -20,8 +20,8 @@
           {
             "type": "command",
             "command": "python",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "prompt-submit"],
-            "commandWindows": "if exist \"%PLUGIN_ROOT%\\..\\room.py\" python \"%PLUGIN_ROOT%\\..\\room.py\" hook prompt-submit",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "prompt-submit"],
+            "commandWindows": "if exist \"%PLUGIN_ROOT%\\hooks\\run.py\" python \"%PLUGIN_ROOT%\\hooks\\run.py\" prompt-submit",
             "timeout": 5
           }
         ]
