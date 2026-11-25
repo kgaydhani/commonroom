@@ -8,7 +8,7 @@ from __future__ import annotations
 import datetime
 import re
 
-from commonroom import dispatch
+from commonroom import dispatch, weights
 
 PLACED = {"status:ready", "status:in-progress", "status:review", "status:blocked", "parked", "needs:director",
           "owner:human", "claim:external"}   # the last is dispatch.EXTERNAL (dispatch imports this module: no cycle at load)
@@ -128,6 +128,50 @@ def heartbeat_failing(runs: dict[str, list[int]], needed: int, configured: list[
                     f"last exit code {codes[0]}.")
             for n, cmd in enumerate(configured, 1) if (codes := runs.get(cmd, []))
             if len(codes) >= needed and all(c != 0 for c in codes[:needed])]
+
+
+def off_schedule_resets(readings: list[dict], meter: str, since: float) -> list[dict]:
+    """A finding for each time a meter reset before its scheduled time, seen at or after `since` (commonroom#645).
+    `readings` are the meter's ledger readings (first_seen, used_pct, resets_at). A fall at the old reset time is the
+    schedule, not a finding. The number is the moment it was seen, so a finding keeps its `since` until it ages out."""
+    found = []
+    prev = None
+    for r in sorted(readings, key=lambda r: (r["first_seen"], r.get("observed_at") or 0)):
+        due = prev and prev.get("resets_at")
+        if due and r["first_seen"] >= since and r["first_seen"] < due - weights.ROLLOVER_SLACK:
+            moved = r.get("resets_at") and abs(r["resets_at"] - due) > weights.ROLLOVER_SLACK
+            if r["used_pct"] < prev["used_pct"] - 1e-6 or moved:
+                early = (due - r["first_seen"]) / 86400
+                found.append(finding("off-schedule-reset", int(r["first_seen"]),
+                                     f"The {meter} meter reset on {weights._day(r['first_seen'])}, {early:.1f} days before its "
+                                     "scheduled time: the vendor changed it, so check the budget's windows and what it assumes."))
+        prev = r
+    return found
+
+
+def odd_weights(history: list[dict], meter: str, spreads: float = 3.0, prior: int = 4) -> list[dict]:
+    """A finding for each model whose weight in the latest recorded fit for `meter` (`weights.read_history`) is more
+    than `spreads` standard deviations from its earlier fits (commonroom#645). Needs `prior` earlier fits; the band is
+    never narrower than the fit's own recorded spread. The number is the day (YYYYMMDD) times 100 plus the model's place, so each model and day is one finding."""
+    rows = sorted((r for r in history if r.get("meter") == meter), key=lambda r: r["date"])
+    if len(rows) <= prior:
+        return []
+    latest, earlier = rows[-1], rows[:-1]
+    found = []
+    for n, (model, v) in enumerate(sorted(latest["models"].items())):
+        now = v.get("dollars_per_point")
+        before = [e["models"][model]["dollars_per_point"] for e in earlier
+                  if (e["models"].get(model) or {}).get("dollars_per_point") is not None]
+        if now is None or len(before) < prior:
+            continue
+        mean = sum(before) / len(before)
+        band = spreads * max((sum((x - mean) ** 2 for x in before) / len(before)) ** 0.5, v.get("spread") or 0.0)
+        if abs(now - mean) > band:
+            found.append(finding("odd-weight", int(latest["date"].replace("-", "")) * 100 + n,
+                                 f"On {latest['date']} {model} cost ${now:.2f} per {meter} point, against ${mean:.2f} on "
+                                 f"earlier days: a model change or a new weighting may have started, so check the "
+                                 "weights with `room weights`."))
+    return found
 
 
 def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
