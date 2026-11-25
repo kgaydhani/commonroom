@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -81,6 +82,8 @@ def publish(home: Path, project_folder: str, starter, log, python: str | None = 
         argv = shlex.split(line, posix=(sys.platform != "win32"))
         if sys.platform == "win32":   # non-POSIX split keeps the quotes around a quoted word; the program must not see them
             argv = [a[1:-1] if len(a) > 1 and a[0] == a[-1] and a[0] in "\"'" else a for a in argv]
+        if argv:   # without a shell, a bare name only finds .exe files; npx is npx.CMD on Windows
+            argv[0] = shutil.which(argv[0]) or argv[0]
         try:
             done = runner(argv, cwd=str(home), capture_output=True, text=True, timeout=conf["timeout"])
         except subprocess.TimeoutExpired:

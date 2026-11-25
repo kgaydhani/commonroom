@@ -1,10 +1,12 @@
 """commonroom#649: the beat exports the page and publishes it with the room home's configured command."""
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from commonroom import beat, pagepublish, registry
 
@@ -113,6 +115,22 @@ class Publish(unittest.TestCase):
         pagepublish.publish(self.home, str(self.proj), self.starter, self.lines.append, python="py")
         self.assertEqual(self.lines, ["beat: page published"])
         self.assertEqual(out.read_text(), str(self.home / "page" / "public"))
+
+    def test_a_bare_program_name_is_found_on_path_like_npx_cmd(self):
+        out = self.tmp / "ran.txt"
+        bin_dir = self.tmp / "bin"
+        bin_dir.mkdir()
+        if sys.platform == "win32":
+            (bin_dir / "shimtool.cmd").write_text(f'@echo off\r\necho %1>"{out}"\r\n', encoding="utf-8", newline="")
+        else:
+            shim = bin_dir / "shimtool"
+            shim.write_text(f'#!/bin/sh\necho "$1" > "{out}"\n', encoding="utf-8")
+            shim.chmod(0o755)
+        self.conf(publish="shimtool {folder}")
+        with mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"]}):
+            pagepublish.publish(self.home, str(self.proj), self.starter, self.lines.append, python="py")
+        self.assertEqual(self.lines, ["beat: page published"])
+        self.assertEqual(out.read_text().strip(), str(self.home / "page" / "public"))
 
 
 class InBeat(unittest.TestCase):
