@@ -101,6 +101,30 @@ class InstallTest(unittest.TestCase):
         self.assertEqual((self.home / "install.json").read_bytes(), manifest)
         self.assertIn("Nothing to change", out)
 
+    def test_dry_run_lists_room_path_and_writes_none(self):
+        _, out = self.run_cmd(install.cmd_install, dry=True)
+        self.assertIn(f"Room home: {self.home / 'room-path'}", out)
+        self.assertIn("write  " + (install.checkout() / "room.py").as_posix(), out)
+        self.assertFalse((self.home / "room-path").exists())
+
+    def test_moved_checkout_rewrites_room_path_and_uninstall_removes_it(self):
+        self.run_cmd(install.cmd_install)
+        moved = Path(self.tmp.name) / "moved"
+        with mock.patch.object(install, "checkout", return_value=moved):
+            _, out = self.run_cmd(install.cmd_install)
+        self.assertEqual((self.home / "room-path").read_text(encoding="utf-8").strip(), (moved / "room.py").as_posix())
+        self.assertIn("write  " + (moved / "room.py").as_posix(), out)
+        self.run_cmd(install.cmd_uninstall)
+        self.assertFalse((self.home / "room-path").exists())
+
+    def test_twice_leaves_room_path_alone(self):
+        self.run_cmd(install.cmd_install)
+        f = self.home / "room-path"
+        before = f.stat().st_mtime_ns
+        _, out = self.run_cmd(install.cmd_install)
+        self.assertEqual(f.stat().st_mtime_ns, before)
+        self.assertNotIn("Room home", out)
+
     def test_round_trip_restores_bytes(self):
         for original in (OTHER, "{}", OTHER.replace("\n", "\r\n"), None):
             with self.subTest(original=original):

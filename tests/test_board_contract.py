@@ -9,9 +9,10 @@ from commonroom.dispatch import GitHubBoard
 from test_dispatch import FakeBoard, LabelBoard
 from test_prompts import Board as PromptsBoard
 from test_self_serve import MergeBoard
+from test_merge_train import TrainBoard
 
 # Every board fake the tests hand to a Dispatcher. A new fake goes here too.
-FAKES = [FakeBoard, LabelBoard, MergeBoard, PromptsBoard]
+FAKES = [FakeBoard, LabelBoard, MergeBoard, PromptsBoard, TrainBoard]
 
 # Fake-only helper methods that aren't board methods: name -> why. Empty today.
 ALLOWED = {}
