@@ -1535,9 +1535,17 @@ class Dispatcher:
 
     def worktree_bases(self) -> list[Path]:
         """Where the room's worktrees may be: the base, then the project's .claude/worktrees, the default before
-        commonroom#48, so runs live at the switch are still recovered. Only room-named folders are looked for there."""
+        commonroom#48, so runs live at the switch are still recovered. Only room-named folders are looked for there.
+        `[project] worktrees_previous` lists bases a project moved away from: they are searched, never built in."""
         legacy = self.root / ".claude" / "worktrees"
-        return [self.worktree_base()] + ([legacy] if not self.cfg["project"].get("worktrees") else [])
+        previous = self.cfg["project"].get("worktrees_previous") or []
+        if isinstance(previous, str):
+            previous = [previous]
+        bases = [self.worktree_base()]
+        for old in [Path(p) for p in previous if p] + ([legacy] if not self.cfg["project"].get("worktrees") else []):
+            if old not in bases:
+                bases.append(old)
+        return bases
 
     def allowed(self, now: float) -> dict[str, gate.Verdict]:
         """The shared budget gate and breakers, then the pie (commonroom#240). With no project in the registry, this

@@ -69,6 +69,14 @@ class PlacesTest(unittest.TestCase):
         self.session(other, "o1", "2026-11-01T10:00:00+00:00")
         self.assertEqual(places.listing(places.discover(self.reg, self.records)), [])
 
+    def test_previous_worktree_bases_left_out(self):
+        for value in ('["%s"]', '"%s"'):
+            old = self.root / "oldwt"
+            toml = "[project]\nname='proj'\nworktrees_previous=" + value % old.as_posix() + "\n"
+            (self.proj / "room.toml").write_text(toml)
+            self.session(old / "room" / "b", "w1", "2026-11-01T10:00:00+00:00")
+            self.assertEqual(places.listing(places.discover(self.reg, self.records)), [], value)
+
     def test_kept_after_records_pruned_and_gone_marked(self):
         a = self.make("a")
         self.session(a, "s1", "2026-11-01T10:00:00+00:00")

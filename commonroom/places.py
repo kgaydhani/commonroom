@@ -58,11 +58,16 @@ def _worktree_roots(reg) -> list[str]:
         roots += [root.parent / f"{root.name}-wt", root / ".claude" / "worktrees"]
         try:
             with open(root / "room.toml", "rb") as handle:
-                configured = (tomllib.load(handle).get("project") or {}).get("worktrees")
+                section = tomllib.load(handle).get("project") or {}
+                configured, previous = section.get("worktrees"), section.get("worktrees_previous")
         except (OSError, tomllib.TOMLDecodeError):
-            configured = None
+            configured, previous = None, None
         if isinstance(configured, str) and configured:
             roots.append(Path(configured))
+        if isinstance(previous, str):
+            previous = [previous]
+        if isinstance(previous, list):
+            roots += [Path(p) for p in previous if isinstance(p, str) and p]
     return [sessions.path_key(r) for r in roots]
 
 
