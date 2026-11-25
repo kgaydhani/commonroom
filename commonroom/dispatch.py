@@ -32,7 +32,7 @@ from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
 from commonroom.waytext import PLACEHOLDER, fill_way, read_way   # moved there so handshake can import them (commonroom#345)
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
-from commonroom import measure, metrics as metrics_mod, owner_reserve, steward
+from commonroom import measure, metrics as metrics_mod, owner_reserve, steward, tokens as tokens_mod
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -1566,6 +1566,7 @@ class Dispatcher:
         running = self.ledger.running_tasks(self.project)
         self.sweep(everything, prs)
         self.take_measure()
+        self.collect_tokens(time.time())
         actions += self.clear_stray_ready(everything)
         held_by_owner = {i["number"] for i in everything if claimed(labels(i))}   # `room claim`: the room moves nothing here
         for issue in everything:
@@ -3724,6 +3725,25 @@ class Dispatcher:
             self.ledger.record_findings(self.project, found)
         except Exception as exc:
             self.log(f"   steward sweep failed: {exc}")
+
+    def collect_tokens(self, now: float):
+        """`room tokens collect` once per local day for the whole machine, not per project (commonroom#643). The day is
+        recorded in the room home before the run, so the project dispatchers sharing a home take one run between them.
+        Only for the room home this ledger lives in. A failure is logged as one line and never stops the pass."""
+        if self.dry_run:
+            return
+        try:
+            home = Path(self.ledger.path).parent
+            if home.resolve() != tokens_mod.rows_file().parent.resolve():
+                return
+            today, stamp = time.strftime("%Y-%m-%d", time.localtime(now)), home / "token-collect-day"
+            if stamp.exists() and stamp.read_text(encoding="utf-8").strip() == today:
+                return
+            stamp.write_text(today + "\n", encoding="utf-8", newline="\n")
+            result = tokens_mod.collect()
+            self.log(f"   tokens: added {result['added']} rows")
+        except Exception as exc:
+            self.log(f"   tokens collect failed: {type(exc).__name__}: {str(exc)[:200]}")
 
     def take_measure(self):
         """The project's `[measure]` reading, when one is due (commonroom#324). Never stops the pass."""
