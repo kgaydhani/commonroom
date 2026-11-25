@@ -304,6 +304,13 @@ class InstallTest(unittest.TestCase):
         self.run_cmd(install.cmd_uninstall)
         self.assertFalse([c for c in self.sched.calls if "delete" in c])
 
+    def test_enabled_beat_script_task_under_another_name_blocks_the_beat(self):
+        self.old_task("MyRoomBeat", script="beat.vbs")
+        code, out = self.install_on_windows()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.creates(), [])
+        self.assertIn('schtasks /delete /tn "MyRoomBeat" /f', out)
+
     def test_no_old_task_registers_the_beat_once(self):
         self.install_on_windows()
         self.assertEqual(len(self.creates()), 1)

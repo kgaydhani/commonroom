@@ -41,12 +41,12 @@ def _norm(text: str) -> str:
     return text.replace("\\", "/").replace('"', "").lower()
 
 
-def beat_scheduled(checkout: Path, runner, windows: bool) -> tuple[str, str, list[str]]:
+def beat_scheduled(checkout: Path, runner, windows: bool, all_names: bool = False) -> tuple[str, str, list[str]]:
     """(status, why or note, heartbeat task names). Status is `ok`, `conflict` or `missing`.
     Windows: an enabled task whose action runs this checkout's beat.vbs/beat.cmd. An enabled per-project
     heartbeat.vbs/heartbeat.cmd task from this checkout stands in for it (ok with a note), and with a beat
     task as well it is a conflict, since both would start dispatchers. Elsewhere: a crontab line running
-    `room.py beat` from this checkout."""
+    `room.py beat` from this checkout. `all_names` makes the list hold beat task names too (install uses it)."""
     root = _norm(str(checkout)).rstrip("/")
     if windows:
         code, text = runner(["schtasks", "/query", "/fo", "csv", "/v"])
@@ -74,9 +74,9 @@ def beat_scheduled(checkout: Path, runner, windows: bool) -> tuple[str, str, lis
                 continue
             kind.append(r[name].strip() if name is not None and name < len(r) else "(unnamed task)")
         if beats and heartbeats:
-            return "conflict", "both a beat task and per-project heartbeat tasks would start dispatchers; disable " +                 ", ".join(f"`{h}`" for h in heartbeats), heartbeats
+            return "conflict", "both a beat task and per-project heartbeat tasks would start dispatchers; disable " +                 ", ".join(f"`{h}`" for h in heartbeats), (beats + heartbeats if all_names else heartbeats)
         if beats:
-            return "ok", "", []
+            return "ok", "", (beats + heartbeats if all_names else [])
         if heartbeats:
             return "ok", "per-project heartbeat; beat.vbs replaces it (see room schedule)", heartbeats
         return "missing", "the scheduled beat task is disabled" if disabled else "no scheduled task runs this checkout's beat", []

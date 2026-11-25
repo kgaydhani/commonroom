@@ -109,7 +109,7 @@ def old_beats(root: Path, runner=None) -> list[str]:
     if not sys.platform.startswith("win"):
         return []
     run_ = runner or run
-    _, _, names = doctor.beat_scheduled(root, lambda args: run_(" ".join(args)), True)
+    _, _, names = doctor.beat_scheduled(root, lambda args: run_(" ".join(args)), True, all_names=True)
     return [n.lstrip("\\") for n in names if n.lstrip("\\") != schedule.TASK_NAME]
 
 
