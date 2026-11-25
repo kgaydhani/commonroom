@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from commonroom import board, cli, handshake, hook, registry
+from commonroom import board, cli, handshake, hook, places, registry
 from commonroom.ledger import Ledger
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -176,6 +176,64 @@ class Points(Hook):
         self.assertEqual(self.added(self.alpha).count("\n"), 0)   # the charter holds only its headings
         (where / "charter.md").write_text("# Charter: alpha\n\n## The outcome, and why\nReaders.\n", encoding="utf-8")
         self.assertIn("Unread notes in its `inbox/`: 0.", self.added(self.alpha))
+
+
+class Places(Hook):
+    """commonroom#571: a known place that is no project gets one line; everything else is as before."""
+    def know(self, folder, description=""):
+        key = places.sessions.path_key(folder)
+        data = places.load()
+        data["places"][key] = {"path": str(folder), "last": 1.0, "sessions": ["s"], "description": description}
+        places.save(data)
+
+    def test_a_known_place_gets_one_short_line_with_its_name_and_description(self):
+        self.know(self.elsewhere, "the owner's scratch notes")
+        text = self.added(self.elsewhere)
+        self.assertEqual(text, "This folder is `elsewhere`, a place Common Room knows (not a project): "
+                               "the owner's scratch notes.")
+        self.assertNotIn(chr(10), text)
+
+    def test_a_place_without_a_description_and_a_folder_inside_a_place(self):
+        self.know(self.elsewhere)
+        inner = self.elsewhere / "sub"
+        inner.mkdir()
+        self.assertEqual(self.added(inner), "This folder is `elsewhere`, a place Common Room knows (not a project).")
+
+    def test_the_line_names_room_card_once_the_command_exists(self):
+        self.know(self.elsewhere)
+        with mock.patch.object(cli, "cmd_card", create=True):
+            self.assertIn("`room card` shows it.", self.added(self.elsewhere))
+        self.assertNotIn("room card", self.added(self.elsewhere))
+
+    def test_an_unknown_folder_and_a_worker_get_nothing(self):
+        self.know(self.elsewhere)
+        other = self.tmp / "other"
+        other.mkdir()
+        self.assertEqual(self.added(other), "")
+        with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": "1"}):
+            self.assertEqual(self.added(self.elsewhere), "")
+
+    def test_a_corrupt_places_file_adds_nothing_and_exits_0(self):
+        self.home.mkdir(parents=True)
+        (self.home / places.FILENAME).write_text("{not json", encoding="utf-8")
+        self.assertEqual(self.added(self.elsewhere), "")
+        with mock.patch.object(places, "find", side_effect=RuntimeError("boom")):
+            self.know(self.elsewhere)
+            self.assertEqual(self.added(self.elsewhere), "")
+
+    def test_a_registered_project_gets_exactly_the_text_it_got_before_even_with_places_known(self):
+        self.register()
+        self.know(self.elsewhere, "x")
+        self.note("Please write your charter.", "director")
+        before = self.added(self.alpha / "src")
+        self.assertEqual(before, handshake.fill_way(
+            hook.SESSION_START, project="alpha", digest=str(self.folder() / "digest.md"), notes="1, from director",
+            reply=handshake.reply_line(registry.load().projects["alpha"])))
+
+    def test_listing_a_place_writes_nothing_into_it(self):
+        self.know(self.elsewhere)
+        self.added(self.elsewhere)
+        self.assertEqual(list(self.elsewhere.iterdir()), [])
 
 
 class Silent(Hook):
