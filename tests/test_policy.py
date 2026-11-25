@@ -64,7 +64,7 @@ class PinnedValues(unittest.TestCase):
                  "room_error_backoff_seconds": ("ROOM_ERROR_BACKOFF", 600),
                  "room_error_escalate": ("ROOM_ERROR_ESCALATE", 3),
                  "resume_window_seconds": ("RESUME_WINDOW", 12 * 3600),
-                 "rework_resume_seconds": ("REWORK_RESUME", 3300),
+                 "rework_resume_seconds": ("REWORK_RESUME", 0),   # 3300 until #609
                  "progress_min_work_seconds": ("PROGRESS_MIN_WORK", 6 * 3600), "notify_max": ("NOTIFY_MAX", 5), "heartbeat_failures": ("HEARTBEAT_FAILURES", 3),
                  "run_timeout_seconds": ("RUN_TIMEOUT", 3600)}
         with open(REPO / "commonroom" / "ways" / "policy.toml", "rb") as f:

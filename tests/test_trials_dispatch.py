@@ -136,6 +136,7 @@ class TrialRuns(test_resume.Resume):
         self.assertEqual(t.prompts, {})
         self.assertEqual(trials.active(found, date(2026, 11, 24)), [t])
         self.assertEqual(trials.active(found, date(2026, 11, 23)), [])
+        self.assertEqual(trials.active(found, date(2026, 11, 26)), [])   # adopted and ended 25 Nov (#609)
         self.assertEqual(t.max_days, 21)
         day = lambda d: time.mktime((d.year, d.month, d.day, 0, 0, 0, 0, 0, -1))   # local midnight, as trials.py reads it
         self.assertEqual(trials.result(t, [], day(date(2026, 12, 14)))["verdict"], "running")
@@ -144,7 +145,7 @@ class TrialRuns(test_resume.Resume):
         self.assertEqual(t.share, 0.3)
         self.assertEqual(t.min_landings, 10)
 
-    def test_shipped_trial_arms_read_rework_resume_0_and_3300(self):
+    def test_shipped_trial_arms_both_read_rework_resume_0_once_adopted(self):
         from datetime import date
         (t,) = trials.load(trials.FILE, dispatch.PROMPTS, {n: dispatch.policy_mod.BOUNDS[n] for n in dispatch.TRIAL_POLICY})
         dispatch.TRIALS_FILE = trials.FILE
@@ -152,7 +153,7 @@ class TrialRuns(test_resume.Resume):
             @classmethod
             def today(cls):
                 return date(2026, 11, 24)
-        for want, arm in ((0, "variant"), (3300, "control")):
+        for want, arm in ((0, "variant"), (0, "control")):   # control read 3300 until #609 adopted the variant
             d = dispatch.Dispatcher(cfg_with(self.root), self.ledger, board=FakeBoard([]), log=lambda *_: None)
             n = next(n for n in range(1, 500) if trials.arm(t, f"{d.project}#{n}") == arm)
             with mock.patch.object(dispatch.datetime, "date", Day):

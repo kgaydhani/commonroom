@@ -11,6 +11,8 @@ from test_resume import SESSION
 class ReworkResume(test_resume.Resume):
     def setUp(self):
         super().setUp()
+        orig, dispatch.REWORK_RESUME = dispatch.REWORK_RESUME, 3300   # the shipped value is 0 since #609
+        self.addCleanup(setattr, dispatch, "REWORK_RESUME", orig)
         self.issue["labels"] = [{"name": "needs:changes"}]
         self.logs = []
 
