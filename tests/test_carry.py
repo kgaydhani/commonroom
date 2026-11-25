@@ -522,6 +522,21 @@ class MainSuite(Carry):
         self.assertEqual(self.commands[-1][0], PASS)
         self.assertTrue([a for a in actions if "room.toml unusable" in a])
 
+    def test_a_room_toml_in_a_subfolder_of_the_repo_is_read_at_the_sha(self):
+        """commonroom#539: `<sha>:room.toml` is the repo root's file; the project's own sits in a subfolder."""
+        self.write("room.toml", '[checks]\ntest = "root command"\n')
+        (self.root / "proj").mkdir()
+        self.write("proj/room.toml", '[checks]\ntest = "project command"\nmax_minutes = 9\n')
+        sha = self.commit("two room.toml files")
+        d = self.dispatcher(self.cfg(), self.setup_ready_pr())
+        d.root = self.root / "proj"
+        self.assertEqual(d.checks_at(sha, {"test": "live"}), ({"test": "project command", "max_minutes": 9}, ""))
+        self.write("proj/room.toml", "[other]\n")        # no [checks] at this sha: the live command, with a note
+        sha = self.commit("no checks")
+        checks, note = d.checks_at(sha, {"test": "live"})
+        self.assertEqual(checks, {"test": "live"})
+        self.assertIn("room.toml unusable", note)
+
     def test_an_unchanged_room_toml_gives_the_live_command(self):
         board = self.setup_ready_pr()
         self.stub_commands()

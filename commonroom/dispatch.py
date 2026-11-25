@@ -192,6 +192,7 @@ def claimed(names) -> bool:
 
 # An issue in review carries no other status and no needs:changes: gamemirage#427 had ready, review and needs:changes
 # at once, and a ready label invites a second builder (commonroom#93).
+PARKED_LABELS = {"needs:director", "status:blocked", "parked"}
 LEAVES_REVIEW = ("status:ready", "status:in-progress", "status:blocked", "needs:changes")
 
 
@@ -494,6 +495,14 @@ class GitHubBoard:
     def close_not_planned(self, number: int, body: str):
         board_mod.gh(["issue", "close", str(number), "--repo", self.repo, "--reason", "not planned",
                       "--comment", f"{DIRECTOR_MARK} {body}"])
+
+    def issue_labels(self, number: int) -> list[str] | None:
+        """The label names on issue `number` now, None when it can't be read."""
+        try:
+            data = board_mod.gh(["issue", "view", str(number), "--repo", self.repo, "--json", "labels"]) or {}
+        except RuntimeError:
+            return None
+        return [l["name"] for l in data.get("labels") or []]
 
     def issue_state(self, number: int) -> str | None:
         """'OPEN' or 'CLOSED' for issue `number`, None when it can't be read (missing, or a PR)."""
@@ -2069,6 +2078,16 @@ class Dispatcher:
             actions.append(f"#{n} had status:ready while {other}: removed status:ready")
         return actions
 
+    def parked_during_build(self, n: int) -> bool:
+        """True when someone parked issue `n` while its build ran (needs:director, status:blocked or parked on the board
+        now): the build's result must not move it back to review (commonroom#553). Unreadable labels mean not parked."""
+        read = getattr(self.board, "issue_labels", None)
+        try:
+            names = read(n) if read else None
+        except Exception:
+            names = None
+        return bool(set(names or ()) & PARKED_LABELS)
+
     def to_review(self, n: int):
         """Every move to status:review drops the other statuses and needs:changes in the same call (commonroom#93)."""
         self.board.set_labels(n, add=["status:review"], remove=list(LEAVES_REVIEW))
@@ -2234,10 +2253,21 @@ class Dispatcher:
         """No GitHub CI to read, but a test command and a checkout: the room runs the suite on main itself."""
         return not self.ci and bool(self.root and (self.cfg.get("checks") or {}).get("test"))
 
+    def show_room_toml(self, sha: str) -> str:
+        """The project's `room.toml` at `sha`. `git_env` stops git at the project folder's parent, which is where the
+        repository is when the folder is a subfolder of it, so this read-only call lifts that ceiling."""
+        env = {k: v for k, v in os.environ.items() if k != "GIT_CEILING_DIRECTORIES"}
+        done = subprocess.run(["git", "show", f"{sha}:./room.toml"], cwd=self.root, capture_output=True, text=True,
+                              encoding="utf-8", env=env)
+        if done.returncode != 0:
+            raise RuntimeError(f"git show {sha[:7]}:./room.toml: {done.stderr.strip()}")
+        return done.stdout.strip()
+
     def checks_at(self, sha: str, live: dict) -> tuple[dict, str]:
-        """`[checks]` from the `room.toml` at `sha`, with a note for the action line when the live one is used instead."""
+        """`[checks]` from the `room.toml` at `sha` (`./` makes git read it relative to the project folder, which need not be
+        the repository root; commonroom#539), with a note for the action line when the live one is used instead."""
         try:
-            tested = (config_mod.load_text(git(["show", f"{sha}:room.toml"], self.root)).get("checks") or {})
+            tested = (config_mod.load_text(self.show_room_toml(sha)).get("checks") or {})
             if not tested.get("test"):
                 raise ValueError("no [checks] test")
         except (RuntimeError, ValueError, OSError) as exc:     # TOMLDecodeError and ConfigError are ValueErrors
@@ -4055,6 +4085,8 @@ class Dispatcher:
             if pr and pr["state"] == "OPEN" and after and after != before:
                 if blocked and self.sandbox_suite_incomplete(job, result):
                     blocked = False
+                if not (blocked and blocked_lines(result.final_text or "")) and self.parked_during_build(n):
+                    return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (issue parked during the build)"}], tail
                 reason = blocked_lines(result.final_text or "")
                 if blocked and not reason and job.role == "builder":
                     # Nothing says what blocks it: an unfinished suite or open items belong to the reviewer (#515).
@@ -4080,6 +4112,8 @@ class Dispatcher:
                 return "done", [{"kind": "pr", "ref": f"PR #{pr['number']}"}], tail
             if (pr and pr["state"] == "OPEN" and not blocked
                     and re.search(r"STATUS:\s*DONE", result.final_text or "", re.I)):
+                if self.parked_during_build(n):
+                    return "done", [{"kind": "pr", "ref": f"PR #{pr['number']} (issue parked during the build)"}], tail
                 # The builder checked and found nothing left to change (e.g. the fix already landed and was approved
                 # while the issue sat in the queue). That's a finished task, not a failed attempt.
                 self.to_review(n)
