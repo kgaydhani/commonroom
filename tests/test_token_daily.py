@@ -3,8 +3,10 @@ a temporary room home: nothing reads the live ledger or transcripts."""
 import os
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
+from threading import Barrier
 from unittest import mock
 
 from commonroom import dispatch
@@ -44,6 +46,56 @@ class DailyTokens(Base):
             for d in ds:
                 d.collect_tokens(at(25))
             self.assertEqual(collect.call_count, 1)
+
+    def test_concurrent_dispatchers_collect_once(self):
+        stamp = self.home / "token-collect-day"
+        exists, read_text = Path.exists, Path.read_text
+        for previous in (None, "2026-11-24\n"):
+            with self.subTest(previous=previous):
+                stamp.unlink(missing_ok=True)
+                (self.home / "token-collect-2026-11-25").unlink(missing_ok=True)
+                if previous is not None:
+                    stamp.write_text(previous, encoding="utf-8", newline="\n")
+                ready = Barrier(2, timeout=10)
+
+                def check(path):
+                    found = exists(path)
+                    if path == stamp and previous is None:
+                        ready.wait()  # both dispatchers have seen the missing marker
+                    return found
+
+                def read(path, *args, **kwargs):
+                    text = read_text(path, *args, **kwargs)
+                    if path == stamp:
+                        ready.wait()  # both dispatchers have read yesterday before either can write
+                    return text
+
+                ds = [self.dispatcher(self.cfg(n)) for n in ("alpha", "beta")]
+                with mock.patch.object(Path, "exists", check), mock.patch.object(Path, "read_text", read), \
+                        mock.patch.object(dispatch.tokens_mod, "collect", return_value={"added": 3}) as collect:
+                    with ThreadPoolExecutor(max_workers=2) as pool:
+                        list(pool.map(lambda d: d.collect_tokens(at(25)), ds))
+                    collect.assert_called_once_with()
+                self.assertEqual(stamp.read_text(), "2026-11-25\n")
+                self.assertFalse(any("failed" in line for line in self.logs), self.logs)
+
+    def test_an_existing_date_marker_prevents_another_collect_on_upgrade(self):
+        (self.home / "token-collect-day").write_text("2026-11-25\n", encoding="utf-8", newline="\n")
+        with mock.patch.object(dispatch.tokens_mod, "collect") as collect:
+            self.dispatcher(self.cfg("alpha")).collect_tokens(at(25))
+            collect.assert_not_called()
+
+    def test_a_failed_attempt_keeps_the_day_claimed_across_projects(self):
+        ds = [self.dispatcher(self.cfg(n)) for n in ("alpha", "beta")]
+        with mock.patch.object(dispatch.tokens_mod, "collect", side_effect=RuntimeError("boom")) as collect:
+            ds[0].collect_tokens(at(25))
+            # The atomic claim still prevents duplicates if the last-run date marker is lost.
+            (self.home / "token-collect-day").unlink()
+            ds[1].collect_tokens(at(25))
+            self.assertEqual(collect.call_count, 1)
+            ds[1].collect_tokens(at(26))
+            self.assertEqual(collect.call_count, 2)
+        self.assertEqual(self.logs, ["   tokens collect failed: RuntimeError: boom"] * 2)
 
     def test_a_failing_collector_is_logged_and_the_pass_goes_on(self):
         d = self.dispatcher(self.cfg())
