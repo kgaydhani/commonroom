@@ -119,6 +119,7 @@ def cmd_install(args) -> int:
         return 2
     beat_done = wire.beat_registered(root)
     beat_cmd, _ = wire.beat_command(root)
+    old_beats = [] if beat_done else wire.old_beats(root)
     print(f"Settings file: {settings}")
     for name in added:
         print(f"  add    {name}")
@@ -129,8 +130,15 @@ def cmd_install(args) -> int:
     print(f"Codex hooks file: {codex_file}")
     for event in codex_added:
         print(f"  add    hooks.{event}")
-    print(f"Beat: {'already registered' if beat_done else 'register ' + beat_cmd}")
-    if not added and not path_change and not codex_added and beat_done:
+    if old_beats:
+        print("Beat: not registered, these enabled tasks already run this checkout's heartbeat: "
+              + ", ".join(f'"{n}"' for n in old_beats))
+        print("  To switch to the beat, retire each, then run `room install` again:")
+        for n in old_beats:
+            print(f'    schtasks /delete /tn "{n}" /f')
+    else:
+        print(f"Beat: {'already registered' if beat_done else 'register ' + beat_cmd}")
+    if not added and not path_change and not codex_added and (beat_done or old_beats):
         print("Nothing to change: already installed.")
         return 0
     if args.dry_run:
@@ -159,7 +167,7 @@ def cmd_install(args) -> int:
     if codex_added:
         old.setdefault(CODEX_KEY, {"file": str(codex_file), "created": codex_new})
     ok, why = beat_done, ""
-    if not beat_done:
+    if not beat_done and not old_beats:
         ok, why = wire.beat_register(root)
         if ok:
             old[BEAT_KEY] = {"command": beat_cmd}
