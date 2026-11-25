@@ -34,7 +34,8 @@ class Collect(unittest.TestCase):
         (self.folder / "s1" / "subagents").mkdir(parents=True)
         self.main = self.folder / "s1.jsonl"
         self.sub = self.folder / "s1" / "subagents" / "agent-a.jsonl"
-        env = mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.home)})
+        self.codex = self.root / "codex"
+        env = mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.home), "CODEX_HOME": str(self.codex)})
         env.start()
         self.addCleanup(env.stop)
 
@@ -123,3 +124,52 @@ class Collect(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def codex_lines(session, events, model="gpt-x", text=SECRET):
+    """events: (at, input, cached, output) running totals."""
+    out = [{"type": "session_meta", "timestamp": "2020-01-01T00:00:00Z", "payload": {"id": session, "cwd": "D:\\work\\demo"}},
+           {"type": "turn_context", "timestamp": "2020-01-01T00:00:01Z", "payload": {"model": model}},
+           {"type": "response_item", "payload": {"type": "message", "content": text}}]
+    for at, i, c, o in events:
+        use = {"input_tokens": i, "cached_input_tokens": c, "cache_write_input_tokens": 0, "output_tokens": o,
+               "reasoning_output_tokens": 1, "total_tokens": i + o}
+        out.append({"type": "event_msg", "timestamp": datetime.fromtimestamp(at, timezone.utc).isoformat(),
+                    "payload": {"type": "token_count", "info": {"total_token_usage": use, "last_token_usage": use}}})
+    return "".join(json.dumps(x) + "\n" for x in out)
+
+
+class CodexRows(Collect):
+    def put(self, name, text):
+        path = self.codex / "sessions" / "2026" / "11" / "21" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_cached_split_and_cumulative_per_day(self):
+        self.put("rollout-a.jsonl", codex_lines("c1", [(T0 + 10, 100, 60, 10), (T0 + 20, 100, 60, 10), (T0 + 30, 250, 150, 30),
+                                                       (T0 + DAY + 5, 400, 300, 50)]))
+        self.assertIn("added 2 rows", self.run_cli())
+        rows = self.rows()
+        self.assertEqual([(r["day"], r["session"], r["model"], r["folder"], r["input"], r["output"], r["cache_write"], r["cache_read"])
+                          for r in rows],
+                         [(rows[0]["day"], "c1", "gpt-x", "demo", 100, 30, 0, 150), (rows[1]["day"], "c1", "gpt-x", "demo", 0, 20, 0, 150)])
+        self.assertNotEqual(rows[0]["day"], rows[1]["day"])
+
+    def test_no_text_rerun_and_growth(self):
+        path = self.put("rollout-a.jsonl", codex_lines("c1", [(T0 + 10, 100, 60, 10)]))
+        self.run_cli()
+        self.assertIn("added 0 rows", self.run_cli())
+        path.write_text(codex_lines("c1", [(T0 + 10, 100, 60, 10), (T0 + 20, 130, 70, 15)]), encoding="utf-8")
+        self.assertIn("added 1 rows", self.run_cli())
+        self.assertEqual([r["input"] for r in self.rows()], [40, 20])
+        for f in self.home.rglob("*"):
+            if f.is_file():
+                self.assertNotIn(SECRET, f.read_text(encoding="utf-8", errors="replace"))
+
+    def test_missing_codex_folder_is_fine_and_bad_line_counted(self):
+        self.assertIn("added 0 rows", self.run_cli())
+        self.put("rollout-b.jsonl", "not json\n" + codex_lines("c2", [(T0 + 10, 5, 1, 2)]))
+        out = self.run_cli()
+        self.assertIn("added 1 rows", out)
+        self.assertIn("skipped 1 malformed", out)
