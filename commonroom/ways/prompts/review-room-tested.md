@@ -1,1 +1,1 @@
-The room ran the tests on this PR head: `TESTS: PASS {{sha}} {{result}}`. That is the merge's test proof, so your approval needs no `TESTS:` line. A review that can't finish is `REVIEW: INCOMPLETE`. Put any `TESTS:` text you quote in backticks.
+The room ran the tests on this PR head: `TESTS: PASS {{sha}} {{result}}`. That is the merge's test proof: your approval needs no `TESTS:` line. A review that can't finish is `REVIEW: INCOMPLETE`. Put any `TESTS:` text you quote in backticks.

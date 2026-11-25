@@ -1,1 +1,1 @@
-Codex ended BLOCKED before changing anything, so this run left nothing on branch `{{branch}}`. A Claude builder starts from the issue: build it, run the gate, open the PR.
+Codex ended BLOCKED before changing anything: nothing is on branch `{{branch}}`. A Claude builder starts from the issue: build it, run the gate, open the PR.

@@ -1,1 +1,1 @@
-CI is red on PR #{{pr}}: {{names}}. Read the failure with `gh pr checks {{pr}}` and `gh run view <run id> --log-failed`, fix it on the same branch, and run `{{test}}` before pushing.
+CI is red on PR #{{pr}}: {{names}}. Read it with `gh pr checks {{pr}}` and `gh run view <run id> --log-failed`, fix it on the same branch and run `{{test}}` before pushing.

@@ -1,6 +1,6 @@
 # {{project}}
 
-Built by the room at {{built}} from its ledger and this folder. No model wrote it.
+Built by the room at {{built}} from its ledger and this folder.
 
 {{reply}}
 
