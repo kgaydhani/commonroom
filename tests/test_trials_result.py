@@ -1,5 +1,6 @@
 """Trials, part 3 (commonroom#353): code computes each trial's result; `room trials` prints it; the digest shows it;
 the steward wakes the director on a final verdict with no `ended` date. Temporary ledgers, homes and trials files."""
+import os
 import tempfile
 import time
 import unittest
@@ -7,7 +8,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from unittest import mock
 
-from commonroom import dispatch, steward, trials
+from commonroom import dispatch, handshake, registry, steward, trials
 from commonroom.ledger import Ledger
 from tests.test_dispatch import FakeBoard, cfg_with
 from tests.test_handshake import Room
@@ -170,3 +171,46 @@ class Sweep(unittest.TestCase):
 
     def test_no_trials_declared_changes_no_finding(self):
         self.assertEqual(self.sweep(""), [])
+
+
+class SweepUnreadNotes(unittest.TestCase):
+    """commonroom#588: the sweep raises a project's old unread inbox notes; a read or fresh one is not raised."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        home = Path(self.tmp.name) / "home"
+        env = mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(home)})
+        env.start()
+        self.addCleanup(env.stop)
+        work = Path(self.tmp.name) / "work"
+        work.mkdir()
+        (work / "room.toml").write_text('[project]\nname = "t"\n', encoding="utf-8")
+        registry.save(registry.Registry({"alpha": registry.Project("alpha", str(work), 40)}))
+        self.ledger = Ledger(home / "room.sqlite3")
+        self.addCleanup(self.ledger.close)
+        self.where = handshake.folder_of(registry.load().projects["alpha"])
+        self.now = time.time()
+
+    def sweep(self):
+        with mock.patch.object(dispatch, "TRIALS_FILE", declared(self.tmp.name, "")):
+            dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard([]), log=lambda *_: None).sweep([], [])
+        return [f for f in self.ledger.findings("t") if f["invariant"] == "unread-note"]
+
+    def test_an_old_unread_note_is_raised_and_a_fresh_one_is_not(self):
+        handshake.write_note(self.where, "old", "someone", now=self.now - 30 * 3600)
+        handshake.write_note(self.where, "new", "someone", now=self.now - 3600)
+        (found,) = self.sweep()
+        self.assertIn("30 hours", found["detail"])
+
+    def test_a_note_the_project_has_read_is_not_raised(self):
+        handshake.write_note(self.where, "old", "someone", now=self.now - 30 * 3600)
+        self.ledger.mark("alpha", handshake.READ + "alpha", at=self.now - 3600)
+        self.assertEqual(self.sweep(), [])
+
+    def test_the_page_shows_the_count_and_the_oldest(self):
+        handshake.write_note(self.where, "old", "someone", now=self.now - 30 * 3600)
+        handshake.write_note(self.where, "newer", "someone", now=self.now - 3600)
+        got = handshake.unread_summary(registry.load(), registry.load().projects["alpha"], self.ledger, self.now)
+        self.assertEqual(got["count"], 2)
+        self.assertAlmostEqual(got["oldest_at"], self.now - 30 * 3600, delta=2)

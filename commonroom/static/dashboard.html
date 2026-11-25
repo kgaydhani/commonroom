@@ -105,6 +105,7 @@ function render(d) {
     el("p", p.landed_7d ? `Landed in the last 7 days: ${p.landed_7d} (latest ${p.landed_recent.join(", ")}).` : "Nothing landed in the last 7 days.", null, det);
     if (p.breakers.length) for (const b of p.breakers) el("p", `Stopped since ${when(b.since)}: ${b.words}`, "bad", det);
     else el("p", "No open breakers.", "dim", det);
+    if (p.unread) el("p", p.unread.count ? `Unread notes in its inbox: ${p.unread.count}, the oldest ${when(p.unread.oldest_at)}.` : "No unread notes in its inbox.", p.unread.count ? "bad" : "dim", det);
     if (p.trail) {
       const tr = el("details", null, null, det);
       el("summary", `Trail (${p.trail.length})`, null, tr);

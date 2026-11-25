@@ -43,6 +43,15 @@ class PageState(Room):
         self.assertIsNotNone(d["gate"]["reason"])
         json.dumps(d)
 
+    def test_each_project_section_shows_its_unread_notes_count_and_oldest(self):
+        self.week()
+        reg = self.register()
+        handshake.write_note(handshake.folder_of(reg.projects["alpha"]), "hello", "someone", now=self.now - 30 * 3600)
+        sections = {p["name"]: p for p in self.state()["projects"]}
+        self.assertEqual(sections["alpha"]["unread"]["count"], 1)
+        self.assertAlmostEqual(sections["alpha"]["unread"]["oldest_at"], self.now - 30 * 3600, delta=2)
+        self.assertEqual(sections["beta"]["unread"], {"count": 0, "oldest_at": None, "oldest_name": None})
+
     def test_a_project_over_its_line_says_over_and_when_it_is_back_under(self):
         self.week()
         self.register(alpha=2, beta=20)   # alpha spent 4.5 against a line of 2 x 0.5 + 8 x 0.02 = 1.16

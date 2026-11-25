@@ -67,6 +67,14 @@ def _project(ledger, name, now: float, row, ok: bool, win, slack: float) -> dict
             "breakers": breakers}
 
 
+def _unread(ledger, reg, key: str, now: float) -> dict | None:
+    """The project's unread inbox notes (commonroom#588): the count and the oldest; None if they can't be read."""
+    try:
+        return handshake.unread_summary(reg, reg.projects[key], ledger, now)
+    except Exception:
+        return None
+
+
 def _trail(reg, key: str, now: float, board_trail) -> dict:
     """One project's trail (commonroom#408): the owner's notes of the last `TRAIL_DAYS`, newest first, each with the issues
     filed from it. A board that can't be read leaves the notes with no items and says why in `trail_error`."""
@@ -144,6 +152,7 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
                          "when": s.when,
                          "work": reg.projects[s.name].work if s.name in reg.projects else None})
             sections.append({"name": s.name, **_project(ledger, names[s.name], now, s, ok, win, slack),
+                             "unread": _unread(ledger, reg, s.name, now),
                              **(_trail(reg, s.name, now, trail) if trail and s.name in reg.projects else {})})
         rows.append({"name": "you (unassigned)", "share": report.owner_share, "spent_est": report.owner_use,
                      "room_est": None, "own_sessions_est": None, "line": report.owner_share * win.elapsed, "state": "yours",
