@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from commonroom import config as config_mod, pending, registry
+from commonroom import config as config_mod, pagepublish, pending, registry
 from commonroom.lock import claim_lock
 
 ROOM = Path(__file__).resolve().parent.parent / "room.py"
@@ -67,6 +67,7 @@ def beat(home: Path, reg: registry.Registry | None = None, starter=start_process
         log(f"beat: another beat holds {lock} (pid {holder}); nothing started")
         return 0
     children = []
+    first = None
     try:
         changed = pending.apply_due(home, time.time() if now is None else now, log)
         try:
@@ -91,6 +92,7 @@ def beat(home: Path, reg: registry.Registry | None = None, starter=start_process
             except Exception as exc:
                 log(f"beat: skipping {name}: room.toml unreadable: {exc}")
                 continue
+            first = first or str(folder)
             for label, args, wait in plan(name, share, cfg):
                 proc = starter(room + args, str(folder), home / f"beat-{name}-{label}.log", wait)
                 if not wait:
@@ -98,6 +100,8 @@ def beat(home: Path, reg: registry.Registry | None = None, starter=start_process
         for proc in children:
             if hasattr(proc, "wait"):
                 proc.wait()
+        if first:
+            pagepublish.publish(home, first, starter, log, python=python)
         return 0
     finally:
         try:
