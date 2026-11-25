@@ -19,6 +19,7 @@ class FakeScheduler:
     """Stands in for schtasks / crontab: nothing real is registered. `refuse` makes create fail."""
     def __init__(self, refuse=False):
         self.calls, self.registered, self.refuse, self.cron = [], False, refuse, ""
+        self.table = ""
 
     def __call__(self, command, stdin=None):
         self.calls.append(command)
@@ -28,6 +29,8 @@ class FakeScheduler:
             self.registered = True
             self.cron = (install.checkout() / "room.py").as_posix() + " beat\n"
             return 0, ""
+        if command == "schtasks /query /fo csv /v":
+            return 0, self.table
         if command.startswith("schtasks /query"):
             return (0, "") if self.registered else (1, "ERROR: The system cannot find the file specified.")
         if command == "crontab -l":
@@ -275,6 +278,40 @@ class InstallTest(unittest.TestCase):
         self.assertTrue(self.codex_hooks.exists())
         self.run_cmd(install.cmd_uninstall)
         self.assertFalse([c for c in self.sched.calls if "delete" in c])
+
+    def old_task(self, name, state="Ready", script="heartbeat.vbs magazine"):
+        run = f'wscript.exe "{(install.checkout() / script.split()[0])}" {" ".join(script.split()[1:])}'.strip()
+        head = '"HostName","TaskName","Status","Scheduled Task State","Task To Run"'
+        row = ",".join(f'"{c}"' for c in ("PC", "\\" + name, state, state, run.replace('"', '""')))
+        self.sched.table = "\n".join((head, row)) + "\n"
+
+    def install_on_windows(self):
+        with mock.patch("sys.platform", "win32"):
+            return self.run_cmd(install.cmd_install)
+
+    def creates(self):
+        return [c for c in self.sched.calls if c.startswith("schtasks /create")]
+
+    def test_enabled_old_heartbeat_task_blocks_the_beat_and_names_the_retire_command(self):
+        self.old_task("MagazineHeartbeat")
+        code, out = self.install_on_windows()
+        self.assertEqual(code, 0)
+        self.assertEqual(self.creates(), [])
+        self.assertIn("MagazineHeartbeat", out)
+        self.assertIn('schtasks /delete /tn "MagazineHeartbeat" /f', out)
+        self.assertTrue(self.codex_hooks.exists())
+        self.assertTrue(self.settings.exists())
+        self.run_cmd(install.cmd_uninstall)
+        self.assertFalse([c for c in self.sched.calls if "delete" in c])
+
+    def test_no_old_task_registers_the_beat_once(self):
+        self.install_on_windows()
+        self.assertEqual(len(self.creates()), 1)
+
+    def test_disabled_old_task_does_not_block_the_beat(self):
+        self.old_task("MagazineHeartbeat", state="Disabled")
+        self.install_on_windows()
+        self.assertEqual(len(self.creates()), 1)
 
 
 if __name__ == "__main__":

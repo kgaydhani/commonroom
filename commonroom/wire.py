@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from commonroom import schedule
+from commonroom import doctor, schedule
 
 EVENTS = {"SessionStart": "session-start", "UserPromptSubmit": "prompt-submit"}
 
@@ -101,6 +101,16 @@ def beat_registered(root: Path, runner=None) -> bool:
     if code != 0:
         return False
     return True if sys.platform.startswith("win") else f"{(root / 'room.py').as_posix()}" in out and " beat" in out
+
+
+def old_beats(root: Path, runner=None) -> list[str]:
+    """Names of enabled tasks other than ours that already run this checkout's heartbeat or beat script (Windows only).
+    Registering CommonRoomBeat beside them would beat every project twice."""
+    if not sys.platform.startswith("win"):
+        return []
+    run_ = runner or run
+    _, _, names = doctor.beat_scheduled(root, lambda args: run_(" ".join(args)), True)
+    return [n.lstrip("\\") for n in names if n.lstrip("\\") != schedule.TASK_NAME]
 
 
 def beat_register(root: Path, runner=None) -> tuple[bool, str]:
