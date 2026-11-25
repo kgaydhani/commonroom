@@ -3736,7 +3736,8 @@ class Dispatcher:
 
     def collect_tokens(self, now: float):
         """`room tokens collect` once per local day for the whole machine, not per project (commonroom#643). The day is
-        recorded in the room home before the run, so the project dispatchers sharing a home take one run between them.
+        claimed with an exclusive per-day file before the run, so concurrent project dispatchers sharing a home take
+        one run between them (commonroom#664). Claims stay after failure: at most one attempt per day.
         Only for the room home this ledger lives in. A failure is logged as one line and never stops the pass."""
         if self.dry_run:
             return
@@ -3746,6 +3747,12 @@ class Dispatcher:
                 return
             today, stamp = time.strftime("%Y-%m-%d", time.localtime(now)), home / "token-collect-day"
             if stamp.exists() and stamp.read_text(encoding="utf-8").strip() == today:
+                return
+            # Keep respecting the old date marker on upgrade, but only an atomic create grants a new day's run.
+            try:
+                with (home / f"token-collect-{today}").open("x", encoding="utf-8"):
+                    pass
+            except FileExistsError:
                 return
             stamp.write_text(today + "\n", encoding="utf-8", newline="\n")
             result = tokens_mod.collect()
