@@ -35,8 +35,8 @@ class CommentGolden(unittest.TestCase):
         self.d.cfg["checks"] = {"test": "pytest -q"}
         self.d.handle_red_ci({"number": 5}, RED, 7, [self.issue])
         self.assertEqual(self.said(), [
-            "CI is red on PR #5: unit. Read the failure with `gh pr checks 5` and `gh run view <run id> --log-failed`, "
-            "fix it on the same branch, and run `pytest -q` before pushing."])
+            "CI is red on PR #5: unit. Read it with `gh pr checks 5` and `gh run view <run id> --log-failed`, "
+            "fix it on the same branch and run `pytest -q` before pushing."])
 
     def test_red_ci_bounce_without_a_project_test_command(self):
         self.d.cfg["checks"] = {}
@@ -68,7 +68,7 @@ class CommentGolden(unittest.TestCase):
                                            "on branch `i7-x`; the next attempt continues from it."])
         self.board.comments = []
         self.assertEqual(self.timeout(0), ["The room ended this run at its 60-minute time limit. Nothing was committed, "
-                                           "so nothing was preserved and the next attempt starts over. If this keeps "
+                                           "so the next attempt starts over. If this keeps "
                                            "happening, the issue may need splitting."])
 
     def test_preserve_work_comment(self):
@@ -77,14 +77,14 @@ class CommentGolden(unittest.TestCase):
         job = dispatch.Job("build", "builder", issue=self.issue)
         with mock.patch.object(dispatch, "git", lambda args, cwd: answers.get(args[0], "")):
             self.d.preserve_work(job, wt, "i7-x")
-        self.assertEqual(self.said(), ["Unfinished work was preserved on branch `i7-x`. The next attempt continues from it."])
+        self.assertEqual(self.said(), ["Unfinished work was preserved on branch `i7-x`; the next attempt continues from it."])
 
     def test_rescue_comment(self):
         job = dispatch.Job("build", "builder", issue=self.issue)
         with mock.patch.object(dispatch, "git", lambda args, cwd: ""), mock.patch.object(dispatch.time, "time", lambda: 1000):
             self.d.rescue(job, self.root, "i7-x")
         bundle = Path(self.ledger.path).parent / "rescue" / "i7-x-1000.bundle"
-        self.assertEqual(self.said(), [f"Pushing this branch failed, so its unpushed work was saved locally as "
+        self.assertEqual(self.said(), [f"Pushing this branch failed; its unpushed work was saved as "
                                        f"`{bundle}` (`git fetch <bundle> HEAD:i7-x` restores it)."])
 
     def handoff(self, changed):
@@ -96,11 +96,11 @@ class CommentGolden(unittest.TestCase):
 
     def test_codex_handoff_comments(self):
         self.assertEqual(self.handoff(True), [
-            "Codex finished part or all of this but ended BLOCKED. Its work is preserved on branch `i7-x`. A Claude "
+            "Codex ended BLOCKED after changing some or all of this. Its work is on branch `i7-x`. A Claude "
             "builder continues from it: run the gate, finish what's left, open the PR.\n\n```\nstuck on gh auth\n```"])
         self.board.comments = []
         self.assertEqual(self.handoff(False), [
-            "Codex ended BLOCKED before changing anything, so this run left nothing on branch `i7-x`. A Claude builder "
+            "Codex ended BLOCKED before changing anything: nothing is on branch `i7-x`. A Claude builder "
             "starts from the issue: build it, run the gate, open the PR.\n\n```\nstuck on gh auth\n```"])
 
     def assess_failure(self, failures_before):
@@ -124,7 +124,7 @@ class CommentGolden(unittest.TestCase):
 
 
 class CommentsLiveInWays(unittest.TestCase):
-    PHRASES = ("Read the failure with", "resolves only the conflicts and reruns", "time limit.", "Nothing was committed",
+    PHRASES = ("Read it with", "resolves only the conflicts and reruns", "time limit.", "Nothing was committed",
                "Codex ended BLOCKED before changing", "Unfinished work was preserved", "unpushed work was saved", "produced no PR",
                "escalating to the director instead of retrying")
 
