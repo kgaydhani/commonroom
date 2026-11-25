@@ -430,6 +430,25 @@ class MainSuite(Carry):
         (task,) = board.created
         self.assertIn("Failing:\n- `FAIL: test_x (tests.test_y.Y.test_x)`", task["body"])
 
+    def test_a_task_opened_on_a_later_pass_still_lists_the_failing_tests(self):
+        board = self.setup_ready_pr()
+        line = carry.Line("exit 1: FAILED (failures=1)")
+        line.failing = ("FAIL: test_x (tests.test_y.Y.test_x)",)
+        self.results = [("FAIL", line)] * 2
+        real = board.create_issue
+        def broken(*a, **kw):
+            raise RuntimeError("github down")
+        board.create_issue = broken
+        d = self.dispatcher(self.cfg(), board)
+        d.main_suite_red([], [])
+        d.main_suite_red([], [])
+        self.assertEqual(board.created, [])
+        board.create_issue = real
+        self.dispatcher(self.cfg(), board).main_suite_red([], [])      # a restarted dispatcher
+        self.assertEqual(len(self.calls), 2)
+        (task,) = board.created
+        self.assertIn("Failing:\n- `FAIL: test_x (tests.test_y.Y.test_x)`", task["body"])
+
     def test_the_red_task_names_the_kept_log_and_the_interpreter(self):
         board = self.setup_ready_pr()
         sha = self.sha()
@@ -502,6 +521,21 @@ class MainSuite(Carry):
         self.dispatcher(self.cfg(), board).main_suite_red([], actions)
         self.assertEqual(self.commands[-1][0], PASS)
         self.assertTrue([a for a in actions if "room.toml unusable" in a])
+
+    def test_a_room_toml_in_a_subfolder_of_the_repo_is_read_at_the_sha(self):
+        """commonroom#539: `<sha>:room.toml` is the repo root's file; the project's own sits in a subfolder."""
+        self.write("room.toml", '[checks]\ntest = "root command"\n')
+        (self.root / "proj").mkdir()
+        self.write("proj/room.toml", '[checks]\ntest = "project command"\nmax_minutes = 9\n')
+        sha = self.commit("two room.toml files")
+        d = self.dispatcher(self.cfg(), self.setup_ready_pr())
+        d.root = self.root / "proj"
+        self.assertEqual(d.checks_at(sha, {"test": "live"}), ({"test": "project command", "max_minutes": 9}, ""))
+        self.write("proj/room.toml", "[other]\n")        # no [checks] at this sha: the live command, with a note
+        sha = self.commit("no checks")
+        checks, note = d.checks_at(sha, {"test": "live"})
+        self.assertEqual(checks, {"test": "live"})
+        self.assertIn("room.toml unusable", note)
 
     def test_an_unchanged_room_toml_gives_the_live_command(self):
         board = self.setup_ready_pr()

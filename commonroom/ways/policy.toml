@@ -32,6 +32,9 @@ director_cooldown_seconds = 3600
 stamp_cooldown_seconds = 900
 # Seconds (5 minutes): new owner comments are answered after this, rather than after the director's hourly cooldown.
 owner_cooldown_seconds = 300
+# A project's heartbeat command that exits non-zero this many times running is a steward finding; a success clears it
+# (commonroom#587).
+heartbeat_failures = { value = 3, min = 1 }
 # Minutes: an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63).
 stale_claim_minutes = 30
 # Seconds (10 minutes): a task whose last run was a room-error rests this long, doubling with each one in a row

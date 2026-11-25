@@ -8,6 +8,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -288,13 +289,14 @@ class Beside(Hook):
                     entry.pop("commandWindows")
         [prompt] = plugin["hooks"]["UserPromptSubmit"]
         self.assertEqual(prompt["hooks"], [{"type": "command", "command": "python", "timeout": 5,
-                                            "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "prompt-submit"]}])
+                                            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "prompt-submit"]}])
         [group] = plugin["hooks"]["SessionStart"]
         self.assertEqual(list(group), ["hooks"])   # no matcher: every start, resume, clear and compaction
         [command] = group["hooks"]
         self.assertEqual(command, {"type": "command", "command": "python", "timeout": 5,
-                                   "args": ["${CLAUDE_PLUGIN_ROOT}/../room.py", "hook", "session-start"]})
-        mine = json.loads(json.dumps(settings["hooks"]).replace("${CLAUDE_PROJECT_DIR}", "${CLAUDE_PLUGIN_ROOT}/.."))
+                                   "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "session-start"]})
+        # this repo's own settings run room.py directly; the plugin runs the launcher, which runs the same `room.py hook <event>`
+        mine = json.loads(json.dumps(settings["hooks"]).replace("${CLAUDE_PROJECT_DIR}/room.py\", \"hook\", ", "${CLAUDE_PLUGIN_ROOT}/hooks/run.py\", "))
         self.assertEqual(mine, plugin["hooks"])
 
 
@@ -309,15 +311,15 @@ class PluginHooksForCodex(unittest.TestCase):
             entries = [e for g in plugin["hooks"][event] for e in g["hooks"]]
             self.assertTrue(entries)
             for entry in entries:
-                self.assertEqual(entry["args"][-2:], ["hook", name])
-                self.assertTrue(entry["commandWindows"].endswith(f" hook {name}"), entry["commandWindows"])
-                self.assertIn("room.py", entry["commandWindows"])
+                self.assertEqual(entry["args"][-1], name)
+                self.assertTrue(entry["commandWindows"].endswith(f"run.py\" {name}"), entry["commandWindows"])
+                self.assertIn("hooks\\run.py", entry["commandWindows"])
                 self.assertIn("%PLUGIN_ROOT%", entry["commandWindows"])
                 self.assertNotIn("${", entry["commandWindows"])   # cmd does not expand ${VAR}
 
     def run_codex_form(self, cmd, plugin_root):
         # as Codex does: one raw command line through `cmd /C "<command>"` (list form would escape the quotes as \\")
-        return subprocess.run(f'cmd /C "{cmd}"', env={**os.environ, "PLUGIN_ROOT": str(plugin_root)},
+        return subprocess.run(f'cmd /C "{cmd}"', env={**os.environ, "PLUGIN_ROOT": str(plugin_root), "COMMONROOM_HOME": str(Path(plugin_root).parent / "nohome")},
                               capture_output=True, text=True, input='{"x":1}')
 
     def test_codex_form_runs_room_py_beside_the_plugin_and_is_silent_without_it(self):
@@ -326,7 +328,7 @@ class PluginHooksForCodex(unittest.TestCase):
         plugin = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "a root with space"
-            (root / "plugin").mkdir(parents=True)
+            shutil.copytree(ROOT / "plugin", root / "plugin")
             (root / "room.py").write_text("import sys\nprint('ARGS', sys.argv[1:], sys.stdin.read())\n",
                                           encoding="utf-8")
             for event, name in (("SessionStart", "session-start"), ("UserPromptSubmit", "prompt-submit")):
@@ -334,8 +336,71 @@ class PluginHooksForCodex(unittest.TestCase):
                 done = self.run_codex_form(cmd, root / "plugin")
                 self.assertEqual(done.returncode, 0, done.stderr)
                 self.assertEqual(done.stdout.strip(), f"ARGS ['hook', '{name}'] " + '{"x":1}')
+                shutil.copytree(ROOT / "plugin", Path(d) / "cache" / "p", dirs_exist_ok=True)
                 done = self.run_codex_form(cmd, Path(d) / "cache" / "p")
                 self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""))
+
+
+class PluginInstalled(Hook):
+    """commonroom#565: the plugin copied out of the checkout (a user-scope install) gives the answer it gives in place."""
+
+    def setUp(self):
+        super().setUp()
+        self.register()
+        self.copy = self.tmp / "cache" / "commonroom"
+        shutil.copytree(ROOT / "plugin", self.copy, ignore=shutil.ignore_patterns("__pycache__"))
+        self.hooks = json.loads((self.copy / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+        self.scratch_home = self.tmp / "userhome"
+        self.scratch_home.mkdir()
+
+    def run_declared(self, plugin_root, event, cwd, data):
+        """Run the Claude Code form of `event`'s command, with CLAUDE_PLUGIN_ROOT expanded, from `cwd`."""
+        entry = self.hooks[event][0]["hooks"][0]
+        args = [a.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root)) for a in entry["args"]]
+        env = {**os.environ, "HOME": str(self.scratch_home), "USERPROFILE": str(self.scratch_home)}
+        return subprocess.run([sys.executable, *args], cwd=cwd, env=env, input=json.dumps(data), capture_output=True,
+                              text=True, timeout=60)
+
+    def start(self, plugin_root):
+        data = {"session_id": "s1", "cwd": str(self.alpha), "hook_event_name": "SessionStart", "source": "startup"}
+        return self.run_declared(plugin_root, "SessionStart", self.elsewhere, data)
+
+    def test_a_copy_outside_the_repo_answers_as_the_plugin_in_place_does(self):
+        (self.home).mkdir(parents=True, exist_ok=True)
+        (self.home / "room-path").write_text(str(ROOT / "room.py"), encoding="utf-8")
+        in_place = self.start(ROOT / "plugin")
+        copied = self.start(self.copy)
+        self.assertEqual((in_place.returncode, in_place.stderr), (0, ""))
+        self.assertIn("alpha", in_place.stdout)
+        self.assertEqual((copied.returncode, copied.stdout, copied.stderr),
+                         (in_place.returncode, in_place.stdout, in_place.stderr))
+
+    def test_in_place_is_the_same_as_running_room_py_directly(self):
+        data = {"session_id": "s1", "cwd": str(self.alpha), "hook_event_name": "SessionStart", "source": "startup"}
+        direct = subprocess.run([sys.executable, str(ROOT / "room.py"), "hook", "session-start"], cwd=self.elsewhere,
+                                input=json.dumps(data), capture_output=True, text=True, timeout=60)
+        self.assertEqual(self.start(ROOT / "plugin").stdout, direct.stdout)
+        self.assertTrue(direct.stdout)
+
+    def test_a_copy_that_cannot_find_the_room_exits_0_and_prints_nothing(self):
+        for event in ("SessionStart", "UserPromptSubmit"):
+            done = self.run_declared(self.copy, event, self.elsewhere, {"cwd": str(self.alpha)})
+            self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""), event)
+        (self.home).mkdir(parents=True, exist_ok=True)
+        for bad in (str(self.tmp / "missing" / "room.py"), ""):
+            (self.home / "room-path").write_text(bad, encoding="utf-8")
+            done = self.start(self.copy)
+            self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""), repr(bad))
+
+
+class MarketplaceFile(unittest.TestCase):
+    def test_lists_the_plugin_at_its_folder(self):
+        market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        self.assertTrue(market["name"] and market["owner"]["name"])
+        [entry] = market["plugins"]
+        self.assertEqual(entry["name"], json.loads((ROOT / "plugin" / ".claude-plugin" / "plugin.json")
+                                                    .read_text(encoding="utf-8"))["name"])
+        self.assertTrue((ROOT / entry["source"] / ".claude-plugin" / "plugin.json").is_file())
 
 
 class ColdReturn(Hook):
