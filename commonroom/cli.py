@@ -704,6 +704,25 @@ def _board_of(p, board_for=None):
     return (board_for or GitHubBoard)(project["repo"])
 
 
+def cmd_add(args, board_for=None) -> int:
+    """Add an item to a project's board: a research or writing item for a role (`--role`), or a task for the owner (`--owner`)."""
+    title = (args.title or "").strip()
+    if not title or bool(args.role) == bool(args.owner):
+        print("refused: give a title and exactly one of --role ROLE (work for the room) or --owner (a task for you).", file=sys.stderr)
+        return 2
+    try:
+        _, p = handshake._start(args)
+        b = _board_of(p, board_for)
+        labels = [board.OWNER_LABEL] if args.owner else ["status:ready", f"role:{args.role}"]
+        milestone = (handshake.room_toml(p).get("goal") or {}).get("milestone")
+        n = b.create_issue(title, args.body or "", labels=labels, milestone=milestone)
+    except (handshake.HandshakeError, RuntimeError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"{p.name} #{n}: added")
+    return 0
+
+
 def cmd_items(args, board_for=None) -> int:
     """A project's open items (`--all`: closed too), one line each: number, status/role/size labels, title."""
     try:
@@ -1360,6 +1379,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("trials", help="each declared trial's arms, figures and verdict (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=cmd_trials)
     p = sub.add_parser("reconcile", help="after a direction: keep, park or cancel one open issue, with a reason"); p.add_argument("name", metavar="project"); p.add_argument("issue", type=int); p.add_argument("verdict"); p.add_argument("reason", nargs="?"); p.set_defaults(func=cmd_reconcile)
     p = sub.add_parser("items", help="a project's open items on its board (local or GitHub); --all adds closed ones"); p.add_argument("name", metavar="project"); p.add_argument("--all", action="store_true"); p.set_defaults(func=cmd_items)
+    p = sub.add_parser("add", help="add an item to a project's board: --role ROLE (work for the room) or --owner (a task for you)"); p.add_argument("name", metavar="project"); p.add_argument("title"); p.add_argument("--body"); p.add_argument("--role"); p.add_argument("--owner", action="store_true"); p.set_defaults(func=cmd_add)
     p = sub.add_parser("comment", help="comment on an item as the owner"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("text"); p.set_defaults(func=cmd_comment)
     p = sub.add_parser("label", help="add or remove labels on an item"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("--add", action="append", metavar="LABEL"); p.add_argument("--remove", action="append", metavar="LABEL"); p.set_defaults(func=cmd_label)
     p = sub.add_parser("close", help="close an item, with an optional reason"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("reason", nargs="?", default=""); p.set_defaults(func=cmd_close)
