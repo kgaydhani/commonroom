@@ -167,6 +167,15 @@ One file lists the projects, each with a folder, a share and a mode. One beat se
 - **Modes.** A share of zero is off. `fixed` runs only scheduled and explicitly added work. `open` lets the planner add work. `spare` runs only in allowance nobody else wants.
 - **Interactive sessions** attached to a project are booked to it and shown. They are never blocked.
 
+### Where per-model weights should replace the plan-wide estimate
+
+`room weights` (commonroom#644) records dollars per meter point for each model, with a spread. The factor above is one number for the whole plan, and it moves about a quarter from day to day as the model mix changes. Two places should take the per-model weights instead, each as a separate issue the director files from this section:
+
+- **The pie's spend.** A run's cost in percent of the plan is its tokens priced per model and divided by that model's weight, in place of its dollar cost divided by the plan-wide factor. The pace line and each project's used share then follow the meter when a project mostly uses one model.
+- **The page.** Any figure on the page that turns tokens into percent of the plan should use the same per-model conversion, and show the spread beside it so a reader sees it is an estimate.
+
+Until then the weights only inform. The steward raises two findings from them: `off-schedule-reset` (a meter reset before its scheduled time) and `odd-weight` (a model's latest weight is outside its usual spread). Either one says a vendor-side change may have happened, and the arithmetic above is not changed by it.
+
 ## What a project declares
 
 Its goal, its share and mode, how much the owner approves, and what "landed" means. The default is a merge. Otherwise the project supplies a command that lists what has landed since a given time, in the same way it supplies its test command today. The no-output breaker and the progress guarantee then work for a project that never merges anything.

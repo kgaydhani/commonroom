@@ -32,7 +32,7 @@ from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
 from commonroom.waytext import PLACEHOLDER, fill_way, read_way   # moved there so handshake can import them (commonroom#345)
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
-from commonroom import measure, metrics as metrics_mod, owner_reserve, steward, tokens as tokens_mod
+from commonroom import measure, metrics as metrics_mod, owner_reserve, steward, tokens as tokens_mod, weights as weights_mod
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -3711,6 +3711,14 @@ class Dispatcher:
                 [services.command_key(c) for c in (self.cfg.get("heartbeat") or {}).get("commands") or []])
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
+            try:   # the vendor's meters are the machine's: an unreadable history costs only these checks (commonroom#645)
+                home = Path(self.ledger.path).parent
+                for meter in weights_mod.METERS:
+                    found += steward.off_schedule_resets(self.ledger.usage_history("claude", meter, now - 3 * 86400),
+                                                         meter, now - 3 * 86400)
+                    found += steward.odd_weights(weights_mod.read_history(home / weights_mod.FILENAME), meter)
+            except Exception as exc:
+                self.log(f"   steward: the meter checks failed: {exc}")
             try:   # an unreadable registry or inbox costs only this check, never the rest of the sweep
                 reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME, check=False)   # the ledger's own home
                 mine = handshake.project_named(reg, self.project)
