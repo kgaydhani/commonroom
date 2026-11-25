@@ -41,9 +41,10 @@ room_error_backoff_seconds = { value = 600, min = 60 }
 room_error_escalate = { value = 3, min = 1 }
 # Seconds (12 hours): a stopped Claude session older than this starts fresh (commonroom#142).
 resume_window_seconds = 43200
-# Seconds (55 minutes, inside the prompt cache's hour): a finished build sent back by a review resumes its own
-# session if it ended less than this ago; 0 turns it off (commonroom#208).
-rework_resume_seconds = { value = 3300, min = 0 }
+# Seconds: a finished build sent back by a review resumes its own session if it ended less than this ago; 0 turns it
+# off (commonroom#208). Off since trial rework-fresh (#449, #609): fresh rework took 1.40 review runs, 26 minutes and
+# 1.0M input tokens per landing against 1.68, 32 and 1.4M for resuming within 3300 s.
+rework_resume_seconds = { value = 0, min = 0 }
 # Seconds (6 hours): the room's own work must have run this long in the 24h window before "nothing merged" is a
 # verdict: after a long pause most of the window is pause time, and no build, review and merge cycle fits in the
 # first hours back. Room-wide only: it is part of a breaker's timing (commonroom#230).
