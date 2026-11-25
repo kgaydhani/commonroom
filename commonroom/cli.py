@@ -17,6 +17,7 @@ from commonroom import away, owner_reserve, person as person_mod, pending, pie_n
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import install as install_mod
+from commonroom import card as card_mod
 from commonroom import places as places_mod
 from commonroom import schedule as schedule_mod
 from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, trials
@@ -1147,6 +1148,24 @@ def cmd_places(args) -> int:
     return 0
 
 
+def cmd_card(args) -> int:
+    """One screen about a place or project: what it is for, its state, its method, who answers. Read-only, no model call."""
+    try:
+        reg = registry.load(check=False)
+        data = places_mod.load()
+        ledger = Ledger() if registry.default_path().parent.joinpath("room.sqlite3").exists() else None
+        try:
+            lines = card_mod.build(args.place, reg, data, ledger)
+        finally:
+            if ledger:
+                ledger.db.close()
+    except (card_mod.CardError, registry.RegistryError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 1
+    print("\n".join(lines))
+    return 0
+
+
 def cmd_pie(args) -> int:
     """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
@@ -1344,6 +1363,7 @@ def build_parser() -> argparse.ArgumentParser:
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
     p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove")); p.add_argument("value", nargs="?"); p.set_defaults(func=cmd_person)
+    p = sub.add_parser("card", help="one screen about a place or project: what it is for, its state, its method, who answers (no model call)"); p.add_argument("place", help="a name or a folder path"); p.set_defaults(func=cmd_card)
     p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
