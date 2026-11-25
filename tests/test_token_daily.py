@@ -17,7 +17,7 @@ def at(day, hour=12):
     return datetime(2026, 11, day, hour).timestamp()   # local time
 
 
-class DailyTokens(Base):
+class Setup(Base):
     def setUp(self):
         super().setUp()
         self.home = Path(self.tmp.name)                # the ledger lives here, so this is the room home
@@ -30,6 +30,13 @@ class DailyTokens(Base):
 
     def cfg(self, name="commonroom"):
         return project_cfg(self.home, name=name)
+
+
+class DailyTokens(Setup):
+    def setUp(self):
+        super().setUp()
+        meters = mock.patch.object(dispatch.weights_mod, "METERS", ())     # these tests are about collect, not the fit
+        meters.start(); self.addCleanup(meters.stop)
 
     def test_two_passes_a_day_collect_once_and_the_next_day_again(self):
         d = self.dispatcher(self.cfg())
@@ -123,6 +130,44 @@ class DailyTokens(Base):
         with mock.patch.object(dispatch.tokens_mod, "collect") as collect:
             d.collect_tokens(at(25))
             collect.assert_not_called()
+
+
+class DailyWeights(Setup):
+    def seed(self, days):
+        import json
+        import test_weights as tw
+        rows, readings = tw.synthetic(days=days)
+        (self.home / "token-rows.jsonl").write_text("".join(json.dumps(r) + chr(10) for r in rows), encoding="utf-8")
+        for meter in ("seven_day", "five_hour"):
+            for r in readings:
+                self.ledger.db.execute(
+                    "INSERT INTO usage (observed_at, first_seen, provider, window, used_pct, resets_at, source) "
+                    "VALUES (?,?,?,?,?,?,?)", (r["observed_at"], r["first_seen"], "claude", meter, r["used_pct"], r["resets_at"], "test"))
+        self.ledger.db.commit()
+
+    def lines(self):
+        from commonroom import weights
+        return weights.read_history(self.home / weights.FILENAME)
+
+    def test_a_new_day_records_one_line_per_meter_and_the_same_day_adds_nothing(self):
+        self.seed(10)
+        d = self.dispatcher(self.cfg())
+        with mock.patch.object(dispatch.tokens_mod, "collect", return_value={"added": 0}):
+            d.collect_tokens(at(25, 8)); d.collect_tokens(at(25, 23))
+        got = self.lines()
+        self.assertEqual(sorted((r["date"], r["meter"]) for r in got), [("2026-11-25", "five_hour"), ("2026-11-25", "seven_day")])
+        with mock.patch.object(dispatch.tokens_mod, "collect", return_value={"added": 0}):
+            d.collect_tokens(at(26, 8))
+        self.assertEqual(len(self.lines()), 4)
+
+    def test_too_little_data_records_nothing_and_housekeeping_goes_on(self):
+        self.seed(2)
+        d = self.dispatcher(self.cfg())
+        with mock.patch.object(dispatch.tokens_mod, "collect", return_value={"added": 0}),                 mock.patch.object(dispatch.Dispatcher, "clear_stray_ready", return_value=[]) as stray:
+            d.collect_tokens(at(25)); d.housekeeping()
+            stray.assert_called()
+        self.assertEqual(self.lines(), [])
+        self.assertFalse(any("failed" in l for l in self.logs), self.logs)
 
 
 if __name__ == "__main__":

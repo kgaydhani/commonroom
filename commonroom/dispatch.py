@@ -3765,6 +3765,11 @@ class Dispatcher:
             stamp.write_text(today + "\n", encoding="utf-8", newline="\n")
             result = tokens_mod.collect()
             self.log(f"   tokens: added {result['added']} rows")
+            rows, kept = tokens_mod.read_rows(), 0
+            for meter in weights_mod.METERS:     # the day's fit rides the same claim; too little data records nothing
+                kept += weights_mod.record(weights_mod.fit(
+                    rows, self.ledger.usage_history("claude", meter, 0.0), meter, today=weights_mod._day(now)))
+            self.log(f"   weights: recorded {kept} fits")
         except Exception as exc:
             self.log(f"   tokens collect failed: {type(exc).__name__}: {str(exc)[:200]}")
 
