@@ -64,6 +64,8 @@ def _worktree_roots(reg) -> list[str]:
             configured, previous = None, None
         if isinstance(configured, str) and configured:
             roots.append(Path(configured))
+        if isinstance(previous, str):
+            previous = [previous]
         if isinstance(previous, list):
             roots += [Path(p) for p in previous if isinstance(p, str) and p]
     return [sessions.path_key(r) for r in roots]
