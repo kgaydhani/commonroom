@@ -34,6 +34,7 @@ python D:/Dev/commonroom/room.py attach myproject             # join a project a
 python D:/Dev/commonroom/room.py note myproject "text"       # leave the project a note in its inbox
 python D:/Dev/commonroom/room.py digest myproject            # rebuild and print the project's digest
 python D:/Dev/commonroom/room.py items myproject             # the project's open items on its board
+python D:/Dev/commonroom/room.py add myproject "title" --role researcher   # add an item (or --owner: a task for you)
 python D:/Dev/commonroom/room.py beat                        # one heartbeat over every registered project
 python D:/Dev/commonroom/room.py pause "why"                 # nothing new starts; running workers finish their job
 python D:/Dev/commonroom/room.py breaker reset               # clear a pause or a tripped breaker after reading the diagnosis

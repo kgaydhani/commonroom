@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from commonroom import board, config as config_mod, handshake, pie, registry as registry_mod, standings
+from commonroom import board, config as config_mod, handshake, metrics, pie, registry as registry_mod, standings
 from commonroom.dispatch import pie_active, pie_holds, verdicts
 from commonroom.liveness import orphaned
 from commonroom.localboard import LocalBoard
@@ -42,11 +42,18 @@ def _breakers(ledger, name) -> list[dict]:
             for b in ledger.open_breakers(name)]
 
 
-def _project(ledger, name, now: float, row, ok: bool, win, slack: float) -> dict:
+def _is_local(p) -> bool:
+    try:
+        return bool(p) and handshake._local(p)
+    except Exception:
+        return False
+
+
+def _project(ledger, name, now: float, row, ok: bool, win, slack: float, local: bool = False) -> dict:
     """One project's folded section: working now or resting until a time, what landed lately, open breakers."""
     rows = ledger.recent_runs(name, limit=400)
     running = [r for r in rows if r["status"] == "running" and not orphaned(r, now)]
-    landed = [r for r in rows if r["role"] == "merge" and r["started_at"] >= now - 7 * 86400]
+    landed = metrics.landings(rows, now - 7 * 86400, now + 60, local)   # a local board has no merges: a closed item is a landing (commonroom#651)
     breakers = _breakers(ledger, name)
     if running:
         r = running[0]
@@ -151,14 +158,14 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
                          "own_sessions_est": report.own.get(s.name, 0.0), "line": s.allowed, "state": _state_word(s, ok),
                          "when": s.when,
                          "work": reg.projects[s.name].work if s.name in reg.projects else None})
-            sections.append({"name": s.name, **_project(ledger, names[s.name], now, s, ok, win, slack),
+            sections.append({"name": s.name, **_project(ledger, names[s.name], now, s, ok, win, slack, _is_local(reg.projects.get(s.name))),
                              "unread": _unread(ledger, reg, s.name, now),
                              **(_trail(reg, s.name, now, trail) if trail and s.name in reg.projects else {})})
         rows.append({"name": "you (unassigned)", "share": report.owner_share, "spent_est": report.owner_use,
                      "room_est": None, "own_sessions_est": None, "line": report.owner_share * win.elapsed, "state": "yours",
                      "when": None, "work": None})
     elif not reg.projects:
-        sections.append({"name": host or "this project", **_project(ledger, host, now, None, True, win, slack)})
+        sections.append({"name": host or "this project", **_project(ledger, host, now, None, True, win, slack, config_mod.board_kind(cfg) == "local")})
     waiting = []
     local = set()
     for key, p in reg.projects.items():

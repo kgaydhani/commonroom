@@ -184,6 +184,7 @@ def approve(cfg: dict, path: Path | str | None = None) -> str:
 
 
 LOCAL_AUTHOR = "room"   # localboard.AUTHOR; not imported so config stays free of other room modules
+LOCAL_OWNER = "owner"   # the author `LocalBoard.owner_comment` writes: `room comment` on a local board
 BOARDS = ("github", "local")
 
 
@@ -208,7 +209,7 @@ def trusted(cfg: dict) -> set[str]:
     extra = (cfg.get("project") or {}).get("trusted") or []
     logins = {str(login).lower() for login in [owner(cfg), *([extra] if isinstance(extra, str) else extra)] if login}
     if board_kind(cfg) == "local":
-        logins.add(LOCAL_AUTHOR)   # everything on a local board is written by the room's own files (commonroom#455)
+        logins |= {LOCAL_AUTHOR, LOCAL_OWNER}   # everything on a local board is written by the room's own files (commonroom#455); the owner's comments reach the prompt (commonroom#651)
     return logins
 
 
