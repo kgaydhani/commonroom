@@ -111,6 +111,16 @@ def trial_final(reports: list, ) -> list[dict]:
             for n, (t, res) in enumerate(reports, 1) if res["verdict"] != "running" and t.ended is None]
 
 
+def heartbeat_failing(runs: dict[str, list[int]], needed: int, configured: list[str]) -> list[dict]:
+    """A finding for each heartbeat command whose last `needed` runs all exited non-zero; one success clears it
+    (commonroom#587). `runs` maps a command to its exit codes, newest first; `configured` is the project's current commands, joined as
+    `services.tick` records them: a command no longer configured has no finding. The number is its place in `configured`."""
+    return [finding("heartbeat-failing", n, f"Heartbeat command `{cmd}` exited non-zero {needed} times running; "
+                    f"last exit code {codes[0]}.")
+            for n, cmd in enumerate(configured, 1) if (codes := runs.get(cmd, []))
+            if len(codes) >= needed and all(c != 0 for c in codes[:needed])]
+
+
 def check(issues: list[dict], prs: list[dict], running_runs: list[dict], now: float,
           milestone: str | None = None, direction_at: float | None = None,
           reconciled: dict[int, float] | None = None) -> list[dict]:

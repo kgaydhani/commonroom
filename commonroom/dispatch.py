@@ -26,7 +26,7 @@ from pathlib import Path
 # Every room module is imported here, at start, never inside a function: the room fast-forwards its own live checkout
 # after merging its own PRs, and a long-running dispatcher must never load a newer module next to its older ones.
 from commonroom import board as board_mod, config as config_mod, gate, notify as notify_mod, services, usage, workers as workers_mod
-from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, sessions
+from commonroom import carry as carry_mod, handshake, pie as pie_mod, policy as policy_mod, registry as registry_mod, services, sessions
 from commonroom import model_notice, pie_notice, progress as progress_mod, standings as standings_mod, trials as trials_mod, weekly
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
@@ -131,6 +131,7 @@ BULLETIN_REASON = WAYS["bulletin"]   # fill_way() it with due, issue and owner
 OWNER_COOLDOWN = POLICY["owner_cooldown_seconds"]
 ROOM_ERROR_BACKOFF = POLICY["room_error_backoff_seconds"]
 ROOM_ERROR_ESCALATE = POLICY["room_error_escalate"]
+HEARTBEAT_FAILURES = POLICY["heartbeat_failures"]
 SCOUT_INTERLEAVE = POLICY["scout_interleave_seconds"]
 # A scheduled issue's body carries this, so the schedule sees its last one is still open (commonroom#151).
 SCHEDULE_MARK = "<!-- room-schedule:{role} -->"
@@ -1346,7 +1347,7 @@ POLICY_CONSTANTS = {"review_rounds": "REVIEW_ROUNDS", "incomplete_rounds": "INCO
                     "owner_cooldown_seconds": "OWNER_COOLDOWN", "stale_claim_minutes": "STALE_CLAIM_MINUTES",
                     "room_error_backoff_seconds": "ROOM_ERROR_BACKOFF", "room_error_escalate": "ROOM_ERROR_ESCALATE",
                     "resume_window_seconds": "RESUME_WINDOW", "rework_resume_seconds": "REWORK_RESUME", "progress_min_work_seconds": "PROGRESS_MIN_WORK",
-                    "notify_max": "NOTIFY_MAX", "run_timeout_seconds": "RUN_TIMEOUT"}
+                    "notify_max": "NOTIFY_MAX", "heartbeat_failures": "HEARTBEAT_FAILURES", "run_timeout_seconds": "RUN_TIMEOUT"}
 
 
 def session_file(worktree, session_id: str, projects_dir: Path | None = None) -> Path:
@@ -2284,6 +2285,8 @@ class Dispatcher:
                 self.ledger.mark(self.project, red_key)
                 self.ledger.mark(self.project, f"main-suite-line:{line}")
                 self.ledger.mark(self.project, f"main-suite-python:{getattr(line, 'interpreter', 'unknown')}")
+                for name in getattr(line, "failing", ()):
+                    self.ledger.mark(self.project, f"main-suite-failing:{sha}:{name}")
             actions.append(f"tests {result} on main {sha[:7]} in code ({line})")
             if result != "FAIL":
                 return False
@@ -2294,7 +2297,7 @@ class Dispatcher:
             return False
         else:
             summary = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-line:")), "")
-            failing = ()
+            failing = tuple(k for k, _ in reversed(self.ledger.marks(self.project, f"main-suite-failing:{sha}:")))
             interpreter = next(iter(k for k, _ in self.ledger.marks(self.project, "main-suite-python:")), "unknown")
         log_path = carry_mod.kept_log(Path(self.ledger.path).parent / "suite-logs", self.project, sha)
         fix = next((i for i in everything if i["state"] == "OPEN" and i["title"].startswith(MAIN_RED)), None)
@@ -3517,6 +3520,9 @@ class Dispatcher:
             found = steward.check(everything, prs, self.ledger.running_runs(self.project), time.time(),
                                    self.milestone, direction_at, reconciled)
             now = time.time()
+            found += steward.heartbeat_failing(
+                self.ledger.heartbeat_runs(self.project), self.policy("heartbeat_failures"),
+                [services.command_key(c) for c in (self.cfg.get("heartbeat") or {}).get("commands") or []])
             found += steward.trial_final(trials_mod.report(
                 TRIALS_FILE, self.ledger.runs_since(self.project, now - 400 * 86400), now, only_active=True))
             for f in found:
