@@ -1,1 +1,1 @@
-If the PR conflicts with main, first merge origin/main into the branch, resolve the conflicts and rerun the tests.
+If the PR conflicts with main, first merge origin/main into the branch and resolve the conflicts, then rerun the tests.

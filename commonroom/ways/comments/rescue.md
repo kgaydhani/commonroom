@@ -1,1 +1,1 @@
-Pushing this branch failed; its unpushed work was saved locally as `{{bundle}}` (`git fetch <bundle> HEAD:{{branch}}` restores it).
+Pushing this branch failed; its unpushed work was saved as `{{bundle}}` (`git fetch <bundle> HEAD:{{branch}}` restores it).
