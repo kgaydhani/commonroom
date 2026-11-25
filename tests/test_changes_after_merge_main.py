@@ -32,6 +32,8 @@ class ChangesAfterMergeMain(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.ledger = Ledger(self.root / "room.sqlite3", synchronous="OFF")
+        orig, dispatch.REWORK_RESUME = dispatch.REWORK_RESUME, 3300   # resume on: the shipped value is 0 since #609
+        self.addCleanup(setattr, dispatch, "REWORK_RESUME", orig)
 
     def tearDown(self):
         self.ledger.close(); self.tmp.cleanup()
