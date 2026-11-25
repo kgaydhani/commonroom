@@ -13,10 +13,13 @@ import json
 import os
 from pathlib import Path
 
+from commonroom import wire
+
 MARKETPLACE = "commonroom"
 PLUGIN_KEY = "commonroom@commonroom"
 MANIFEST = "install.json"
-PATH_KEY = "room-path"  # manifest entry for the room-path file; every other key is a settings file
+PATH_KEY = "room-path"  # manifest entry for the room-path file
+CODEX_KEY, BEAT_KEY = "codex-hooks", "beat"  # the other two entries; every remaining key is a settings file
 
 
 def room_home() -> Path:
@@ -108,6 +111,14 @@ def cmd_install(args) -> int:
     path_file = home / "room-path"
     room_py = (root / "room.py").as_posix()
     path_change = not path_file.exists() or path_file.read_text(encoding="utf-8").strip() != room_py
+    codex_file = wire.codex_dir() / "hooks.json"
+    try:
+        codex_data, codex_added, codex_new = wire.codex_plan(codex_file, root)
+    except (ValueError, OSError) as e:
+        print(f"refused: {e}")
+        return 2
+    beat_done = wire.beat_registered(root)
+    beat_cmd, _ = wire.beat_command(root)
     print(f"Settings file: {settings}")
     for name in added:
         print(f"  add    {name}")
@@ -115,7 +126,11 @@ def cmd_install(args) -> int:
         print(f"  skip   {line}")
     if path_change:
         print(f"Room home: {path_file}\n  write  {room_py}")
-    if not added and not path_change:
+    print(f"Codex hooks file: {codex_file}")
+    for event in codex_added:
+        print(f"  add    hooks.{event}")
+    print(f"Beat: {'already registered' if beat_done else 'register ' + beat_cmd}")
+    if not added and not path_change and not codex_added and beat_done:
         print("Nothing to change: already installed.")
         return 0
     if args.dry_run:
@@ -141,7 +156,14 @@ def cmd_install(args) -> int:
         entry["created"] = sorted(set(entry.get("created", [])) | set(made))
         entry["written_sha"] = _sha(new_bytes)
         old[str(settings)] = entry
-    if added or path_change:
+    if codex_added:
+        old.setdefault(CODEX_KEY, {"file": str(codex_file), "created": codex_new})
+    ok, why = beat_done, ""
+    if not beat_done:
+        ok, why = wire.beat_register(root)
+        if ok:
+            old[BEAT_KEY] = {"command": beat_cmd}
+    if added or path_change or codex_added or BEAT_KEY in old:
         home.mkdir(parents=True, exist_ok=True)
         manifest.write_text(json.dumps(old, indent=2) + "\n", encoding="utf-8")
     if added:
@@ -150,6 +172,12 @@ def cmd_install(args) -> int:
     if path_change:
         home.mkdir(parents=True, exist_ok=True)
         path_file.write_text(room_py + "\n", encoding="utf-8")
+    if codex_added:
+        wire.codex_write(codex_file, codex_data)
+    if not ok:
+        print(f"Could not register the beat here ({why or 'no output'}). Run this yourself:\n{beat_cmd}")
+    if codex_added:
+        print("Codex asks you to trust the new hooks once: open /hooks in Codex.")
     print("Installed. Open a new Claude Code session to load the plugin.")
     return 0
 
@@ -181,6 +209,8 @@ def cmd_uninstall(args) -> int:
         return 0
     state = json.loads(manifest.read_text(encoding="utf-8"))
     path_rec = state.pop(PATH_KEY, None)
+    codex_rec = state.pop(CODEX_KEY, None)
+    beat_rec = state.pop(BEAT_KEY, None)
     root = checkout()
     actions = []
     for file, entry in state.items():
@@ -197,6 +227,10 @@ def cmd_uninstall(args) -> int:
         else:
             for name in entry["added"]:
                 print(f"  remove {name}")
+    if codex_rec is not None:
+        print(f"Codex hooks file: {codex_rec['file']}\n  remove our SessionStart and UserPromptSubmit entries")
+    if beat_rec is not None:
+        print(f"Beat: remove the scheduled {beat_rec['command'].split()[0]} entry")
     if path_rec is not None:
         print(f"Room home: {'delete' if path_rec.get('previous') is None else 'restore'} {path_file}")
     if args.dry_run:
@@ -213,6 +247,10 @@ def cmd_uninstall(args) -> int:
             data = json.loads(raw.decode("utf-8"))
             if any([_remove(data, n, root, entry.get("created", [])) for n in entry["added"]]):
                 f.write_bytes(_render(data, raw.decode("utf-8")))
+    if codex_rec is not None:
+        wire.codex_remove(Path(codex_rec["file"]), root, codex_rec["created"])
+    if beat_rec is not None and not wire.beat_unregister(root):
+        print(f"Could not remove the beat; remove it yourself (see: room schedule).")
     if path_rec is not None:
         prev = path_rec.get("previous")
         if prev is None:

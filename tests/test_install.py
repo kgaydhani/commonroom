@@ -6,22 +6,53 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
-from commonroom import install
+from commonroom import install, wire
 
 OTHER = ('{\n    "model": "opus",\n    "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "x"}]}]},\n'
          '    "enabledPlugins": {"other@m": true},\n    "zeta": 1,\n    "alpha": 2\n}\n')
+
+
+class FakeScheduler:
+    """Stands in for schtasks / crontab: nothing real is registered. `refuse` makes create fail."""
+    def __init__(self, refuse=False):
+        self.calls, self.registered, self.refuse, self.cron = [], False, refuse, ""
+
+    def __call__(self, command, stdin=None):
+        self.calls.append(command)
+        if command.startswith("schtasks /create") or command.startswith("(crontab -l"):
+            if self.refuse:
+                return 1, "ERROR: Access is denied."
+            self.registered = True
+            self.cron = (install.checkout() / "room.py").as_posix() + " beat\n"
+            return 0, ""
+        if command.startswith("schtasks /query"):
+            return (0, "") if self.registered else (1, "ERROR: The system cannot find the file specified.")
+        if command == "crontab -l":
+            return (0, self.cron) if self.registered else (1, "no crontab")
+        if command.startswith("schtasks /delete") or command == "crontab -":
+            self.registered = False
+            return 0, ""
+        raise AssertionError(command)
 
 
 class InstallTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         t = Path(self.tmp.name)
+        self.sched = FakeScheduler()
+        patch = mock.patch.object(wire, "run", self.sched)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.codex = t / "codex"
+        self.codex_hooks = self.codex / "hooks.json"
         self.home, self.claude = t / "home", t / "claude"
         self.settings = self.claude / "settings.json"
-        old = {k: os.environ.get(k) for k in ("COMMONROOM_HOME", "CLAUDE_CONFIG_DIR")}
+        old = {k: os.environ.get(k) for k in ("COMMONROOM_HOME", "CLAUDE_CONFIG_DIR", "CODEX_HOME")}
         os.environ["COMMONROOM_HOME"], os.environ["CLAUDE_CONFIG_DIR"] = str(self.home), str(self.claude)
+        os.environ["CODEX_HOME"] = str(self.codex)
         self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in old.items()])
         self.addCleanup(self.tmp.cleanup)
 
@@ -161,6 +192,65 @@ class InstallTest(unittest.TestCase):
         code, _ = self.run_cmd(install.cmd_install)
         self.assertEqual(code, 2)
         self.assertEqual(self.settings.read_text(), "{nope")
+
+    def test_codex_hooks_added_shown_and_removed(self):
+        other = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "mine"}]}],
+                           "SessionStart": [{"hooks": [{"type": "command", "command": "theirs"}]}]}, "x": 1}
+        self.codex.mkdir()
+        self.codex_hooks.write_text(json.dumps(other))
+        _, out = self.run_cmd(install.cmd_install, dry=True)
+        self.assertIn("add    hooks.SessionStart", out)
+        self.assertEqual(json.loads(self.codex_hooks.read_text()), other)
+        self.run_cmd(install.cmd_install)
+        data = json.loads(self.codex_hooks.read_text())
+        self.assertEqual(data["x"], 1)
+        self.assertEqual(data["hooks"]["Stop"], other["hooks"]["Stop"])
+        for event, arg in (("SessionStart", "session-start"), ("UserPromptSubmit", "prompt-submit")):
+            cmds = [h["command"] for g in data["hooks"][event] for h in g["hooks"]]
+            self.assertTrue(any(c.endswith(f"run.py\" {arg}") for c in cmds), cmds)
+        self.assertIn("theirs", [h["command"] for g in data["hooks"]["SessionStart"] for h in g["hooks"]])
+        self.run_cmd(install.cmd_uninstall)
+        self.assertEqual(json.loads(self.codex_hooks.read_text()), other)
+
+    def test_codex_file_install_made_is_deleted_and_twice_is_idempotent(self):
+        self.run_cmd(install.cmd_install)
+        first = self.codex_hooks.read_bytes()
+        _, out = self.run_cmd(install.cmd_install)
+        self.assertEqual(self.codex_hooks.read_bytes(), first)
+        self.assertIn("Nothing to change", out)
+        self.assertEqual(len([c for c in self.sched.calls if "create" in c or c.startswith("(crontab")]), 1)
+        self.run_cmd(install.cmd_uninstall)
+        self.assertFalse(self.codex_hooks.exists())
+
+    def test_beat_registered_with_the_schedule_command_and_removed(self):
+        want, _ = wire.beat_command(install.checkout())
+        self.run_cmd(install.cmd_install)
+        self.assertIn(want, self.sched.calls)
+        self.assertTrue(self.sched.registered)
+        self.run_cmd(install.cmd_uninstall)
+        self.assertFalse(self.sched.registered)
+
+    def test_dry_run_runs_no_create(self):
+        self.run_cmd(install.cmd_install, dry=True)
+        self.assertFalse(self.sched.registered)
+        self.assertFalse([c for c in self.sched.calls if "create" in c or c.startswith("(crontab")])
+        self.assertFalse(self.codex.exists())
+
+    def test_beat_already_registered_by_the_user_is_not_removed(self):
+        self.sched.registered = True
+        self.run_cmd(install.cmd_install)
+        self.run_cmd(install.cmd_uninstall)
+        self.assertTrue(self.sched.registered)
+
+    def test_beat_that_cannot_be_registered_prints_the_command_and_does_not_fail(self):
+        self.sched.refuse = True
+        code, out = self.run_cmd(install.cmd_install)
+        self.assertEqual(code, 0)
+        self.assertIn("Could not register the beat", out)
+        self.assertIn(wire.beat_command(install.checkout())[0], out)
+        self.assertTrue(self.codex_hooks.exists())
+        self.run_cmd(install.cmd_uninstall)
+        self.assertFalse([c for c in self.sched.calls if "delete" in c])
 
 
 if __name__ == "__main__":

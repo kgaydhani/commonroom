@@ -1290,7 +1290,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("usage", help="latest readings and gate verdicts"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_usage)
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     sub.add_parser("beat", help="one heartbeat over every registered project").set_defaults(func=cmd_beat)
-    for name, fn, what in (("install", install_mod.cmd_install, "add the plugin and status line to the user's Claude Code settings"), ("uninstall", install_mod.cmd_uninstall, "remove what install added")):
+    for name, fn, what in (("install", install_mod.cmd_install, "add the plugin and status line to Claude Code, the hooks to Codex, and register the beat"), ("uninstall", install_mod.cmd_uninstall, "remove what install added (settings, Codex hooks, the beat)")):
         p = sub.add_parser(name, help=what); p.add_argument("--dry-run", action="store_true", help="print every change and write nothing"); p.set_defaults(func=fn)
     p = sub.add_parser("schedule", help="print the command that runs the beat every N minutes on this platform (runs nothing)"); p.add_argument("--minutes", type=int, default=schedule_mod.DEFAULT_MINUTES); p.set_defaults(func=schedule_mod.cmd_schedule)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
