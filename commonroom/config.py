@@ -34,7 +34,8 @@ DEFAULTS = {
     # The headless director also steers on a cadence, with no other trigger: every `steer_every_hours` since its
     # last run (0 turns it off). commonroom#41.
     "director": {"steer_every_hours": 3},
-    "board": {"ready_cap": 15},
+    # Shown by `room status`; the director keeps the ready queue under it (commonroom#654: 15 drained in half a day).
+    "board": {"ready_cap": 25},
     # Worker logs in `~/.commonroom/logs` older than `keep_days` (at least 1) are deleted by housekeeping (commonroom#162).
     "logs": {"keep_days": 14},
     # `test` is the project's test command. `ci = false` declares the repo has no GitHub CI: housekeeping then merges on
