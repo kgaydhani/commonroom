@@ -41,6 +41,7 @@ NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3308,   # commonroom#23
        "stamp_cooldown_seconds": 900,   # commonroom#434
        "handoff_offer_hours": 72,       # commonroom#384
        "looking_max_percent": 35,       # commonroom#440
+       "person_max_lines": 60, "person_max_tokens": 800,   # commonroom#573
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
 
 
