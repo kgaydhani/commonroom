@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from commonroom import carry as carry_mod, config, dispatch, gate, liveness, usage, workers
+from commonroom.localboard import LocalBoard
 from commonroom.ledger import Ledger
 from tests import notrials
 from tests.gitenv import outside_any_repository
@@ -2414,6 +2415,35 @@ class WithLedger(unittest.TestCase):
         status, _, _ = d.assess(job, "i319-x", "old", "", workers.WorkerResult(ok=True, final_text="Done.\nSTATUS: DONE"))
         self.assertEqual(status, "done")
         self.assertEqual(state(), {"status:review"})
+
+    def test_build_finishing_after_the_issue_was_parked_leaves_the_park_alone(self):
+        """commonroom#553: the director parked the issue while the build ran; the build's result must not undo it."""
+        for texts in ("Done.\nSTATUS: DONE", "Pushed.\nTESTS: INCOMPLETE\nSTATUS: BLOCKED"):
+            board = LocalBoard(Path(self.tmp.name) / f"board{len(texts)}")
+            n = board.create_issue("t", "b", labels=["status:in-progress", "role:builder"])
+            board.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN"}, pr=True)
+            d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+            d.remote_head = lambda branch: "new"
+            job = dispatch.Job("build", "builder", issue=board.all_issues()[0], reason="ready")
+            board.set_labels(n, add=["status:blocked", "needs:director"], remove=["status:in-progress"])
+            with self.subTest(text=texts):
+                status, outputs, _ = d.assess(job, "i1-x", "old", "", workers.WorkerResult(ok=True, final_text=texts))
+                self.assertEqual(status, "done")
+                self.assertIn("parked during the build", outputs[0]["ref"])
+                names = {l["name"] for l in board.all_issues()[0]["labels"]}
+                self.assertEqual(names, {"role:builder", "status:blocked", "needs:director"})
+                self.assertEqual(board.all_issues()[0]["comments"], [])
+
+    def test_build_with_nothing_added_during_it_goes_to_review_on_the_local_board(self):
+        board = LocalBoard(Path(self.tmp.name) / "board")
+        n = board.create_issue("t", "b", labels=["status:in-progress", "role:builder"])
+        board.pr_for_branch = lambda branch: owned({"number": 5, "state": "OPEN"}, pr=True)
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=board, log=lambda *_: None)
+        d.remote_head = lambda branch: "new"
+        job = dispatch.Job("build", "builder", issue=board.all_issues()[0], reason="ready")
+        status, _, _ = d.assess(job, "i1-x", "old", "", workers.WorkerResult(ok=True, final_text="Done.\nSTATUS: DONE"))
+        self.assertEqual(status, "done")
+        self.assertEqual({l["name"] for l in board.all_issues()[0]["labels"]}, {"role:builder", "status:review"})
 
     def test_pushed_build_ending_blocked_without_a_reason_goes_to_review(self):
         """commonroom#515: no `Blocked:` line means nothing blocks it; the room says so once and the reviewer takes it."""
