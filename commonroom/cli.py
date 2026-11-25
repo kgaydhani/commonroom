@@ -13,9 +13,12 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import away, owner_reserve, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
+from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
+from commonroom import install as install_mod
+from commonroom import places as places_mod
+from commonroom import schedule as schedule_mod
 from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, trials
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
@@ -627,7 +630,7 @@ def cmd_tick(args) -> int:
     if not cfg.get("_root"):
         print("No room.toml found; run inside a project")
         return 2
-    for line in services.tick(cfg):
+    for line in services.tick(cfg, ledger=Ledger()):
         print(time.strftime("%m-%d %H:%M:%S"), line, flush=True)
     return 0
 
@@ -1120,6 +1123,30 @@ def _weekly_lines(found: list, moved) -> list[str]:
     return lines
 
 
+def cmd_places(args) -> int:
+    """List the folders the owner has worked in that are not projects, most recent first; `describe` sets a line.
+    Reads the session records and writes only the room home's places file. No model call."""
+    if args.action == "describe" and (not args.place or args.line is None):
+        print("refused: describe needs a place and a line", file=sys.stderr)
+        return 1
+    data = places_mod.discover()
+    if args.action == "describe":
+        try:
+            places_mod.describe(data, args.place, args.line)
+        except KeyError as exc:
+            print(f"refused: {exc.args[0]}", file=sys.stderr)
+            return 1
+        places_mod.save(data)
+    rows = places_mod.listing(data)
+    if not rows:
+        print("no places")
+    for r in rows:
+        last = datetime.fromtimestamp(r["last"]).strftime("%Y-%m-%d") if r["last"] else "-"
+        print(f"{r['name']:<24} {last}  {r['sessions']:>4} sessions  {r['path']}{'' if r['exists'] else '  [gone]'}"
+              + (f"  {r['description']}" if r["description"] else ""))
+    return 0
+
+
 def cmd_pie(args) -> int:
     """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
@@ -1175,6 +1202,32 @@ def cmd_pie(args) -> int:
         for s in report.rows:
             if pie_notice.over(report, s.name):
                 print(f"  OVER ITS SHARE: {pie_notice.text(reg, report, s.name, s)}")
+    return 0
+
+
+def cmd_person(args) -> int:
+    """`room person`, `room person add "line"`, `room person remove <n>`: the owner's capped, dated person file."""
+    try:
+        if args.action == "add":
+            if not args.value:
+                print("usage: room person add \"line\"")
+                return 2
+            lines = person_mod.add(args.value)
+            print(f"added line {len(lines)}: {lines[-1]}")
+        elif args.action == "remove":
+            if not (args.value or "").isdigit():
+                print("usage: room person remove <n>")
+                return 2
+            print(f"removed: {person_mod.remove(int(args.value))}")
+        else:
+            lines = person_mod.load()
+            for i, line in enumerate(lines, 1):
+                print(f"{i}. {line}")
+            print(f"({len(lines)} of {person_mod.MAX_LINES} lines, about {person_mod.tokens(lines)} of "
+                  f"{person_mod.MAX_TOKENS} tokens)")
+    except person_mod.PersonError as e:
+        print(e)
+        return 1
     return 0
 
 
@@ -1237,6 +1290,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("usage", help="latest readings and gate verdicts"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_usage)
     p = sub.add_parser("gate", help="exit 0 if autonomous work may use this provider"); p.add_argument("provider", choices=PROVIDERS); p.set_defaults(func=cmd_gate)
     sub.add_parser("beat", help="one heartbeat over every registered project").set_defaults(func=cmd_beat)
+    for name, fn, what in (("install", install_mod.cmd_install, "add the plugin and status line to the user's Claude Code settings"), ("uninstall", install_mod.cmd_uninstall, "remove what install added")):
+        p = sub.add_parser(name, help=what); p.add_argument("--dry-run", action="store_true", help="print every change and write nothing"); p.set_defaults(func=fn)
+    p = sub.add_parser("schedule", help="print the command that runs the beat every N minutes on this platform (runs nothing)"); p.add_argument("--minutes", type=int, default=schedule_mod.DEFAULT_MINUTES); p.set_defaults(func=schedule_mod.cmd_schedule)
     p = sub.add_parser("probe", help="read meters without inference"); p.add_argument("provider", nargs="?", default="all", choices=(*PROVIDERS, "all")); p.set_defaults(func=cmd_probe)
     sub.add_parser("status", help="goal, owner queue, usage, runs, breakers").set_defaults(func=cmd_status)
     p = sub.add_parser("run", help="dispatch work from the board"); p.add_argument("--loop", action="store_true"); p.add_argument("--until-idle", action="store_true"); p.add_argument("--provider", choices=PROVIDERS); p.add_argument("--interval", type=int, default=300); p.add_argument("--dry-run", action="store_true"); p.add_argument("--slot", type=int, default=1, help="2+: an extra parallel builder for --provider"); p.set_defaults(func=cmd_run)
@@ -1287,6 +1343,8 @@ def build_parser() -> argparse.ArgumentParser:
     timing.add_argument("--cancel-pending", action="store_true", help="drop this project's pending changes")
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
+    p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove")); p.add_argument("value", nargs="?"); p.set_defaults(func=cmd_person)
+    p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")

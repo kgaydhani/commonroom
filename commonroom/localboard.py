@@ -90,6 +90,10 @@ class LocalBoard:
         return [i for i in self.all_issues() if i["state"] == "OPEN"
                 and (not milestone or (i["milestone"] or {}).get("title") == milestone)]
 
+    def issue_labels(self, number: int) -> list[str] | None:
+        item = self._item(number)
+        return [l["name"] for l in item["labels"]] if item else None
+
     def issue_state(self, number: int) -> str | None:
         item = self._item(number)
         return item["state"] if item else None

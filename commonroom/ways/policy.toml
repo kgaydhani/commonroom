@@ -32,6 +32,9 @@ director_cooldown_seconds = 3600
 stamp_cooldown_seconds = 900
 # Seconds (5 minutes): new owner comments are answered after this, rather than after the director's hourly cooldown.
 owner_cooldown_seconds = 300
+# A project's heartbeat command that exits non-zero this many times running is a steward finding; a success clears it
+# (commonroom#587).
+heartbeat_failures = { value = 3, min = 1 }
 # Minutes: an in-progress issue no run holds, unchanged this long, goes back to ready (commonroom#63).
 stale_claim_minutes = 30
 # Seconds (10 minutes): a task whose last run was a room-error rests this long, doubling with each one in a row
@@ -102,3 +105,9 @@ templates_max_tokens = 3308   # 3308: build-blocked*.md replace build-incomplete
 # Hours (24): a note in a project's room inbox that the project has not read in this long is a steward finding, and the
 # page shows the count and the oldest (commonroom#588, docs/layer.md conclusion 9: nothing is written where nobody reads).
 unread_note_hours = { value = 24, min = 1 }
+
+# The owner's person file (commonroom#573, docs/layer.md): one small file, `person.md` in the room home, one dated line
+# per fact. Long instruction files and injected memory cost tokens and lower task success (#554), so the cap is
+# enforced in code. Tokens are estimated as characters / 4. Room-wide only.
+person_max_lines = { value = 60, min = 1 }
+person_max_tokens = { value = 800, min = 1 }

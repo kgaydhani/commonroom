@@ -28,6 +28,7 @@ PINNED = {
     (dispatch, "RESUME_WINDOW"): 12 * 3600,
     (dispatch, "PROGRESS_MIN_WORK"): 6 * 3600,
     (dispatch, "NOTIFY_MAX"): 5,
+    (dispatch, "HEARTBEAT_FAILURES"): 3,
     (workers, "RUN_TIMEOUT"): 3600,
 }
 
@@ -41,6 +42,7 @@ NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3308,   # commonroom#23
        "handoff_offer_hours": 72,       # commonroom#384
        "unread_note_hours": 24,         # commonroom#588
        "looking_max_percent": 35,       # commonroom#440
+       "person_max_lines": 60, "person_max_tokens": 800,   # commonroom#573
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
 
 
@@ -63,7 +65,7 @@ class PinnedValues(unittest.TestCase):
                  "room_error_escalate": ("ROOM_ERROR_ESCALATE", 3),
                  "resume_window_seconds": ("RESUME_WINDOW", 12 * 3600),
                  "rework_resume_seconds": ("REWORK_RESUME", 3300),
-                 "progress_min_work_seconds": ("PROGRESS_MIN_WORK", 6 * 3600), "notify_max": ("NOTIFY_MAX", 5),
+                 "progress_min_work_seconds": ("PROGRESS_MIN_WORK", 6 * 3600), "notify_max": ("NOTIFY_MAX", 5), "heartbeat_failures": ("HEARTBEAT_FAILURES", 3),
                  "run_timeout_seconds": ("RUN_TIMEOUT", 3600)}
         with open(REPO / "commonroom" / "ways" / "policy.toml", "rb") as f:
             raw = tomllib.load(f)

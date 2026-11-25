@@ -595,6 +595,21 @@ class CheckoutBehind(Room):
         out = self.digest()
         self.assertIn("(branch main) is 2 commits behind origin/main, tree clean; room.toml is the same", out)
 
+    def test_status_runs_without_optional_locks(self):
+        self.push_two()
+        calls = []
+        real = handshake._git
+
+        def spy(cwd, *argv):
+            calls.append(argv)
+            return real(cwd, *argv)
+
+        with mock.patch.object(handshake, "_git", spy):
+            self.digest()
+        status = [c for c in calls if "status" in c]
+        self.assertTrue(status)
+        self.assertTrue(all(c[0] == "--no-optional-locks" for c in status))
+
     def test_uncommitted_changes_are_named(self):
         self.push_two()
         (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n# mine\n', encoding="utf-8")
@@ -844,6 +859,49 @@ class DirectorWakes(Interventions):
 
     def test_no_director_runs_adds_no_line(self):
         self.wake(1, "x", role="builder")
+        self.assertEqual(self.lines(), [])
+
+
+class BlockedBuilds(Interventions):
+    """commonroom#521: blocked builder runs by where they went, and how the ones sent to review fared."""
+
+    def add(self, days_ago, role, task, status, ref):
+        ledger = Ledger()
+        try:
+            at = self.NOW - days_ago * self.DAY
+            rid = ledger.start_run("alpha", task, role, "claude", now=at)
+            ledger.finish_run(rid, status, [{"kind": "pr", "ref": ref}], now=at + 60)
+        finally:
+            ledger.close()
+
+    def lines(self):
+        reg = registry.load()
+        ledger = Ledger()
+        try:
+            with mock.patch.object(handshake.board, "gh", lambda a, timeout=30: []):
+                text = handshake.build_digest(reg, reg.projects["alpha"], ledger, self.NOW)
+        finally:
+            ledger.close()
+        return [l for l in text.split(chr(10)) if l.startswith("Blocked builds")]
+
+    def test_three_places_and_review_outcomes(self):
+        self.add(1, "builder", "#1", "blocked", "PR #11 (blocked)")
+        self.add(9, "builder", "#2", "blocked", "#2 blocked")
+        self.add(2, "builder", "#3", "blocked", "#3 blocked, handed to Claude")
+        self.add(3, "builder", "#4", "done", "PR #14 (to review: no Blocked: line)")
+        self.add(4, "builder", "#5", "done", "PR #15 (to review: no Blocked: line)")
+        self.add(10, "builder", "#6", "done", "PR #16 (to review: no Blocked: line)")
+        self.add(2, "merge", "#4", "done", "merged")
+        self.add(3, "reviewer", "PR #15", "done", "PR #15 CHANGES")
+        self.add(1, "builder", "#7", "done", "PR #17")   # an ordinary build is not counted
+        self.assertEqual(self.lines(), [
+            "Blocked builds, escalated to the director: 1 in the 7 days before, 1 in the last 7 days.",
+            "Blocked builds, handed to Claude: 0 in the 7 days before, 1 in the last 7 days.",
+            "Blocked builds, sent to review with no Blocked: line: 1 in the 7 days before, 2 in the last 7 days"
+            " (last 7 days: 1 landed, 1 came back with CHANGES; the 7 days before: 0 landed, 0 with CHANGES)."])
+
+    def test_none_prints_nothing(self):
+        self.add(1, "builder", "#7", "done", "PR #17")
         self.assertEqual(self.lines(), [])
 
 
