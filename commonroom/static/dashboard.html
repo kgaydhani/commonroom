@@ -26,6 +26,7 @@ ul{margin:.3rem 0;padding-left:1.2rem}
 <body>
 <main>
 <h1>Common Room</h1>
+<p id="built" class="dim"></p>
 <p id="week" class="dim">Loading...</p>
 <p id="verdicts"></p>
 <h2>The pie</h2>
@@ -81,7 +82,9 @@ function render(d) {
     el("b", null, null, bar).style.left = Math.min(99, 100 * r.line / cap) + "%";
   }
 
+  //<write>
   if (d.registered) editor(pie, d.rows.filter(r => r.work), d.rows.find(r => r.work === null));
+  //</write>
 
   const wt = $("waiting");
   wt.textContent = "";
@@ -118,6 +121,7 @@ function render(d) {
         if (!n.items.length) el("li", p.trail_error ? "items unknown" : "no item yet", "dim", ul);
       }
     }
+//<write>
     const nb = el("div", null, null, det);
     const box = el("textarea", null, null, nb);
     box.rows = 3; box.maxLength = 8000; box.placeholder = "Note to this project";
@@ -136,9 +140,11 @@ function render(d) {
       } catch (e) { sent.textContent = " Not sent: " + e; }
     };
     el("a", "details", null, det).href = "/api/state";
+//</write>
   }
 }
 
+//<write>
 // Sliders and mode per project. Nothing is saved until Apply; the preview shows the pie as it would be.
 function editor(parent, rows, owner) {
   const box = el("div", null, "row", parent);
@@ -191,7 +197,9 @@ function editor(parent, rows, owner) {
     } catch (e) { msg.textContent = "Not applied: " + e; }
   };
 }
+//</write>
 
+//<live>
 async function load(force) {
   try {
     const r = await fetch("/api/page", {cache: "no-store"});
@@ -203,6 +211,7 @@ async function load(force) {
 }
 load();
 setInterval(() => load(), 30000);
+//</live>
 </script>
 </body>
 </html>

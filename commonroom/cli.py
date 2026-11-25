@@ -12,7 +12,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 
-from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
+from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, pageexport, policy as policy_mod, registry, usage
 from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, tokens as tokens_mod, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
@@ -652,6 +652,17 @@ def cmd_dashboard(args) -> int:
         print("No room.toml found; run inside a project")
         return 2
     serve(cfg, args.port)
+    return 0
+
+
+def cmd_page(args) -> int:
+    """`room page export FOLDER`: write the one page as static, read-only files for private hosting."""
+    cfg = config_mod.load()
+    if not cfg.get("_root"):
+        print("No room.toml found; run inside a project")
+        return 2
+    for path in pageexport.export(cfg, Path(args.folder)):
+        print(f"Wrote {path}")
     return 0
 
 
@@ -1345,6 +1356,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("tick", help="run the project's [heartbeat] commands once").set_defaults(func=cmd_tick)
     sub.add_parser("stop", help="ask the running dispatcher to exit after its current job").set_defaults(func=cmd_stop)
     p = sub.add_parser("dashboard", help="local dashboard on http://127.0.0.1:8770"); p.add_argument("--port", type=int, default=8770); p.set_defaults(func=cmd_dashboard)
+    p = sub.add_parser("page", help="the one page: `page export FOLDER` writes it as static, read-only, noindex files"); p.add_argument("action", choices=["export"]); p.add_argument("folder"); p.set_defaults(func=cmd_page)
     p = sub.add_parser("suggest", help="owner: propose an idea for the director to triage"); p.add_argument("title"); p.add_argument("--body"); p.set_defaults(func=cmd_suggest)
     p = sub.add_parser("submit", help="owner: deliver an assigned task"); p.add_argument("issue", type=int); p.add_argument("--note"); p.set_defaults(func=cmd_submit)
     p = sub.add_parser("reddit", help="read-only Reddit research through public archives (small reads only)"); p.add_argument("query"); p.add_argument("--sub", help="subreddit (required: Arctic Shift needs one)"); p.add_argument("--comments", action="store_true"); p.add_argument("--limit", type=int, default=25); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_reddit)
