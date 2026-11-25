@@ -240,3 +240,18 @@ def run_dry_beat(root: Path, sha: str, home: Path, worktree: Path, max_minutes: 
         subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, capture_output=True)
         shutil.rmtree(worktree, ignore_errors=True)
         shutil.rmtree(workers_mod.worker_tmp(worktree), ignore_errors=True)
+
+
+def train_comment(result: str, tip: str, command: str, line: str, members: list[int], base: str) -> str:
+    """The room's comment on each PR of a merge train (commonroom#612) after it ran the tests once on the train's tip:
+    main at `base` with each member's head merged in, in PR-number order. `tip` is never a member's own head before it
+    lands, so this result carries no approval and the merge gate reads nothing from it."""
+    first = f"TESTS: {result} {tip} {command}: {line}"
+    names = ", ".join(f"#{n}" for n in members)
+    if result == "PASS":
+        return (f"{first}\n\nMerge train: main {base[:7]} with PRs {names} merged in, in that order. The tests ran once on "
+                f"its tip {tip[:7]} and pass, so the PRs land in that order and main ends at the tree that was tested.")
+    why = "failed" if result == "FAIL" else "could not finish"
+    return (f"{first}\n\nMerge train: main {base[:7]} with PRs {names} merged in, in that order. The tests {why} on its tip "
+            f"{tip[:7]}, so nothing merged. Each PR goes through the one-at-a-time path instead, which finds the one "
+            f"that fails, and these heads are not put in a train again.")
