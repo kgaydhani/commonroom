@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, tokens as tokens_mod, weekly
+from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, tokens as tokens_mod, weekly, weights as weights_mod
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import install as install_mod
@@ -1174,6 +1174,26 @@ def cmd_tokens(args) -> int:
     return 0
 
 
+def cmd_weights(args) -> int:
+    """Latest per-model weights per meter point and their history. `record` also fits now and keeps today's fit."""
+    ledger = Ledger()
+    try:
+        readings = {m: ledger.usage_history("claude", m, 0.0) for m in weights_mod.METERS}
+    finally:
+        ledger.db.close()
+    rows = tokens_mod.read_rows()
+    failures = []
+    for meter in weights_mod.METERS:
+        result = weights_mod.fit(rows, readings[meter], meter)
+        if result["ok"]:
+            if args.action == "record":
+                weights_mod.record(result)
+        else:
+            failures.append(result)
+    print("\n".join(weights_mod.report(weights_mod.read_history(), failures)))
+    return 0
+
+
 def cmd_pie(args) -> int:
     """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
@@ -1374,6 +1394,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("card", help="one screen about a place or project: what it is for, its state, its method, who answers (no model call)"); p.add_argument("place", help="a name or a folder path"); p.set_defaults(func=cmd_card)
     p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)
     p = sub.add_parser("tokens", help="`collect`: keep per-session, per-model token counts from Claude Code's transcripts (no model call)"); p.add_argument("action", choices=("collect",)); p.set_defaults(func=cmd_tokens)
+    p = sub.add_parser("weights", help="what a meter point costs by model, latest and history; `record` keeps today's fit (no model call)"); p.add_argument("action", nargs="?", default="show", choices=("show", "record")); p.set_defaults(func=cmd_weights)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")

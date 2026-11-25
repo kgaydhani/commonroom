@@ -28,6 +28,23 @@ def rows_file() -> Path:
     return Path(os.environ.get("COMMONROOM_HOME") or Path.home() / ".commonroom") / FILENAME
 
 
+def read_rows(path: Path | None = None) -> list[dict]:
+    """Every whole row in the rows file (a line that is not a whole row is ignored)."""
+    out = []
+    try:
+        text = (path or rows_file()).read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.splitlines():
+        try:
+            row = json.loads(line)
+            row["day"], row["model"]
+            out.append(row)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return out
+
+
 def _written(path: Path) -> dict:
     """key -> counts already written. A line that is not a whole row is ignored."""
     done: dict = {}
