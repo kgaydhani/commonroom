@@ -132,6 +132,9 @@ def cmd_install(args) -> int:
         made = [p[0] for p, _ in _wanted(root) if len(p) > 1 and ".".join(p) in added and p[0] not in before]
         new_bytes = _render(data, raw.decode("utf-8") if raw is not None else None)
         entry = old.get(str(settings), {})
+        if entry and (raw is None or _sha(raw) != entry["written_sha"]):
+            # The file changed since the last install, so the saved original no longer describes it.
+            entry["edited"] = True
         entry.setdefault("existed", raw is not None)
         entry.setdefault("original", base64.b64encode(raw or b"").decode())
         entry["added"] = sorted(set(entry.get("added", [])) | set(added))
@@ -183,7 +186,7 @@ def cmd_uninstall(args) -> int:
     for file, entry in state.items():
         f = Path(file)
         current = f.read_bytes() if f.exists() else None
-        if current is not None and _sha(current) == entry["written_sha"]:
+        if current is not None and not entry.get("edited") and _sha(current) == entry["written_sha"]:
             actions.append((f, entry, "restore"))
         else:
             actions.append((f, entry, "remove"))

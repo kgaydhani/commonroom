@@ -98,6 +98,19 @@ class InstallTest(unittest.TestCase):
         want["newkey"] = 3
         self.assertEqual(after, want)
 
+    def test_second_install_after_a_user_edit_keeps_the_edit_on_uninstall(self):
+        self.put(OTHER)
+        self.run_cmd(install.cmd_install)
+        data = json.loads(self.settings.read_text())
+        data["newkey"] = "user edit"
+        del data["enabledPlugins"]["commonroom@commonroom"]
+        self.settings.write_text(json.dumps(data, indent=4))
+        self.run_cmd(install.cmd_install)
+        self.run_cmd(install.cmd_uninstall)
+        after = json.loads(self.settings.read_text())
+        self.assertEqual(after["newkey"], "user edit")
+        self.assertNotIn("commonroom@commonroom", after.get("enabledPlugins", {}))
+
     def test_uninstall_leaves_room_path_install_did_not_write(self):
         self.home.mkdir(parents=True)
         want = (install.checkout() / "room.py").as_posix() + "\n"
