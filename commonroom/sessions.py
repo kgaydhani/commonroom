@@ -74,13 +74,17 @@ def _transcripts(projects_dir: Path, since: float):
 
 
 def _parse(raw: bytes):
-    """(timestamp, session id, cwd, message id, tokens, model, context tokens) of one transcript line, or None when it
+    """(timestamp, session id, cwd, message id, tokens, model, context tokens, [input, output, cache write, cache read]) of one transcript line, or None when it
     is not an assistant line that reports usage, is malformed, or lacks any of the first five. The model is None when
     the line names none."""
     if not _ASSISTANT.search(raw):
         return None
     try:
-        line = json.loads(raw)
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            stats["bad"] += 1
+            raise
         if line.get("type") != "assistant":
             return None
         message = line["message"]
@@ -92,8 +96,9 @@ def _parse(raw: bytes):
         if not (isinstance(session, str) and isinstance(cwd, str) and session and cwd):
             return None
         mid, model = message.get("id"), message.get("model")
+        four = [int(counts.get(key) or 0) for key in TOKEN_KEYS]
         return (at, session, cwd, mid if isinstance(mid, str) else None, tokens,
-                model if isinstance(model, str) and model else None, context)
+                model if isinstance(model, str) and model else None, context, four)
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError):
         return None
 
@@ -106,6 +111,7 @@ def _read_from(path: Path, offset: int):
     try:
         handle = open(path, "rb")
     except OSError:
+        stats["unreadable"] += 1
         return found, offset, read
     with handle:
         handle.seek(offset)
@@ -121,9 +127,10 @@ def _read_from(path: Path, offset: int):
 
 
 # --- the cache: per transcript, how far it was read and the parsed calls so far (never any text) ---------------------
-CACHE_VERSION = 2          # 2: each call also holds its model and context (commonroom#256)
-# Bytes read from transcripts by the last `spans` call; for timing and tests.
-stats = {"bytes": 0, "files": 0}
+CACHE_VERSION = 3          # 2: each call also holds its model and context (commonroom#256); 3: and its four counts
+# Bytes read from transcripts by the last `spans` call; for timing and tests. `bad` counts assistant-looking lines that
+# could not be parsed and `unreadable` files that could not be opened, among what was read (not what was cached).
+stats = {"bytes": 0, "files": 0, "bad": 0, "unreadable": 0}
 
 
 def cache_file() -> Path:
@@ -136,16 +143,17 @@ def _valid(entry) -> bool:
     """Whether a cached file entry has the shape this reader wrote. Anything else means the cache is not trusted."""
     try:
         return (isinstance(entry["size"], int) and isinstance(entry["mtime"], float) and isinstance(entry["offset"], int)
-                and all(isinstance(m, list) and len(m) == 7 and isinstance(m[0], float) and isinstance(m[1], str)
+                and all(isinstance(m, list) and len(m) == 8 and isinstance(m[0], float) and isinstance(m[1], str)
                         and isinstance(m[2], str) and (m[3] is None or isinstance(m[3], str)) and isinstance(m[4], int)
                         and (m[5] is None or isinstance(m[5], str)) and isinstance(m[6], int)
+                        and isinstance(m[7], list) and len(m[7]) == 4 and all(isinstance(n, int) for n in m[7])
                         for m in entry["calls"]))
     except (KeyError, TypeError):
         return False
 
 
 def _load_cache(path: Path) -> dict:
-    """path key -> {"size", "mtime", "offset", "calls": [[at, session, cwd, message id, tokens, model, context], ...]}. A missing or
+    """path key -> {"size", "mtime", "offset", "calls": [[at, session, cwd, message id, tokens, model, context, [four counts]], ...]}. A missing or
     corrupt cache is an empty one: the reader then reads in full and rebuilds it."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -220,12 +228,12 @@ first. With no project, nothing is read.
     cache = cache or cache_file()
     before = _load_cache(cache)
     files: dict = {}
-    stats.update(bytes=0, files=0)
+    stats.update(bytes=0, files=0, bad=0, unreadable=0)
     for path in _transcripts(projects_dir or default_dir(), start):
         key = path_key(path)
         if key in before:
             files[key] = before[key]
-        for at, session, cwd, message_id, tokens, model, context in _messages(path, files, key):
+        for at, session, cwd, message_id, tokens, model, context, _ in _messages(path, files, key):
             if not start <= at <= end or session in skip:
                 continue
             if cwd not in owners:

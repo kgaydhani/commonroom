@@ -13,7 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from commonroom import beat as beat_mod, board, config as config_mod, gate, guard, metrics, policy as policy_mod, registry, usage
-from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, weekly
+from commonroom import away, owner_reserve, person as person_mod, pending, pie_notice, progress as progress_mod, raises, sessions, standings, tokens as tokens_mod, weekly
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import install as install_mod
@@ -1166,6 +1166,14 @@ def cmd_card(args) -> int:
     return 0
 
 
+def cmd_tokens(args) -> int:
+    result = tokens_mod.collect()
+    print(f"added {result['added']} rows to {tokens_mod.rows_file()}"
+          + (f"; skipped {result['bad']} malformed lines, {result['unreadable']} unreadable files"
+             if result["bad"] or result["unreadable"] else ""))
+    return 0
+
+
 def cmd_pie(args) -> int:
     """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
@@ -1365,6 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove")); p.add_argument("value", nargs="?"); p.set_defaults(func=cmd_person)
     p = sub.add_parser("card", help="one screen about a place or project: what it is for, its state, its method, who answers (no model call)"); p.add_argument("place", help="a name or a folder path"); p.set_defaults(func=cmd_card)
     p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)
+    p = sub.add_parser("tokens", help="`collect`: keep per-session, per-model token counts from Claude Code's transcripts (no model call)"); p.add_argument("action", choices=("collect",)); p.set_defaults(func=cmd_tokens)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")
