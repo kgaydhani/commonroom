@@ -1,1 +1,1 @@
-The room ends this run after {{minutes}} minutes. Commit as you go. Results that matter (CSV, logs, reports) go in a tracked path, not an ignored folder. By minute {{push_by}}, push what you have and say on the issue what's left.
+The room ends this run after {{minutes}} minutes. Commit as you go. Results that matter (CSV, logs, reports) go in a tracked path. By minute {{push_by}}, push what you have and say on the issue what's left.

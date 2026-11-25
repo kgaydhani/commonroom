@@ -1,1 +1,1 @@
-Unfinished work was preserved on branch `{{branch}}`. The next attempt continues from it.
+Unfinished work was preserved on branch `{{branch}}`; the next attempt continues from it.

@@ -318,8 +318,8 @@ class SweepBody(Base):
             self.cfg["scout"] = {}
             d.create_sweep_issue("tools")
         bodies = [args[args.index("--body") + 1] for args in calls]
-        self.assertIn("this machine (docs/machine.md), and would serve the project's mission", bodies[0])
-        self.assertIn("this machine, and would serve", bodies[1])
+        self.assertIn("this machine (docs/machine.md) that would serve the project's mission", bodies[0])
+        self.assertIn("this machine that would serve", bodies[1])
         self.assertNotIn("game", bodies[0] + bodies[1])
 
 

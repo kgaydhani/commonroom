@@ -167,7 +167,7 @@ class GoldenPrompts(unittest.TestCase):
         logins, CI, a test command and both `[prompts]` keys on and off; and the variants each one switches."""
         rendered = self.rendered()
         self.assertEqual(len(rendered), len(CONFIGS) * (2 * len(JOBS) + len(CONTINUATIONS)) + 6 + 8)
-        self.assertIn("Run `the project's tests` here", rendered["edge-review-no-ci-no-test"])
+        self.assertIn("Run `the project's tests` on the PR head", rendered["edge-review-no-ci-no-test"])
         self.assertIn("(it implements issue #?)", rendered["edge-review-odd-branch"])
         self.assertNotIn("A PR already exists", rendered["edge-build-pr-closed"])
         self.assertIn("it serves the mission: Ship the thing. Judge", rendered["edge-why-mission-only"])
