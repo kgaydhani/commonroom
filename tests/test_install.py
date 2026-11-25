@@ -98,6 +98,38 @@ class InstallTest(unittest.TestCase):
         want["newkey"] = 3
         self.assertEqual(after, want)
 
+    def test_uninstall_leaves_room_path_install_did_not_write(self):
+        self.home.mkdir(parents=True)
+        want = (install.checkout() / "room.py").as_posix() + "\n"
+        (self.home / "room-path").write_text(want, encoding="utf-8")
+        self.run_cmd(install.cmd_install)
+        self.run_cmd(install.cmd_uninstall)
+        self.assertEqual((self.home / "room-path").read_text(encoding="utf-8"), want)
+
+    def test_uninstall_restores_a_room_path_install_overwrote(self):
+        self.home.mkdir(parents=True)
+        (self.home / "room-path").write_text("/elsewhere/room.py\n", encoding="utf-8")
+        self.run_cmd(install.cmd_install)
+        self.assertNotEqual((self.home / "room-path").read_text(encoding="utf-8"), "/elsewhere/room.py\n")
+        self.run_cmd(install.cmd_uninstall)
+        self.assertEqual((self.home / "room-path").read_text(encoding="utf-8"), "/elsewhere/room.py\n")
+
+    def test_uninstall_without_manifest_leaves_room_path(self):
+        self.home.mkdir(parents=True)
+        (self.home / "room-path").write_text("x\n", encoding="utf-8")
+        _, out = self.run_cmd(install.cmd_uninstall)
+        self.assertIn("not installed", out)
+        self.assertTrue((self.home / "room-path").exists())
+
+    def test_uninstall_keeps_a_parent_object_that_existed_before(self):
+        self.put('{"enabledPlugins": {}, "a": 1}\n')
+        self.run_cmd(install.cmd_install)
+        data = json.loads(self.settings.read_text())
+        data["b"] = 2
+        self.settings.write_text(json.dumps(data))
+        self.run_cmd(install.cmd_uninstall)
+        self.assertEqual(json.loads(self.settings.read_text()), {"enabledPlugins": {}, "a": 1, "b": 2})
+
     def test_existing_status_line_is_left_alone(self):
         self.put('{"statusLine": {"type": "command", "command": "mine"}}\n')
         _, out = self.run_cmd(install.cmd_install)

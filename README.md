@@ -16,6 +16,10 @@ python D:/Dev/commonroom/room.py projects add myproject D:/path/to/myproject --s
 
 The beat runs every registered project. Every 15 minutes the scheduled heartbeat runs `room beat`: one pass over the registry that reads the meters, applies scheduled changes, and starts work for each project whose share, gate and breakers allow it. Adding, changing or removing a project takes effect on the next beat. There is no host project and nothing to repoint.
 
+### `[heartbeat] commands`
+
+A project's `room.toml` can list argv commands that `room tick` runs from the project folder on every beat, in order. In them `"{python}"` is the room's own interpreter: standard library only, so a project's code that needs its own packages can't rely on it; name the project's interpreter instead. Each exit code is recorded, and a command that exits non-zero `heartbeat_failures` times running (`ways/policy.toml`, 3) becomes a steward finding naming it and its last exit code; one success clears it.
+
 The commands you run day to day:
 
 ```

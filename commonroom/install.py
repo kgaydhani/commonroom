@@ -16,6 +16,7 @@ from pathlib import Path
 MARKETPLACE = "commonroom"
 PLUGIN_KEY = "commonroom@commonroom"
 MANIFEST = "install.json"
+PATH_KEY = "room-path"  # manifest entry for the room-path file; every other key is a settings file
 
 
 def room_home() -> Path:
@@ -121,17 +122,26 @@ def cmd_install(args) -> int:
         print("Dry run: nothing written.")
         return 0
     manifest = home / MANIFEST
+    old = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+    if path_change and PATH_KEY not in old:
+        # Only the first install records what was there before, so a second one can't mistake our file for the user's.
+        prev = path_file.read_text(encoding="utf-8") if path_file.exists() else None
+        old[PATH_KEY] = {"previous": prev}
     if added:
-        old = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+        before = json.loads(raw.decode("utf-8")) if raw and raw.strip() else {}
+        made = [p[0] for p, _ in _wanted(root) if len(p) > 1 and ".".join(p) in added and p[0] not in before]
         new_bytes = _render(data, raw.decode("utf-8") if raw is not None else None)
         entry = old.get(str(settings), {})
         entry.setdefault("existed", raw is not None)
         entry.setdefault("original", base64.b64encode(raw or b"").decode())
         entry["added"] = sorted(set(entry.get("added", [])) | set(added))
+        entry["created"] = sorted(set(entry.get("created", [])) | set(made))
         entry["written_sha"] = _sha(new_bytes)
         old[str(settings)] = entry
+    if added or path_change:
         home.mkdir(parents=True, exist_ok=True)
         manifest.write_text(json.dumps(old, indent=2) + "\n", encoding="utf-8")
+    if added:
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_bytes(new_bytes)
     if path_change:
@@ -141,7 +151,7 @@ def cmd_install(args) -> int:
     return 0
 
 
-def _remove(data: dict, name: str, root: Path) -> bool:
+def _remove(data: dict, name: str, root: Path, created: list[str]) -> bool:
     path = name.split(".")
     wanted = dict((".".join(p), v) for p, v in _wanted(root))
     have, present = _get(data, path)
@@ -149,7 +159,7 @@ def _remove(data: dict, name: str, root: Path) -> bool:
         return False
     parent, _ = _get(data, path[:-1]) if len(path) > 1 else (data, True)
     del parent[path[-1]]
-    if len(path) > 1 and not parent:
+    if len(path) > 1 and not parent and path[0] in created:
         _remove_empty(data, path[:-1])
     return True
 
@@ -163,10 +173,11 @@ def cmd_uninstall(args) -> int:
     home = room_home()
     manifest = home / MANIFEST
     path_file = home / "room-path"
-    if not manifest.exists() and not path_file.exists():
+    if not manifest.exists():
         print("Nothing to uninstall: the room is not installed.")
         return 0
-    state = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+    state = json.loads(manifest.read_text(encoding="utf-8"))
+    path_rec = state.pop(PATH_KEY, None)
     root = checkout()
     actions = []
     for file, entry in state.items():
@@ -183,8 +194,8 @@ def cmd_uninstall(args) -> int:
         else:
             for name in entry["added"]:
                 print(f"  remove {name}")
-    if path_file.exists():
-        print(f"Room home: delete {path_file}")
+    if path_rec is not None:
+        print(f"Room home: {'delete' if path_rec.get('previous') is None else 'restore'} {path_file}")
     if args.dry_run:
         print("Dry run: nothing written.")
         return 0
@@ -197,9 +208,14 @@ def cmd_uninstall(args) -> int:
         elif f.exists():
             raw = f.read_bytes()
             data = json.loads(raw.decode("utf-8"))
-            if any([_remove(data, n, root) for n in entry["added"]]):
+            if any([_remove(data, n, root, entry.get("created", [])) for n in entry["added"]]):
                 f.write_bytes(_render(data, raw.decode("utf-8")))
-    path_file.unlink(missing_ok=True)
+    if path_rec is not None:
+        prev = path_rec.get("previous")
+        if prev is None:
+            path_file.unlink(missing_ok=True)
+        else:
+            path_file.write_text(prev, encoding="utf-8")
     manifest.unlink(missing_ok=True)
     print("Uninstalled.")
     return 0

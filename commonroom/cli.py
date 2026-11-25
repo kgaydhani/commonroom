@@ -17,6 +17,7 @@ from commonroom import away, owner_reserve, pending, pie_notice, progress as pro
 from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoard, labels as dispatch_labels, pie_holds, runnable_roles, stale_claims, verdicts, with_pie
 from commonroom import ledger as ledger_mod
 from commonroom import install as install_mod
+from commonroom import places as places_mod
 from commonroom import schedule as schedule_mod
 from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, trials
 from commonroom.ledger import Ledger
@@ -629,7 +630,7 @@ def cmd_tick(args) -> int:
     if not cfg.get("_root"):
         print("No room.toml found; run inside a project")
         return 2
-    for line in services.tick(cfg):
+    for line in services.tick(cfg, ledger=Ledger()):
         print(time.strftime("%m-%d %H:%M:%S"), line, flush=True)
     return 0
 
@@ -1122,6 +1123,30 @@ def _weekly_lines(found: list, moved) -> list[str]:
     return lines
 
 
+def cmd_places(args) -> int:
+    """List the folders the owner has worked in that are not projects, most recent first; `describe` sets a line.
+    Reads the session records and writes only the room home's places file. No model call."""
+    if args.action == "describe" and (not args.place or args.line is None):
+        print("refused: describe needs a place and a line", file=sys.stderr)
+        return 1
+    data = places_mod.discover()
+    if args.action == "describe":
+        try:
+            places_mod.describe(data, args.place, args.line)
+        except KeyError as exc:
+            print(f"refused: {exc.args[0]}", file=sys.stderr)
+            return 1
+        places_mod.save(data)
+    rows = places_mod.listing(data)
+    if not rows:
+        print("no places")
+    for r in rows:
+        last = datetime.fromtimestamp(r["last"]).strftime("%Y-%m-%d") if r["last"] else "-"
+        print(f"{r['name']:<24} {last}  {r['sessions']:>4} sessions  {r['path']}{'' if r['exists'] else '  [gone]'}"
+              + (f"  {r['description']}" if r["description"] else ""))
+    return 0
+
+
 def cmd_pie(args) -> int:
     """Each project's effective share and standing. Spend is an estimate because the meter is plan-wide."""
     path, now = registry.default_path(), time.time()
@@ -1292,6 +1317,7 @@ def build_parser() -> argparse.ArgumentParser:
     timing.add_argument("--cancel-pending", action="store_true", help="drop this project's pending changes")
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
+    p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)
     p = sub.add_parser("pie", help="each project's effective share and weekly standing (estimates)"); p.add_argument("--json", action="store_true"); p.set_defaults(func=cmd_pie)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("raise", help="raise a project's share for the current weekly windows only")

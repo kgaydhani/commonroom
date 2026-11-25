@@ -87,10 +87,16 @@ def restart_after_deploy(cfg: dict, log_dir: Path) -> list[str]:
     return lines
 
 
-def tick(cfg: dict, timeout: float = 600) -> list[str]:
+def command_key(command: list) -> str:
+    """How a heartbeat command is named in the ledger and in findings."""
+    return " ".join(str(p) for p in command)
+
+
+def tick(cfg: dict, timeout: float = 600, ledger=None) -> list[str]:
     """Run the project's `[heartbeat] commands` once, in order, from its folder (commonroom#151): per-project jobs
     that ride the heartbeat, like a queue runner. Each is an argv list; "{python}" is the room's interpreter. A failing
-    command is reported and the next one still runs. None set: nothing runs."""
+    command is reported and the next one still runs. With a `ledger`, each exit is recorded (exit -1 when it could
+    not run) for the steward (commonroom#587). None set: nothing runs."""
     lines = []
     for command in (cfg.get("heartbeat") or {}).get("commands") or []:
         argv = [sys.executable if part == "{python}" else str(part) for part in command]
@@ -98,6 +104,10 @@ def tick(cfg: dict, timeout: float = 600) -> list[str]:
             done = subprocess.run(argv, cwd=cfg["_root"], stdin=subprocess.DEVNULL, timeout=timeout,
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             lines.append(f"{' '.join(argv)}: exit {done.returncode}")
+            code = done.returncode
         except (OSError, subprocess.SubprocessError) as exc:
             lines.append(f"{' '.join(argv)}: {type(exc).__name__}: {exc}")
+            code = -1
+        if ledger is not None:
+            ledger.record_heartbeat(cfg["project"].get("name"), command_key(command), code)
     return lines
