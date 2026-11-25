@@ -660,14 +660,15 @@ class GitHubBoard:
     def label_pr(self, number: int, name: str):
         board_mod.gh(["pr", "edit", str(number), "--repo", self.repo, "--add-label", name])
 
-    def merge(self, number: int):
-        """Squash-merge, then delete the head branch. Main's commit is the PR's title and body, whatever the branch's
+    def merge(self, number: int, *, head: str | None = None):
+        """Squash-merge, then delete the head branch. With `head`, GitHub merges only if the PR head is that commit: a
+        merge train pushes the commit it tested and lands exactly that (commonroom#612). Main's commit is the PR's title and body, whatever the branch's
         commits say: GitHub's default takes a lone commit's message, which once made the room's WIP placeholder the
         permanent description of a change (commonroom#21). PRs stacked on that branch move to its base first: GitHub
         closes a PR whose base branch is deleted through the API rather than retargeting it (gamemirage#368)."""
         pr = board_mod.gh(["pr", "view", str(number), "--repo", self.repo,
                            "--json", "headRefName,baseRefName,title,body"]) or {}
-        args = ["pr", "merge", str(number), "--repo", self.repo, "--squash"]
+        args = ["pr", "merge", str(number), "--repo", self.repo, "--squash"] + (["--match-head-commit", head] if head else [])
         if (pr.get("title") or "").strip():
             args += squash_message(number, pr["title"], pr.get("body"))
         board_mod.gh(args)
@@ -1591,13 +1592,25 @@ class Dispatcher:
         # heartbeat (commonroom#111: gamemirage's main sat red 1 h 42 min unseen until a PR was approved). Without CI
         # there are no checks to read; it is then read only when a PR is first ready to merge, as before.
         held = self.main_red(everything, actions) if (self.ci or self.suite_on_main()) and not self.dry_run else None
+        # Several approved, tested PRs behind main land together on one suite run (commonroom#612).
+        details, handled = {}, set()
+        if self.train_wanted():
+            details = {pr["number"]: self.board.pr_detail(pr["number"]) for pr in prs if BRANCH.match(pr["headRefName"])}
+            members = self.train_members(prs, details, everything, running, held_by_owner)
+            if len(members) >= 2:
+                if held is None:
+                    held = self.main_red(everything, actions)
+                if not held:   # a red main is never built on
+                    ran, handled, carried = self.merge_train(members, everything, state)
+                    actions += ran
+                    merged = bool(handled & {pr["number"] for pr, _, _ in members})
         for pr in sorted(prs, key=lambda p: p["number"]):   # oldest first: a stacked base lands before what builds on it
             m = BRANCH.match(pr["headRefName"])
             # PRs on other branches (audit-*, director-*, moonshot/*) have no issue to send back to, but `review:skip`
             # promises a merge once CI is green, whatever the branch (commonroom#22). Others are their author's to land.
-            if not m and "review:skip" not in labels(pr):
+            if (not m and "review:skip" not in labels(pr)) or pr["number"] in handled:
                 continue
-            detail = self.board.pr_detail(pr["number"])
+            detail = details.get(pr["number"]) or self.board.pr_detail(pr["number"])
             review, checks = self.review_verdict(self.reviewer_view(detail)), checks_state(detail)
             issue_no = int(m.group(1)) if m else None
             if issue_no in held_by_owner:
@@ -1714,12 +1727,7 @@ class Dispatcher:
                         actions.append(f"merge of PR #{pr['number']} skipped: {str(exc)[:120]}")
                         continue
                     merged = True
-                    run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{pr['number']}", "merge", "none")
-                    output = {"kind": "merge", "ref": f"PR #{pr['number']}"}
-                    quiet = self.quiet_merge(detail, issue_no)
-                    if quiet:
-                        output["quiet"] = quiet
-                    self.ledger.finish_run(run, "done", outputs=[output])
+                    self.record_merge(pr, detail, issue_no)
                 actions.append(f"merged PR #{pr['number']} ({f'issue #{issue_no}' if issue_no else pr['headRefName']})")
                 if decided and issue_no and not self.dry_run:
                     self.board.comment(issue_no, f"PR #{pr['number']} merged on the director's decision: their approval "
@@ -2211,6 +2219,153 @@ class Dispatcher:
                                              f"(another PR carried it). PR #{pr['number']} was closed as superseded.")
         return [f"PR #{pr['number']} closed as superseded: its content is already on main"
                 + (f"; issue #{issue_no} closed as met" if issue_no else "")]
+
+    def record_merge(self, pr: dict, detail: dict, issue_no: int | None):
+        """A merge is a ledger row with no model (provider none)."""
+        run = self.ledger.start_run(self.project, f"#{issue_no}" if issue_no else f"PR #{pr['number']}", "merge", "none")
+        output = {"kind": "merge", "ref": f"PR #{pr['number']}"}
+        quiet = self.quiet_merge(detail, issue_no)
+        if quiet:
+            output["quiet"] = quiet
+        self.ledger.finish_run(run, "done", outputs=[output])
+
+    # A merge train (commonroom#612) ------------------------------------------------------------------------------
+    # Each merge leaves every other approved PR behind main, and each then waits a pass for an update, a pass for its
+    # carry run and a pass for its merge. A train merges every approved, tested PR that is behind main into main, in
+    # PR-number order, runs the tests once on the result and lands them all in the same pass.
+    def train_wanted(self) -> bool:
+        """Only where the room carries tested approvals across merges of main (no CI): the train is that carry run,
+        once for several PRs. Anywhere else nothing changes."""
+        return bool(self.carry and not self.dry_run and self.root and (self.cfg.get("checks") or {}).get("test"))
+
+    def failed_train_heads(self) -> set[tuple[int, str]]:
+        """(PR, head) pairs that were in a train whose tests did not pass: those heads go one at a time."""
+        return {(m.get("pr"), m.get("head")) for r in self.ledger.recent_runs(self.project, limit=500) if r["role"] == "carry"
+                for o in r["outputs"] if o.get("train") and o.get("result") != "PASS" for m in o["train"]}
+
+    def train_members(self, prs: list[dict], details: dict, everything: list[dict], running: set[str],
+                      held_by_owner: set[int]) -> list[tuple[dict, dict, int]]:
+        """(pr, detail, issue) for each PR that may ride a train, oldest first: an issue branch on main, approved and
+        tested on its own head, behind main, and waiting on nothing else. Not conflicting, not the director's (a stamp
+        to wait for, or a decision on an escalated issue), not claimed or being built, and not a head that was in a
+        failed train."""
+        failed, found = self.failed_train_heads(), []
+        for pr in sorted(prs, key=lambda p: p["number"]):
+            m, detail = BRANCH.match(pr["headRefName"]), details.get(pr["number"])
+            if not m or not detail:
+                continue
+            issue_no, head = int(m.group(1)), head_sha(detail).lower()
+            issue = next((i for i in everything if i["number"] == issue_no), None)
+            if (not head or issue_no in held_by_owner or f"#{issue_no}" in running or (pr["number"], head) in failed
+                    or (detail.get("baseRefName") or "main") != "main" or detail.get("mergeable") == "CONFLICTING"
+                    or self.needs_director(detail) or (issue and DIRECTOR_LABEL in labels(issue))
+                    or self.review_verdict(self.reviewer_view(detail)) != "APPROVE" or not self.tested(detail)):
+                continue
+            try:
+                if not self.board.behind_main(detail):
+                    continue
+            except Exception:
+                continue   # the one-at-a-time path reports a PR it can't compare with main
+            found.append((pr, detail, issue_no))
+        return found
+
+    def merged_tree(self, head: str, onto: str) -> str | None:
+        """The tree git makes of merging commit `onto` into `head`, or None when they conflict. Objects only: no
+        checkout, so the project's checkout is never touched. Raises when git can't say."""
+        done = subprocess.run(["git", "merge-tree", "--write-tree", "--no-messages", head, onto], cwd=self.root,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=git_env(self.root))
+        if done.returncode == 1:
+            return None
+        if done.returncode or not done.stdout.split():
+            raise RuntimeError(f"git merge-tree {head[:7]} {onto[:7]}: {done.stderr.strip()[:150]}")
+        return done.stdout.split()[0]
+
+    def build_train(self, members: list[tuple[dict, dict, int]]):
+        """(main sha, steps, conflicts). Step i is (pr, detail, issue, commit, tree): PR i's head with main and every
+        earlier step merged in (first parent the PR head, as GitHub's own update makes it). A PR that conflicts with
+        main and the steps before it is left out and the train goes on; it is in `conflicts`."""
+        git(["fetch", "--quiet", "origin", "main", *[d["headRefName"] for _, d, _ in members]], self.root)
+        base = git(["rev-parse", "origin/main"], self.root).lower()
+        tip, steps, conflicts = base, [], []
+        for pr, detail, issue_no in members:
+            head = head_sha(detail).lower()
+            if git(["rev-parse", f"origin/{detail['headRefName']}"], self.root).lower() != head:
+                continue   # pushed to since GitHub was read: the next pass sees the new head
+            tree = self.merged_tree(head, tip)
+            if tree is None:
+                conflicts.append((pr, detail, issue_no))
+                continue
+            tip = git(["commit-tree", tree, "-p", head, "-p", tip, "-m",
+                       f"Merge train: main {base[:7]} and the PRs before #{pr['number']} into it (commonroom#612)"], self.root).lower()
+            steps.append((pr, detail, issue_no, tip, tree))
+        return base, steps, conflicts
+
+    def merge_train(self, members: list[tuple[dict, dict, int]], everything: list[dict], state: dict):
+        """Build the train, run the tests once on its tip, and on PASS land its PRs in order. Returns (actions, PR
+        numbers housekeeping is done with this pass, whether this pass's suite run was used)."""
+        checks = self.cfg.get("checks") or {}
+        try:
+            base, steps, conflicts = self.build_train(members)
+        except RuntimeError as exc:
+            return [f"merge train not built: {str(exc)[:150]}"], set(), False
+        if len(steps) < 2:
+            return [], set(), False   # nothing to share a run: the one-at-a-time path, as before
+        tip, numbers = steps[-1][3], [s[0]["number"] for s in steps]
+        names = ", ".join(f"#{n}" for n in numbers)
+        started = time.time()
+        result, line = carry_mod.run_suite(self.root, tip, checks["test"], self.worktree_base() / "carry-train",
+                                           suite_lock(Path(self.ledger.path).parent, self.project),
+                                           float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
+        if result == "BUSY":
+            return [f"merge train of PRs {names}: tests not run in code yet ({line}); next pass"], set(), True
+        run = self.ledger.start_run(self.project, f"train {names}", "carry", "none", now=started)
+        self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"train PR {names}", "head": tip, "result": result,
+                                                      "train": [{"pr": s[0]["number"], "head": head_sha(s[1]).lower()} for s in steps]}])
+        body = carry_mod.train_comment(result, tip, checks["test"], line, numbers, base)
+        for n in numbers:
+            self.board.comment(n, body)
+        if result != "PASS":
+            return [f"merge train of PRs {names}: tests {'failed' if result == 'FAIL' else 'could not finish'} on its tip "
+                    f"{tip[:7]} ({line}); nothing merged, each PR goes one at a time"], set(), True
+        actions, landed = self.land_train(steps)
+        handled = set(landed)
+        if landed:   # main now holds the train, so a PR that conflicted with it conflicts with main: back as today
+            for pr, _, issue_no in conflicts:
+                handled.add(pr["number"])
+                actions += self.back_to_merge_main(pr, issue_no, everything, "APPROVE")
+        for pr, detail, issue_no, *_ in steps:
+            if pr["number"] in landed:
+                state[issue_no] = "CLOSED"
+                actions += self.playtest_after_merge(pr, detail, everything)
+        return actions, handled, True
+
+    def land_train(self, steps: list) -> tuple[list[str], list[int]]:
+        """Land the tested train in order, so main ends at its tip's tree. For each PR: merge the main GitHub has now
+        into its head (after the earlier squash merges, main's tree is the step before's), check the result's tree is
+        the step the tests ran through, push it to the PR's branch (it contains the head, so a fast-forward), and
+        squash-merge only that commit. The branch then contains main, so the squash lands exactly that tree. Any
+        difference or failure stops the train; what is left goes one at a time."""
+        actions, landed = [], []
+        for pr, detail, issue_no, _, tree in steps:
+            n, head, branch = pr["number"], head_sha(detail).lower(), detail["headRefName"]
+            try:
+                git(["fetch", "--quiet", "origin", "main"], self.root)
+                main = git(["rev-parse", "origin/main"], self.root).lower()
+                if self.merged_tree(head, main) != tree:
+                    actions.append(f"merge train stopped before PR #{n}: main {main[:7]} with it is not the tree that was "
+                                   f"tested; the rest go one at a time")
+                    break
+                commit = git(["commit-tree", tree, "-p", head, "-p", main, "-m", f"Merge main {main[:7]} into PR #{n} "
+                              f"(merge train, commonroom#612)"], self.root).lower()
+                git(["push", "--quiet", "origin", f"{commit}:refs/heads/{branch}"], self.root)
+                self.board.merge(n, head=commit)
+            except Exception as exc:
+                actions.append(f"merge train stopped at PR #{n}: {str(exc)[:120]}; the rest go one at a time")
+                break
+            landed.append(n)
+            self.record_merge(pr, detail, issue_no)
+            actions.append(f"merged PR #{n} (issue #{issue_no}) in a merge train, at {commit[:7]}")
+        return actions, landed
 
     def already_updated(self, number: int, head: str) -> bool:
         """Did an earlier pass already update PR `number` while its head was `head`?"""
