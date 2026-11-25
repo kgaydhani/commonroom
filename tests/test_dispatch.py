@@ -606,7 +606,7 @@ class WithLedger(unittest.TestCase):
         with mock.patch.object(dispatch.time, "time", return_value=self.local(11, 12)):
             reason = d.director_trigger()
             self.assertEqual(reason, dispatch.fill_way(dispatch.BULLETIN_REASON, due="10:00", issue=286, owner="o"))
-            self.assertIn("bulletin missed (due 10:00): post a short text digest to #286 starting with @o", reason)
+            self.assertIn("bulletin missed (due 10:00): post a short digest to #286 starting with @o", reason)
             # Agent comments don't count, nor does the bulletin for the previous slot (posted before its deadline).
             digest["comments"] += [self.said("[agent:director] @o morning digest", self.local(11, 8)),
                                    self.said("@o evening digest", self.local(10, 19, 19))]
@@ -938,7 +938,7 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(added & {"needs:director", "status:blocked"})
         (n, body), = board.comments
         self.assertEqual(n, 84)
-        self.assertIn("Its work is preserved on branch `i84-handoff`", body)
+        self.assertIn("Its work is on branch `i84-handoff`", body)
         self.assertIn("A Claude builder continues from it", body)
         self.assertIn("PermissionError in tools/test.py", body)
         self.assertNotIn("Implemented the fix.", body)   # only the last ~1500 characters
@@ -967,7 +967,7 @@ class WithLedger(unittest.TestCase):
         self.assertFalse(added & {"needs:director", "status:blocked"})
         (n, body), = board.comments
         self.assertEqual(n, 84)
-        self.assertIn("left nothing on branch `i84-handoff`", body)
+        self.assertIn("nothing is on branch `i84-handoff`", body)
         self.assertIn("A Claude builder starts from the issue", body)
         self.assertNotIn("preserved", body)
         self.assertIn("PermissionError in tools/test.py", body)

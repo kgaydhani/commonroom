@@ -1,1 +1,1 @@
-Nothing was committed, so nothing was preserved and the next attempt starts over. If this keeps happening, the issue may need splitting.
+Nothing was committed, so the next attempt starts over. If this keeps happening, the issue may need splitting.

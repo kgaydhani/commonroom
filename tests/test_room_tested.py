@@ -77,12 +77,12 @@ class Prompt(Base):
         text = self.render(True, [room()])
         self.assertIn(f"TESTS: PASS {HEAD} {CMD}: Ran 9 tests in 1s OK", text)
         self.assertIn("needs no `TESTS:` line", text)
-        self.assertNotIn("the test run is yours", text)
+        self.assertNotIn("your approval merges this PR", text)
         self.assertIn("REVIEW: INCOMPLETE", text)
 
     def test_without_a_pass_on_the_current_head_or_with_the_flag_off_it_is_the_no_ci_text(self):
         plain = self.render(False, [])
-        self.assertIn("the test run is yours", plain)
+        self.assertIn("your approval merges this PR", plain)
         for text in (self.render(True, []), self.render(True, [room(head=OLD)]), self.render(False, [room()])):
             self.assertEqual(text, plain)
 
