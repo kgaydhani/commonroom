@@ -25,6 +25,9 @@
 name = "rework-fresh"
 area = "rework"
 started = "2026-11-24"
+# Adopted 2026-11-25 (#609): variant 10 landings, control 19; the variant was better on review runs, minutes and
+# input tokens per landing, so policy.toml now has rework_resume_seconds = 0 for every task.
+ended = "2026-11-25"
 share = 0.3
 measure = "review_runs_per_landing"
 min_landings = 10
