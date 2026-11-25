@@ -34,7 +34,6 @@ SESSION_START = read_way(handshake.TEMPLATES / "session-start.md")
 COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
-CARD = "card"           # the `room` subcommand that shows a place; named in the place line once it exists
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
@@ -191,9 +190,7 @@ def place_line(data: dict) -> str:
         return ""
     name = Path(place["path"]).name or place["path"]
     described = " ".join(str(place.get("description") or "").split())
-    cli = sys.modules.get("commonroom.cli")
-    card = f" `room {CARD}` shows it." if cli is not None and hasattr(cli, f"cmd_{CARD}") else ""
-    return fill_way(PLACE_START, place=name, description=f": {described.rstrip('.')}" if described else "", card=card)
+    return fill_way(PLACE_START, place=name, description=f": {described.rstrip('.')}" if described else "")
 
 
 def context(data: dict, now: float | None = None) -> str:

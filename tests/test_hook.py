@@ -189,21 +189,21 @@ class Places(Hook):
     def test_a_known_place_gets_one_short_line_with_its_name_and_description(self):
         self.know(self.elsewhere, "the owner's scratch notes")
         text = self.added(self.elsewhere)
-        self.assertEqual(text, "This folder is `elsewhere`, a place Common Room knows (not a project): "
-                               "the owner's scratch notes.")
+        self.assertEqual(text, "This folder is `elsewhere`, a place Common Room knows: "
+                               "the owner's scratch notes. `room card` shows it.")
         self.assertNotIn(chr(10), text)
 
     def test_a_place_without_a_description_and_a_folder_inside_a_place(self):
         self.know(self.elsewhere)
         inner = self.elsewhere / "sub"
         inner.mkdir()
-        self.assertEqual(self.added(inner), "This folder is `elsewhere`, a place Common Room knows (not a project).")
+        self.assertEqual(self.added(inner), "This folder is `elsewhere`, a place Common Room knows. "
+                                                 "`room card` shows it.")
 
-    def test_the_line_names_room_card_once_the_command_exists(self):
+    def test_the_line_names_room_card_and_the_command_exists(self):
         self.know(self.elsewhere)
-        with mock.patch.object(cli, "cmd_card", create=True):
-            self.assertIn("`room card` shows it.", self.added(self.elsewhere))
-        self.assertNotIn("room card", self.added(self.elsewhere))
+        self.assertIn("`room card` shows it.", self.added(self.elsewhere))
+        self.assertTrue(callable(cli.cmd_card))
 
     def test_an_unknown_folder_and_a_worker_get_nothing(self):
         self.know(self.elsewhere)
