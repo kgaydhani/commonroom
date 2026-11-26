@@ -51,7 +51,7 @@ class DoctorTests(unittest.TestCase):
             "enabledPlugins": {"commonroom@commonroom": True},
             "extraKnownMarketplaces": {"commonroom": {"source": {"source": "directory", "path": self.rc.as_posix()}}}}), encoding="utf-8")
         ev = lambda e: [{"hooks": [{"type": "command", "command": f'python "{run_py}" {e}'}]}]
-        (self.codex / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": ev("session-start"), "UserPromptSubmit": ev("prompt-submit")}}), encoding="utf-8")
+        (self.codex / "hooks.json").write_text(json.dumps({"hooks": {"SessionStart": ev("session-start"), "UserPromptSubmit": ev("prompt-submit"), "PreToolUse": ev("pre-tool")}}), encoding="utf-8")
         (self.rh / "room-path").write_text((self.rc / "room.py").as_posix() + "\n", encoding="utf-8")
 
     def project(self, name, provider="claude", toml=True, agent=True):

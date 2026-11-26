@@ -1,5 +1,5 @@
 {
-  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only (session start; a cold return to a large context, #367). Runs hooks/run.py, which finds the room's code beside the plugin or at the path in the room home's room-path file (#565).",
+  "description": "Common Room: point a session at its project's room folder (commonroom#262). Adds context only (session start; a cold return to a large context, #367), except PreToolUse (#583), which blocks only what the owner's limits.txt names. Runs hooks/run.py, which finds the room's code beside the plugin or at the path in the room home's room-path file (#565).",
   "hooks": {
     "SessionStart": [
       {
@@ -22,6 +22,20 @@
             "command": "python",
             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "prompt-submit"],
             "commandWindows": "if exist \"%PLUGIN_ROOT%\\hooks\\run.py\" python \"%PLUGIN_ROOT%\\hooks\\run.py\" prompt-submit",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Read|Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "pre-tool"],
+            "commandWindows": "if exist \"%PLUGIN_ROOT%\\hooks\\run.py\" python \"%PLUGIN_ROOT%\\hooks\\run.py\" pre-tool",
             "timeout": 5
           }
         ]

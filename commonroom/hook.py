@@ -26,7 +26,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from commonroom import handshake, places, policy, registry, sessions
+from commonroom import handshake, places, policy, pretool, registry, sessions
 from commonroom.dispatch import fill_way, read_way
 from commonroom.ledger import Ledger
 
@@ -417,5 +417,7 @@ def main(stdin=None, stdout=None, limit: float | None = None, event: str = EVENT
 
 def cmd_hook(args) -> int:
     """`room hook session-start` and `room hook prompt-submit`: the plugin's hooks. Any other event adds nothing."""
+    if args.event == "pre-tool":
+        return pretool.main()
     events = {"session-start": EVENT, "prompt-submit": PROMPT}
     return main(event=events[args.event]) if args.event in events else 0

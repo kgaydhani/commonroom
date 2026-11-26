@@ -17,7 +17,7 @@ from pathlib import Path
 
 from commonroom import doctor, schedule
 
-EVENTS = {"SessionStart": "session-start", "UserPromptSubmit": "prompt-submit"}
+EVENTS = {"SessionStart": "session-start", "UserPromptSubmit": "prompt-submit", "PreToolUse": "pre-tool"}
 
 
 def codex_dir() -> Path:
@@ -53,7 +53,10 @@ def codex_plan(path: Path, root: Path) -> tuple[dict, list[str], bool]:
         if not isinstance(groups, list):
             raise ValueError(f"{path}: hooks.{event} is not a list")
         if not any(isinstance(g, dict) and _ours(g, root, event) for g in groups):
-            groups.append({"hooks": [{"type": "command", "command": hook_command(root, event), "timeout": 5}]})
+            group = {"hooks": [{"type": "command", "command": hook_command(root, event), "timeout": 5}]}
+            if event == "PreToolUse":
+                group["matcher"] = "Bash"   # the command guard for workers; Codex's shell tool
+            groups.append(group)
             added.append(event)
     return data, added, raw is None
 

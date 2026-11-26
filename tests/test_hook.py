@@ -426,14 +426,17 @@ class Beside(Hook):
         settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(json.loads((ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
                          ["name"], "commonroom")
-        self.assertEqual(list(plugin["hooks"]), ["SessionStart", "UserPromptSubmit"])
+        # commonroom#583: PreToolUse is the one hook that may block, and only what the owner's own limits.txt names
+        self.assertEqual(list(plugin["hooks"]), ["SessionStart", "UserPromptSubmit", "PreToolUse"])
         self.assertEqual(list(settings["hooks"]), ["SessionStart", "UserPromptSubmit"])
+        pre_tool = plugin["hooks"].pop("PreToolUse")
         # the Codex form (`commandWindows`, commonroom#397) is checked in PluginHooksForCodex; Claude Code's form is unchanged
         plugin = json.loads(json.dumps(plugin))
         for groups in plugin["hooks"].values():
             for group in groups:
                 for entry in group["hooks"]:
                     entry.pop("commandWindows")
+        self.assertEqual(pre_tool[0]["hooks"][0]["args"][-1], "pre-tool")
         [prompt] = plugin["hooks"]["UserPromptSubmit"]
         self.assertEqual(prompt["hooks"], [{"type": "command", "command": "python", "timeout": 5,
                                             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "prompt-submit"]}])
@@ -452,7 +455,7 @@ class PluginHooksForCodex(unittest.TestCase):
 
     def test_every_entry_has_both_forms_naming_the_same_hook(self):
         plugin = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
-        wanted = {"SessionStart": "session-start", "UserPromptSubmit": "prompt-submit"}
+        wanted = {"SessionStart": "session-start", "UserPromptSubmit": "prompt-submit", "PreToolUse": "pre-tool"}
         self.assertEqual(list(plugin["hooks"]), list(wanted))
         for event, name in wanted.items():
             entries = [e for g in plugin["hooks"][event] for e in g["hooks"]]
