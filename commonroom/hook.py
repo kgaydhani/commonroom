@@ -5,7 +5,7 @@ a decision, a rewrite or a permission. In a registered project's folder, or a gi
 paragraph from commonroom/ways/handshake/session-start.md (axiom A1): where the project's digest is, how many notes in
 its inbox are unread and who they are from, and how to reply. With no unread note and no charter, only the template's
 first line. In a known place (commonroom#571: a folder in places.json, no project) it adds one short line from
-place-start.md. Elsewhere, with an empty registry, in a room worker's folder, or on any error, it prints nothing and exits
+place-start.md, then the other places used in the last fortnight, one line each (commonroom#578; a project's text is unchanged). Elsewhere, with an empty registry, in a room worker's folder, or on any error, it prints nothing and exits
 0. It calls no model and no network: its one subprocess is handshake.find's `git rev-parse`, it opens the ledger
 read-only, and it gives up after LIMIT seconds.
 
@@ -34,6 +34,7 @@ SESSION_START = read_way(handshake.TEMPLATES / "session-start.md")
 COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
+PLACES_RECENT = read_way(handshake.TEMPLATES / "places-recent.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
@@ -44,6 +45,7 @@ OVERLAP = 64
 LIMIT = 2.0             # seconds: a hook still working after this adds nothing
 WORKER_WINDOW = 86400   # a folder a room worker ran in within the last day is a worker's folder
 SENDER_CHARS = 40
+LINE_CHARS = 160        # the most of one line in the places list
 
 
 def _senders(notes: list[dict]) -> str:
@@ -190,7 +192,29 @@ def place_line(data: dict) -> str:
         return ""
     name = Path(place["path"]).name or place["path"]
     described = " ".join(str(place.get("description") or "").split())
-    return fill_way(PLACE_START, place=name, description=f": {described.rstrip('.')}" if described else "")
+    line = fill_way(PLACE_START, place=name, description=f": {described.rstrip('.')}" if described else "")
+    return f"{line}\n{recent}" if (recent := recent_places(place, line)) else line
+
+
+def recent_places(here: dict | None, room_line: str = "", now: float | None = None) -> str:
+    """The list of places used in the last `places_days` days, newest first, at most `places_listed`, one line each
+    (commonroom#578): the name, the path and the description. The place the session is in, and folders gone from
+    disk, are left out; so are the oldest if `room_line` and the list would pass `session_start_max_tokens`. "" when
+    none, or when the count is 0."""
+    limit = policy.DEFAULTS["places_listed"]
+    since = (time.time() if now is None else now) - policy.DEFAULTS["places_days"] * 86400
+    lines = []
+    for row in places.listing(places.load()):
+        if len(lines) >= limit:
+            break
+        if row["last"] < since or not row["exists"] or (here is not None and row["path"] == here["path"]):
+            continue
+        said = " ".join(str(row["description"] or "").split()).rstrip(" .")
+        lines.append((f"- `{row['name']}` ({row['path']})" + (f": {said}" if said else ""))[:LINE_CHARS])
+    budget = policy.DEFAULTS["session_start_max_tokens"] * 4 - len(room_line)   # characters, as tokens are chars / 4
+    while lines and len(fill_way(PLACES_RECENT, days=str(policy.DEFAULTS["places_days"]), places="\n".join(lines))) + 1 > budget:
+        lines.pop()                       # over the hook's budget: the oldest go first
+    return fill_way(PLACES_RECENT, days=str(policy.DEFAULTS["places_days"]), places="\n".join(lines)) if lines else ""
 
 
 def context(data: dict, now: float | None = None) -> str:
