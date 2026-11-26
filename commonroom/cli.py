@@ -18,6 +18,7 @@ from commonroom.dispatch import CLAIMED, READER_COOLDOWN, Dispatcher, GitHubBoar
 from commonroom import ledger as ledger_mod
 from commonroom import install as install_mod
 from commonroom import card as card_mod
+from commonroom import home as home_mod
 from commonroom import places as places_mod
 from commonroom import schedule as schedule_mod
 from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, suitereport, trials
@@ -1182,8 +1183,15 @@ def cmd_places(args) -> int:
         print("no places")
     for r in rows:
         last = datetime.fromtimestamp(r["last"]).strftime("%Y-%m-%d") if r["last"] else "-"
-        print(f"{r['name']:<24} {last}  {r['sessions']:>4} sessions  {r['path']}{'' if r['exists'] else '  [gone]'}"
+        print(f"{r['name']:<24} {last}  {r['sessions']:>4} sessions  {r['path']}{'' if r['exists'] else '  [gone]'}{'  [home place]' if r['home'] else ''}"
               + (f"  {r['description']}" if r["description"] else ""))
+    return 0
+
+
+def cmd_home(args) -> int:
+    """Make the home place (once): a folder in the room home that is no project. No model call."""
+    where, made = home_mod.create()
+    print(f"{'created' if made else 'already there'}: {where}")
     return 0
 
 
@@ -1458,7 +1466,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
     p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove", "from-note")); p.add_argument("value", nargs="?"); p.add_argument("--project"); p.set_defaults(func=cmd_person)
     p = sub.add_parser("card", help="one screen about a place or project: what it is for, its state, its method, who answers (no model call)"); p.add_argument("place", help="a name or a folder path"); p.set_defaults(func=cmd_card)
-    p = sub.add_parser("route", help="record where something was sent: `route TO \"what\" --how note|hand|message|brief`, `route list`, `route undo ID` (no model call)"); p.add_argument("words", nargs="+", metavar="TO text | list | undo ID"); p.add_argument("--how", default="message"); p.add_argument("--from", dest="from_place"); p.add_argument("--session"); p.set_defaults(func=handshake.cmd_route)
+    p = sub.add_parser("route", help="record where something was sent: `route TO \"what\" --how note|hand|message|brief`, `route list`, `route undo ID`, `route answer ID \"text\"` (no model call)"); p.add_argument("words", nargs="+", metavar="TO text | list | undo ID"); p.add_argument("--how", default="message"); p.add_argument("--ask", action="store_true", help="a question: an answer is expected back"); p.add_argument("--within", type=int, help="hours the answer is expected in (default question_hours)"); p.add_argument("--from", dest="from_place"); p.add_argument("--session"); p.set_defaults(func=handshake.cmd_route)
+    p = sub.add_parser("home", help="make the home place, a folder in the room home that is no project, where a session routes and starts work elsewhere (once)"); p.set_defaults(func=cmd_home)
     p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)
     p = sub.add_parser("tokens", help="`collect`: keep per-session, per-model token counts from Claude Code's transcripts and Codex's session records (no model call)"); p.add_argument("action", choices=("collect",)); p.set_defaults(func=cmd_tokens)
     p = sub.add_parser("weights", help="what a meter point costs by model, latest and history; `record` keeps today's fit (no model call)"); p.add_argument("action", nargs="?", default="show", choices=("show", "record")); p.set_defaults(func=cmd_weights)

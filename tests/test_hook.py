@@ -811,10 +811,6 @@ class HandshakeOnlyUnderAReviewFolder(HandshakeOnly):
         self.assertIn("review-1", str(self.tmp))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FreshStart(Hook):
     """commonroom#580: a session older than N days, or one that worked in more than M folders, is offered a fresh
     start once. Everything is built in a temporary room home."""
@@ -870,7 +866,62 @@ class FreshStart(Hook):
         (self.home / hook.OFFERED).write_text("{not json", encoding="utf-8")
         self.assertIn("days old", self.prompt(self.long_transcript(4, 1), cwd=self.elsewhere))
 
+    def old_cold_transcript(self):
+        """A cold-return transcript whose first line is 4 days old."""
+        path = self.transcript(90, 300000)
+        at = datetime.fromtimestamp(self.NOW - 4 * 86400, timezone.utc).isoformat()
+        path.write_text(json.dumps({"type": "user", "timestamp": at, "cwd": str(self.alpha)}) + "\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+        return path
+
     def test_a_cold_return_keeps_its_text_and_the_offer_follows_it(self):
         self.register()
-        path = self.transcript(90, 300000)
-        self.assertEqual(self.prompt(path).count("prompt cache has expired"), 1)
+        text = json.loads(self.prompt(self.old_cold_transcript()))["hookSpecificOutput"]["additionalContext"]
+        self.assertLess(text.index("prompt cache has expired"), text.index("days old"))
+
+    def test_the_cold_return_text_survives_a_fresh_start_that_raises_or_is_slow(self):
+        self.register()
+        path = self.old_cold_transcript()
+        with mock.patch.object(hook, "fresh_start", side_effect=OSError("disk")):
+            out = self.prompt(path)
+        self.assertIn("prompt cache has expired", out)
+        self.assertNotIn("days old", out)
+        with mock.patch.object(hook, "_span", side_effect=lambda *a, **k: time.sleep(3)):
+            data = {"session_id": "s1", "cwd": str(self.alpha), "hook_event_name": "UserPromptSubmit", "transcript_path": str(path)}
+            out, started = io.StringIO(), time.monotonic()
+            with mock.patch.object(hook.time, "time", return_value=self.NOW):
+                hook.main(io.StringIO(json.dumps(data)), out, limit=0.5, event="UserPromptSubmit")
+        self.assertIn("prompt cache has expired", out.getvalue())
+        self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_a_second_prompt_reads_only_the_bytes_added_since_the_first(self):
+        path = self.long_transcript(1, 2)
+        size, reads = path.stat().st_size, []
+        real = open
+        def spy(file, mode="r", *a, **k):
+            handle = real(file, mode, *a, **k)
+            if str(file) == str(path):
+                reads.append(None)
+                seek = handle.seek
+                handle.seek = lambda off, *x: (reads.__setitem__(-1, off), seek(off, *x))[1]
+            return handle
+        with mock.patch.object(hook, "open", spy, create=True):
+            self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "user", "cwd": str(self.tmp / "f9")}) + "\n")
+            self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        self.assertEqual(reads[-2:], [0, size])
+
+    def test_the_scan_goes_on_across_prompts_and_a_half_written_line_waits(self):
+        path = self.long_transcript(0.5, 3)
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "cwd": str(self.tmp / "f9")}))   # no newline yet
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        with path.open("a", encoding="utf-8") as f:
+            f.write("\n")
+        self.assertIn("4 folders wide", self.prompt(path, cwd=self.elsewhere))
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

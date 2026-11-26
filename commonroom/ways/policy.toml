@@ -107,6 +107,10 @@ templates_max_tokens = 3300   # 3300: trimmed to 3200 (#624), so about 100 token
 # page shows the count and the oldest (commonroom#588, docs/layer.md conclusion 9: nothing is written where nobody reads).
 unread_note_hours = { value = 24, min = 1 }
 
+# Hours (24): how long a question sent to a place (`room route TO "..." --ask`) may go unanswered before it is a steward
+# finding (commonroom#577). The asker can give another time with `--within`.
+question_hours = { value = 24, min = 1 }
+
 # The owner's person file (commonroom#573, docs/layer.md): one small file, `person.md` in the room home, one dated line
 # per fact. Long instruction files and injected memory cost tokens and lower task success (#554), so the cap is
 # enforced in code. Tokens are estimated as characters / 4. Room-wide only.

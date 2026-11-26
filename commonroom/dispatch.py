@@ -3759,6 +3759,11 @@ class Dispatcher:
                     found += steward.odd_weights(weights_mod.read_history(home / weights_mod.FILENAME), meter)
             except Exception as exc:
                 self.log(f"   steward: the meter checks failed: {exc}")
+            try:   # an unreadable route table costs only this check
+                found += steward.overdue_questions([r for r in self.ledger.overdue_questions(now)
+                                                    if self.project in (r["from_place"], r["to_place"])], now)
+            except Exception as exc:
+                self.log(f"   steward: the question check failed: {exc}")
             try:   # an unreadable person file costs only this check
                 days = self.policy_overrides.get("person_stale_days", policy_mod.DEFAULTS["person_stale_days"])
                 found += steward.stale_person_lines(person_mod.stale(

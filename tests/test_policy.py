@@ -45,6 +45,7 @@ NEW = {"prompt_max_tokens": 700, "templates_max_tokens": 3300,   # commonroom#23
        "person_max_lines": 60, "person_max_tokens": 800,   # commonroom#573
        "person_stale_days": 180,        # commonroom#574
        "places_listed": 5, "places_days": 14, "session_start_max_tokens": 300, "fresh_start_days": 3, "fresh_start_places": 3,   # commonroom#578
+       "question_hours": 24,            # commonroom#577
        "owner_floor_weekly": 5}                                   # commonroom#241: the director's decision
 
 

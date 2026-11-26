@@ -1,1 +1,1 @@
-This session is {{why}}. Long or wandering sessions lose what the owner said. Offer him a fresh start once; the choice is his. Handover: `{{command}}`
+This session is {{why}}. Offer the owner a fresh start once; his choice. Handover: `{{command}}`
