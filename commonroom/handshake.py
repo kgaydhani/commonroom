@@ -926,6 +926,7 @@ def cmd_attach(args) -> int:
     return 0
 
 
+ANSWER_CHARS = 300   # the most of an answer that is kept; it returns as a short message
 ROUTE_HOWS = ("note", "hand", "message", "brief")
 
 
@@ -956,6 +957,12 @@ def _when(at: float) -> str:
     return datetime.fromtimestamp(at).strftime("%Y-%m-%d %H:%M")
 
 
+def _question_state(r: dict) -> str:
+    if r["answered_at"]:
+        return f"  [answered {_when(r['answered_at'])}: {r['answer']}]"
+    return f"  [question, answer due {_when(r['due'])}]"
+
+
 @_run
 def cmd_route(args) -> int:
     """`route list`, `route undo ID`, or `route TO "what was sent" --how note|hand|message|brief`: record where a
@@ -970,7 +977,8 @@ def cmd_route(args) -> int:
             for r in rows:
                 print(f"#{r['id']} {_when(r['at'])}  {r['from_place'] or '?'} -> {r['to_place']}  [{r['how']}]"
                       + (f" session {r['session']}" if r["session"] else "") + f"  {r['summary']}"
-                      + (f"  [undone {_when(r['undone_at'])}]" if r["undone_at"] else ""))
+                      + (f"  [undone {_when(r['undone_at'])}]" if r["undone_at"] else "")
+                      + (_question_state(r) if r.get("due") else ""))
             return 0
         if words[0] == "undo":
             if len(words) != 2 or not words[1].isdigit():
@@ -978,6 +986,16 @@ def cmd_route(args) -> int:
             if not ledger.undo_route(int(words[1])):
                 raise HandshakeError(f"refused: no route {words[1]} that is not already undone.")
             print(f"route {words[1]} marked undone")
+            return 0
+        if words[0] == "answer":
+            if len(words) != 3 or not words[1].isdigit():
+                raise HandshakeError("refused: `route answer ID \"the answer\"` (the number, then the text in quotes).")
+            text = sys.stdin.read() if words[2] == "-" else words[2]
+            if not text.strip():
+                raise HandshakeError("refused: say what the answer is.")
+            if not ledger.answer_route(int(words[1]), " ".join(text.split())[:ANSWER_CHARS]):
+                raise HandshakeError(f"refused: no open question {words[1]} (it is not a question, is undone, or is answered).")
+            print(f"route {words[1]} answered: it reaches the asking session at its next prompt")
             return 0
         if len(words) != 2:
             raise HandshakeError("refused: `route TO \"what was sent\"` (two arguments, the text in quotes).")
@@ -988,9 +1006,15 @@ def cmd_route(args) -> int:
         if args.how not in ROUTE_HOWS:
             raise HandshakeError(f"refused: --how must be one of {', '.join(ROUTE_HOWS)}.")
         origin = args.from_place or _place_here(load_registry())
+        if args.within is not None and not args.ask:
+            raise HandshakeError("refused: --within only goes with --ask.")
+        hours = args.within if args.within is not None else policy.DEFAULTS["question_hours"]
+        if args.ask and hours < 1:
+            raise HandshakeError("refused: --within is a whole number of hours, at least 1.")
         n = ledger.add_route(args.session or os.environ.get("CLAUDE_SESSION_ID", ""), origin, to_place.strip(),
-                             _one_line(text)[:200], args.how)
-        print(f"route {n}: {origin} -> {to_place.strip()} [{args.how}]")
+                             _one_line(text)[:200], args.how, due=time.time() + hours * 3600 if args.ask else None)
+        print(f"route {n}: {origin} -> {to_place.strip()} [{args.how}]"
+              + (f", answer due in {hours} hours: `room route answer {n} \"...\"`" if args.ask else ""))
         return 0
     finally:
         ledger.close()

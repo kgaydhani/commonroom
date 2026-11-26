@@ -35,6 +35,7 @@ COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
 PLACES_RECENT = read_way(handshake.TEMPLATES / "places-recent.md")
+ANSWER_BACK = read_way(handshake.TEMPLATES / "answer-back.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
@@ -45,6 +46,7 @@ OVERLAP = 64
 LIMIT = 2.0             # seconds: a hook still working after this adds nothing
 WORKER_WINDOW = 86400   # a folder a room worker ran in within the last day is a worker's folder
 SENDER_CHARS = 40
+ANSWERS_PER_PROMPT = 2  # answers added to one prompt
 LINE_CHARS = 160        # the most of one line in the places list
 
 
@@ -182,6 +184,32 @@ def cold_return(data: dict, now: float | None = None) -> str:
     return fill_way(COLD_RETURN, gap=_ago(now - turn[0]), context=f"{turn[1] // 1000}k", brief=named)
 
 
+def answers_back(data: dict) -> str:
+    """The answers to this session's questions (`room route answer`, commonroom#577), one short line each, each delivered
+    once. At most ANSWERS_PER_PROMPT, each at most ANSWER_CHARS long, so it fits the hook's text budget; the rest wait for the next prompt. Never in a worker."""
+    session = data.get("session_id")
+    if os.environ.get("COMMONROOM_WORKER") or not isinstance(session, str) or not session:
+        return ""
+    ledger = Ledger()
+    try:
+        rows = ledger.take_answers(session, ANSWERS_PER_PROMPT)
+    finally:
+        ledger.close()
+    return "\n".join(fill_way(ANSWER_BACK, place=r["to_place"], question=r["summary"][:LINE_CHARS // 2], answer=r["answer"])
+                     for r in rows)
+
+
+def prompt_context(data: dict) -> str:
+    """What the prompt hook adds: the cold-return offer and any answers back, each failing alone."""
+    parts = []
+    for part in (cold_return, answers_back):
+        try:
+            parts.append(part(data))
+        except Exception:   # noqa: BLE001
+            pass
+    return "\n".join(p for p in parts if p)
+
+
 def place_line(data: dict) -> str:
     """One short line for a folder that is a known place (and no project), or "" for any other folder or worker."""
     cwd = data.get("cwd")
@@ -256,7 +284,7 @@ def main(stdin=None, stdout=None, limit: float | None = None, event: str = EVENT
         try:
             data = json.loads(stdin.read() or "null")
             if isinstance(data, dict) and data.get("hook_event_name", event) == event:
-                found.append((context if event == EVENT else cold_return)(data))
+                found.append((context if event == EVENT else prompt_context)(data))
         except Exception:   # noqa: BLE001 - the hook must never fail a session
             pass
 
