@@ -929,7 +929,7 @@ def cmd_attach(args) -> int:
 ROUTE_HOWS = ("note", "hand", "message", "brief")
 
 
-def _here(reg: registry.Registry) -> str:
+def _place_here(reg: registry.Registry) -> str:
     """The place the command runs in: its project's name, else the folder's name."""
     try:
         return find(reg).name
@@ -939,7 +939,7 @@ def _here(reg: registry.Registry) -> str:
 
 def _record_crossing(reg: registry.Registry, to_place: str, summary: str, how: str, session: str | None = None) -> None:
     """A note or hand that crosses places is a route too. Never lets a ledger fault stop the note or hand."""
-    here = _here(reg)
+    here = _place_here(reg)
     if here == to_place:
         return
     try:
@@ -987,7 +987,7 @@ def cmd_route(args) -> int:
             raise HandshakeError("refused: say where it went and what was sent.")
         if args.how not in ROUTE_HOWS:
             raise HandshakeError(f"refused: --how must be one of {', '.join(ROUTE_HOWS)}.")
-        origin = args.from_place or _here(load_registry())
+        origin = args.from_place or _place_here(load_registry())
         n = ledger.add_route(args.session or os.environ.get("CLAUDE_SESSION_ID", ""), origin, to_place.strip(),
                              _one_line(text)[:200], args.how)
         print(f"route {n}: {origin} -> {to_place.strip()} [{args.how}]")
