@@ -190,6 +190,14 @@ def answers_back(data: dict) -> str:
     session = data.get("session_id")
     if os.environ.get("COMMONROOM_WORKER") or not isinstance(session, str) or not session:
         return ""
+    reader = Ledger.reader()   # read-only first: most prompts have no answer, and the hook never creates a ledger
+    if reader is None:
+        return ""
+    try:
+        if not reader.waiting_answers(session, 1):
+            return ""
+    finally:
+        reader.close()
     ledger = Ledger()
     try:
         rows = ledger.take_answers(session, ANSWERS_PER_PROMPT)

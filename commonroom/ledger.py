@@ -537,14 +537,17 @@ class Ledger:
                                   (text, time.time() if at is None else at, route_id))
         return cur.rowcount == 1
 
-    def take_answers(self, session: str, limit: int = 2) -> list[dict]:
-        """The answers to `session`'s questions not yet delivered, oldest first; each is marked delivered as it is taken,
-        so it reaches the session once."""
+    def waiting_answers(self, session: str, limit: int = 2) -> list[dict]:
+        """The answers to `session`'s questions not yet delivered, oldest first. Only reads."""
         if not session:
             return []
-        rows = [dict(r) for r in self.db.execute(
+        return [dict(r) for r in self.db.execute(
             "SELECT id, to_place, summary, answer FROM routes WHERE session=? AND answered_at IS NOT NULL "
             "AND delivered_at IS NULL AND undone_at IS NULL ORDER BY answered_at, id LIMIT ?", (session, limit))]
+
+    def take_answers(self, session: str, limit: int = 2) -> list[dict]:
+        """`waiting_answers`, each marked delivered as it is taken, so it reaches the session once."""
+        rows = self.waiting_answers(session, limit)
         taken = []
         with self.db:
             for r in rows:
