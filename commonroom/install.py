@@ -4,7 +4,9 @@ Install adds three things to the user's settings file (CLAUDE_CONFIG_DIR or ~/.c
 line (only if none is set), this checkout as a plugin marketplace, and the plugin enabled. It also writes `room-path`
 in the room home, which the plugin's launcher reads. It prints each change first; `--dry-run` writes nothing. Install
 records the file's original bytes and what it wrote in `install.json` in the room home; uninstall puts the original
-bytes back when the file is still as install left it, and otherwise removes only the keys install added."""
+bytes back when the file is still as install left it, and otherwise removes only the keys install added.
+The owner's limits.txt ships with no active rules; install merges its lines into permissions.deny and tracks
+individual rules, so removing limits or uninstalling preserves deny rules the owner already had."""
 from __future__ import annotations
 
 import base64
@@ -13,7 +15,7 @@ import json
 import os
 from pathlib import Path
 
-from commonroom import person, wire
+from commonroom import limits, person, wire
 
 MARKETPLACE = "commonroom"
 PLUGIN_KEY = "commonroom@commonroom"
@@ -145,8 +147,14 @@ def plan(settings: Path, root: Path) -> tuple[dict, list[str], list[str], bytes 
 def cmd_install(args) -> int:
     root, home = checkout(), room_home()
     settings = claude_dir() / "settings.json"
+    manifest = home / MANIFEST
+    limits_file = home / limits.FILENAME
+    limits_new = not limits_file.exists()
     try:
+        old = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
         data, added, skipped, raw = plan(settings, root)
+        rules = limits.load(limits_file)
+        deny_added, deny_removed = limits.plan(data, rules, old.get(str(settings), {}).get("deny_added", []))
     except (ValueError, OSError) as e:
         print(f"refused: {e}")
         return 2
@@ -168,6 +176,12 @@ def cmd_install(args) -> int:
         print(f"  add    {name}")
     for line in skipped:
         print(f"  skip   {line}")
+    print(f"Limits file: {limits_file}" + (" (create with commented examples; no active rules)" if limits_new else ""))
+    for rule in rules:
+        action = "add" if rule in deny_added else "keep"
+        print(f"  {action:6} permissions.deny: {rule} — a deny rule cannot be lifted from inside a session")
+    for rule in deny_removed:
+        print(f"  remove permissions.deny: {rule}")
     if path_change:
         print(f"Room home: {path_file}\n  write  {room_py}")
     print(f"Codex hooks file: {codex_file}")
@@ -183,21 +197,22 @@ def cmd_install(args) -> int:
             print(f'    schtasks /delete /tn "{n}" /f')
     else:
         print(f"Beat: {'already registered' if beat_done else 'register ' + beat_cmd}")
-    if not added and not path_change and not codex_added and not person_add and (beat_done or old_beats):
+    settings_change = bool(added or deny_added or deny_removed)
+    if not settings_change and not limits_new and not path_change and not codex_added and not person_add and (beat_done or old_beats):
         print("Nothing to change: already installed.")
         return 0
     if args.dry_run:
         print("Dry run: nothing written.")
         return 0
-    manifest = home / MANIFEST
-    old = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
     if path_change and PATH_KEY not in old:
         # Only the first install records what was there before, so a second one can't mistake our file for the user's.
         prev = path_file.read_text(encoding="utf-8") if path_file.exists() else None
         old[PATH_KEY] = {"previous": prev}
-    if added:
+    if settings_change:
         before = json.loads(raw.decode("utf-8")) if raw and raw.strip() else {}
         made = [p[0] for p, _ in _wanted(root) if len(p) > 1 and ".".join(p) in added and p[0] not in before]
+        if deny_added and "permissions" not in before:
+            made.append("permissions")
         new_bytes = _render(data, raw.decode("utf-8") if raw is not None else None)
         entry = old.get(str(settings), {})
         if entry and (raw is None or _sha(raw) != entry["written_sha"]):
@@ -207,6 +222,8 @@ def cmd_install(args) -> int:
         entry.setdefault("original", base64.b64encode(raw or b"").decode())
         entry["added"] = sorted(set(entry.get("added", [])) | set(added))
         entry["created"] = sorted(set(entry.get("created", [])) | set(made))
+        entry["deny_added"] = list(dict.fromkeys([r for r in entry.get("deny_added", []) if r in rules] + deny_added))
+        entry["deny_created"] = entry.get("deny_created", False) or (bool(deny_added) and "deny" not in before.get("permissions", {}))
         entry["written_sha"] = _sha(new_bytes)
         old[str(settings)] = entry
     if codex_added:
@@ -219,12 +236,14 @@ def cmd_install(args) -> int:
         ok, why = wire.beat_register(root)
         if ok:
             old[BEAT_KEY] = {"command": beat_cmd}
-    if added or path_change or codex_added or person_add or BEAT_KEY in old:
+    if settings_change or limits_new or path_change or codex_added or person_add or BEAT_KEY in old:
         home.mkdir(parents=True, exist_ok=True)
         manifest.write_text(json.dumps(old, indent=2) + "\n", encoding="utf-8")
-    if added:
+    if settings_change:
         settings.parent.mkdir(parents=True, exist_ok=True)
         settings.write_bytes(new_bytes)
+    if limits_new:
+        limits_file.write_bytes(limits.TEMPLATE.read_bytes())
     if path_change:
         home.mkdir(parents=True, exist_ok=True)
         path_file.write_text(room_py + "\n", encoding="utf-8")
@@ -287,6 +306,8 @@ def cmd_uninstall(args) -> int:
         else:
             for name in entry["added"]:
                 print(f"  remove {name}")
+            for rule in entry.get("deny_added", []):
+                print(f"  remove permissions.deny: {rule}")
     if codex_rec is not None:
         print(f"Codex hooks file: {codex_rec['file']}\n  remove our SessionStart and UserPromptSubmit entries")
     for rec in person_recs:
@@ -307,7 +328,8 @@ def cmd_uninstall(args) -> int:
         elif f.exists():
             raw = f.read_bytes()
             data = json.loads(raw.decode("utf-8"))
-            if any([_remove(data, n, root, entry.get("created", [])) for n in entry["added"]]):
+            changed = limits.remove(data, entry)
+            if any([_remove(data, n, root, entry.get("created", [])) for n in entry["added"]]) or changed:
                 f.write_bytes(_render(data, raw.decode("utf-8")))
     if codex_rec is not None:
         wire.codex_remove(Path(codex_rec["file"]), root, codex_rec["created"])
