@@ -37,6 +37,8 @@ test_before_review = true
 # `[agent:director] REVIEW: APPROVE` after the last commit (commonroom#49). A glob can't pick out just the budget parts
 # of config.py, so the whole file is in.
 director_paths = ["commonroom/gate.py", "commonroom/config.py", "room.toml", "commonroom/ways/policy.toml"]
+# A PR that only adds lines to policy.toml (a new tunable) needs no stamp; a changed or removed line still does (#672).
+director_paths_additive = ["commonroom/ways/policy.toml"]
 # An approval survives clean merges of main once the room has run the tests on the merged head itself, so a merge of
 # main costs no reviewer run (commonroom#226). Runs are bounded by [checks] max_minutes, 10 when unset.
 carry_tested_approval = true

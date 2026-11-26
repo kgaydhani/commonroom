@@ -1406,6 +1406,9 @@ class Dispatcher:
         self.looking_logged = None
         self.stamp_only = False   # set by director_trigger: every reason came from ready_for_director (commonroom#342)
         self.director_paths = list((cfg.get("merge") or {}).get("director_paths") or [])
+        # Director paths where a PR that only adds lines needs no stamp (commonroom#672). Empty: every change needs it.
+        self.director_paths_additive = list((cfg.get("merge") or {}).get("director_paths_additive") or [])
+        self.additive_cache = {}   # (PR number, head sha, files) -> the PR's additive-only director files
         self.carry_cache = {}   # (stamp sha, head sha) -> may the stamp be carried; one compare per pair per pass
         # Run the tests in code to carry an approval across clean merges of main (commonroom#226). Off unless the
         # project asks, and never with CI, which already tests every head.
@@ -2794,9 +2797,30 @@ class Dispatcher:
             return [f"PR #{number} touches playtest paths; updating the playtest issue failed: {str(exc)[:100]}"]
 
     def director_files(self, detail: dict) -> list[str]:
-        """The PR's changed files that match `[merge] director_paths`."""
-        return [f["path"] for f in detail.get("files") or [] if f.get("path")
-                and any(fnmatch.fnmatchcase(f["path"], glob) for glob in self.director_paths)]
+        """The PR's changed files that match `[merge] director_paths`, less those in `director_paths_additive` whose
+        patch only adds lines (commonroom#672)."""
+        found = [f["path"] for f in detail.get("files") or [] if f.get("path")
+                 and any(fnmatch.fnmatchcase(f["path"], glob) for glob in self.director_paths)]
+        if not self.director_paths_additive or not found:
+            return found
+        added = self.additive_only(detail, [f for f in found if any(
+            fnmatch.fnmatchcase(f, glob) for glob in self.director_paths_additive)])
+        return [f for f in found if f not in added]
+
+    def additive_only(self, detail: dict, candidates: list[str]) -> set:
+        """Which of `candidates` the PR changes by adding lines only, read from its patch at its head. A patch that
+        can't be read, or any error, leaves the file needing the stamp."""
+        if not candidates:
+            return set()
+        key = (detail.get("number"), head_sha(detail), tuple(candidates))
+        if key not in self.additive_cache:
+            try:
+                patches = self.board.own_patches(detail.get("baseRefName") or "main", head_sha(detail))
+                self.additive_cache[key] = {f for f in candidates if patches.get(f)
+                                            and not any(line.startswith("-") for line in patches[f].splitlines())}
+            except Exception:
+                return set()   # not cached: the next pass asks again
+        return self.additive_cache[key]
 
     def needs_director(self, detail: dict) -> bool:
         """The PR touches director paths, or is labelled `needs:director` because it needs lines in another project's

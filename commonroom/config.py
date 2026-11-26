@@ -53,6 +53,8 @@ DEFAULTS = {
     "share": {},
     # `director_paths`: globs of repo-relative files. A PR that changes one merges only once a `[agent:director]`
     # `REVIEW: APPROVE` follows its last commit, on top of the usual approval (commonroom#49). Empty: no extra gate.
+    # `director_paths_additive`: globs (a subset of `director_paths`) where a PR whose patch only adds lines needs no
+    # stamp for that file; a removed or changed line, or an unreadable patch, still does (commonroom#672). Empty: none.
     "merge": {},
     # `scratch_env`: environment variables a Codex worker gets pointed at `<worktree>/.scratch/<name lowercased>`,
     # because its sandbox writes only inside the worktree (commonroom#81). Empty: the environment is unchanged.
