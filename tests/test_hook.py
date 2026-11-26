@@ -22,6 +22,8 @@ from commonroom.ledger import Ledger
 ROOT = Path(__file__).resolve().parent.parent
 TEMPLATE = ROOT / "commonroom" / "ways" / "handshake" / "session-start.md"
 GIT = shutil.which("git")
+LIVE_LIMIT = hook.LIMIT   # the hook's real limit, read before any test patches it
+TEST_LIMIT = 30.0         # seconds: a loaded machine must not empty the output of a test that expects some
 
 
 def git(cwd, *args):
@@ -40,6 +42,9 @@ class Hook(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("COMMONROOM_WORKER", None)
+        limit = mock.patch.object(hook, "LIMIT", TEST_LIMIT)   # the one place the tests' hook limit is set
+        limit.start()
+        self.addCleanup(limit.stop)
         self.alpha = self.tmp / "work" / "alpha"
         (self.alpha / "src").mkdir(parents=True)
         (self.alpha / "room.toml").write_text('[project]\nname = "alpha"\n', encoding="utf-8")
@@ -64,7 +69,7 @@ class Hook(unittest.TestCase):
         p = handshake.find(registry.load(), "alpha")
         return handshake.write_note(handshake.prepare(p), text, sender, now=at)
 
-    def run_hook(self, stdin, limit=hook.LIMIT):
+    def run_hook(self, stdin, limit=TEST_LIMIT):
         """`room hook session-start` with `stdin`: (exit code, stdout, stderr)."""
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
@@ -362,6 +367,20 @@ class Silent(Hook):
             self.assertEqual(cli.main(["hook", "stop"]), 0)
             self.assertEqual(cli.main(["hook"]), 0)
         self.assertEqual((out.getvalue(), err.getvalue()), ("", ""))
+
+
+class Margin(Hook):
+    def test_a_slow_hook_still_gives_its_output_under_the_test_limit_and_the_live_limit_is_unchanged(self):
+        self.register()
+        real = hook.context
+
+        def slow(data):
+            time.sleep(2.5)
+            return real(data)
+
+        with mock.patch.object(hook, "context", slow):
+            self.assertIn("alpha", self.added(self.alpha))
+        self.assertEqual(LIVE_LIMIT, 2.0)
 
 
 class Beside(Hook):

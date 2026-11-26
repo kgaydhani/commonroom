@@ -374,5 +374,5 @@ class PersonImportTest(InstallTest):
         for name, event in (("UserPromptSubmit", hook.PROMPT), ("SessionStart", hook.EVENT)):
             out = io.StringIO()
             data = {"session_id": "s", "cwd": str(self.home), "hook_event_name": name, "prompt": "hi"}
-            hook.main(stdin=io.StringIO(json.dumps(data)), stdout=out, event=event)
+            hook.main(stdin=io.StringIO(json.dumps(data)), stdout=out, event=event, limit=30.0)
             self.assertNotIn("zebra-marker", out.getvalue())
