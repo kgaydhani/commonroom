@@ -115,3 +115,11 @@ person_max_tokens = { value = 800, min = 1 }
 # Days (180): a person-file line older than this is a steward finding, so the owner can confirm or remove it. The
 # steward never deletes a line (commonroom#574: a third of one system's memories were stale after about 30 sessions).
 person_stale_days = { value = 180, min = 1 }
+
+# The session-start hook names the places used lately (commonroom#578, docs/layer.md): at most `places_listed` of them,
+# one line each, none older than `places_days` days; 0 listed turns the list off. The hook's whole text, the place
+# line and the list, stays inside `session_start_max_tokens` (tokens are characters / 4), and the longest text a
+# registered project gets is held under it by a test. Room-wide only: the text is the owner's, the same everywhere.
+places_listed = { value = 5, min = 0 }
+places_days = { value = 14, min = 1 }
+session_start_max_tokens = { value = 300, min = 1 }

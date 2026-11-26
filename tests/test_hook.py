@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from commonroom import board, cli, handshake, hook, places, registry
+from commonroom import board, cli, handshake, hook, places, policy, registry
 from commonroom.ledger import Ledger
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -234,6 +234,76 @@ class Places(Hook):
         self.know(self.elsewhere)
         self.added(self.elsewhere)
         self.assertEqual(list(self.elsewhere.iterdir()), [])
+
+
+class RecentPlaces(Hook):
+    """commonroom#578: a place's session start also names the other places used in the last 14 days."""
+    know = Places.know
+
+    def know_at(self, name, days_ago, description="", make=True):
+        folder = self.tmp / name
+        if make:
+            folder.mkdir(exist_ok=True)
+        data = places.load()
+        data["places"][places.sessions.path_key(folder)] = {
+            "path": str(folder), "last": time.time() - days_ago * 86400, "sessions": ["s"], "description": description}
+        places.save(data)
+        return folder
+
+    def test_the_other_recent_places_are_listed_one_line_each_newest_first(self):
+        self.know(self.elsewhere, "scratch")
+        a = self.know_at("older", 10, "old notes")
+        b = self.know_at("newer", 1)
+        lines = self.added(self.elsewhere).split("\n")
+        self.assertEqual(lines[1], "Other places used in the last 14 days:")
+        self.assertEqual(lines[2:], [f"- `newer` ({b})", f"- `older` ({a}): old notes"])
+
+    def test_old_gone_and_current_places_and_the_count_limit_are_left_out(self):
+        self.know(self.elsewhere)
+        self.know_at("stale", 15)
+        self.know_at("gone", 1, make=False)
+        for i in range(7):
+            self.know_at(f"p{i}", i / 10)
+        text = self.added(self.elsewhere)
+        self.assertNotIn("stale", text)
+        self.assertNotIn("gone", text)
+        self.assertNotIn("- `elsewhere`", text)
+        self.assertEqual([l[:5] for l in text.split("\n")[2:]], [f"- `p{i}" for i in range(5)])
+
+    def test_a_count_of_0_turns_the_list_off(self):
+        self.know(self.elsewhere, "x")
+        self.know_at("other", 1)
+        with mock.patch.dict(policy.DEFAULTS, {"places_listed": 0}):
+            self.assertEqual(self.added(self.elsewhere).count("\n"), 0)
+
+    def test_the_whole_text_stays_inside_the_budget_even_with_long_paths_and_descriptions(self):
+        self.know(self.elsewhere, "d" * 400)
+        for i in range(8):
+            self.know_at(f"{'n' * 150}{i}", 1, "d" * 500)
+        text = self.added(self.elsewhere)
+        self.assertTrue(text.split("\n")[0].startswith("This folder is `elsewhere`"))
+        self.assertLessEqual(-(-len(text) // 4), policy.DEFAULTS["session_start_max_tokens"])
+        self.assertIn("- `nnn", text)
+
+    def test_the_longest_project_text_fits_the_budget_with_the_list_after_it(self):
+        self.register()
+        for n in range(8):
+            self.know_at(f"{'n' * 150}{n}", 1, "d" * 500)
+        for n in (0, 1, 2):
+            self.note("Please write your charter.", "director" * 5)
+        text = self.added(self.alpha)
+        self.assertLessEqual(-(-len(text) // 4), policy.DEFAULTS["session_start_max_tokens"])
+        self.assertTrue(text.startswith("Common Room keeps alpha"))
+        self.assertIn("Other places", text)
+        self.assertIn("- `nnn", text)
+
+    def test_a_project_session_gets_the_list_without_its_own_folder(self):
+        self.register()
+        self.know(self.alpha)
+        other = self.know_at("other", 1, "side")
+        text = self.added(self.alpha)
+        self.assertIn(f"- `other` ({other}): side", text)
+        self.assertNotIn("- `alpha`", text)
 
 
 class Silent(Hook):
