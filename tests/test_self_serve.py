@@ -638,6 +638,51 @@ class NeedsDirectorLabel(Base):
             self.assertIn("another project's `room.toml`", text, doc.name)
 
 
+class AdditiveDirectorPaths(Base):
+    """commonroom#672: a PR that only adds lines to a `director_paths_additive` file needs no director stamp."""
+    POLICY = "ways/policy.toml"
+
+    def run_pr(self, files, patches, additive=(POLICY,), board_patches=True):
+        board = MergeBoard([pr(5, 40)], {5: touching(*files)})
+        board.own_patches = (lambda base, head: patches) if board_patches else (lambda base, head: 1 / 0)
+        cfg = project_cfg(self.tmp.name)
+        cfg["merge"] = {"director_paths": [self.POLICY, "commonroom/gate.py"]}
+        if additive is not None:
+            cfg["merge"]["director_paths_additive"] = list(additive)
+        self.dispatcher(cfg, board).housekeeping()
+        return board.merged
+
+    ADD = "\n".join(["@@ -3,2 +3,4 @@ [x]", " a = 1", "+# new", "+b = 2", " c = 3"])
+
+    def test_only_added_lines_merge_on_the_reviewers_approval(self):
+        self.assertEqual(self.run_pr([self.POLICY], {self.POLICY: self.ADD}), [5])
+
+    def test_a_changed_or_removed_value_still_waits(self):
+        for patch in ("@@ -1,2 +1,2 @@\n-a = 1\n+a = 2", "@@ -1,2 +1,1 @@\n a = 1\n-b = 2"):
+            self.assertEqual(self.run_pr([self.POLICY], {self.POLICY: patch}), [], patch)
+
+    def test_an_unreadable_patch_waits(self):
+        self.assertEqual(self.run_pr([self.POLICY], {self.POLICY: None}), [])
+        self.assertEqual(self.run_pr([self.POLICY], {}, board_patches=False), [])
+
+    def test_another_director_path_still_waits(self):
+        patches = {self.POLICY: self.ADD, "commonroom/gate.py": self.ADD}
+        self.assertEqual(self.run_pr([self.POLICY, "commonroom/gate.py"], patches), [])
+
+    def test_without_the_key_nothing_changes(self):
+        for additive in (None, ()):
+            self.assertEqual(self.run_pr([self.POLICY], {self.POLICY: self.ADD}, additive=additive), [])
+
+    def test_the_label_still_waits(self):
+        board = MergeBoard([pr(5, 40, ["needs:director"])], {5: touching(self.POLICY)})
+        board.details[5]["labels"] = [{"name": "needs:director"}]
+        board.own_patches = lambda base, head: {self.POLICY: self.ADD}
+        cfg = project_cfg(self.tmp.name)
+        cfg["merge"] = {"director_paths": [self.POLICY], "director_paths_additive": [self.POLICY]}
+        self.dispatcher(cfg, board).housekeeping()
+        self.assertEqual(board.merged, [])
+
+
 class LiveRepo(Base):
     def setUp(self):
         super().setUp()
