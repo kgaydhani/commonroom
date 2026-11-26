@@ -1,0 +1,19 @@
+# Starter room.toml written by `room init --kind research`. Edit it, then register the project with `room projects add`.
+# This project keeps its items in files in its room folder, not on GitHub: no repo is needed.
+
+[project]
+# The project's name in the room (the folder name unless you changed it).
+name = {name}
+# Items live in files, not in GitHub issues. `room add` puts one on the board; `room items` lists them.
+board = "local"
+# One sentence on what this project is for. Agents read it to judge whether work serves it. Replace this before the first run.
+mission = "Describe what this project is for."
+
+[goal]
+# The milestone the room works on: items carry it. Name the outcome this project is after.
+milestone = {goal}
+
+[roles]
+# Who does each role, as "provider:model" in order of preference. Each role needs a file in .claude/agents/.
+director = ["claude:opus"]
+researcher = ["claude:sonnet"]

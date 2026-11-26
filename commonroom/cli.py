@@ -948,7 +948,7 @@ def cmd_doctor(args) -> int:
 
 def cmd_init(args) -> int:
     """Write a starter room.toml and .claude/agents/ files into PATH; refuses if any exists. Does not register the project."""
-    return starter.run(args.path, args.goal)
+    return starter.run(args.path, args.goal, kind=args.kind)
 
 
 def cmd_projects(args) -> int:
@@ -1408,7 +1408,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("config", help="show or change a project's room.toml; `set` prints the diff and writes only with --yes"); p.add_argument("action", choices=("show", "set")); p.add_argument("project"); p.add_argument("key", nargs="?"); p.add_argument("value", nargs="?"); p.add_argument("--yes", action="store_true"); p.set_defaults(func=cmd_config)
     p = sub.add_parser("breaker", help="list or reset breakers"); p.add_argument("action", choices=("list", "reset")); p.add_argument("--kind"); p.set_defaults(func=cmd_breaker)
     sub.add_parser("doctor", help="read-only first-run checks: tools, gh login, registry, each project's room.toml and roles").set_defaults(func=cmd_doctor)
-    p = sub.add_parser("init", help="write a starter room.toml and agent files into PATH (never overwrites; does not register it)"); p.add_argument("path"); p.add_argument("--goal", metavar="MILESTONE", help="the goal milestone's name"); p.set_defaults(func=cmd_init)
+    p = sub.add_parser("init", help="write a starter room.toml and agent files into PATH (never overwrites; does not register it)"); p.add_argument("path"); p.add_argument("--goal", metavar="MILESTONE", help="the goal milestone's name"); p.add_argument("--kind", choices=sorted(starter.KINDS), default="code", help="code (the default) or research: a local-board project of research and trials"); p.set_defaults(func=cmd_init)
     p = sub.add_parser("projects", help="list or change the projects and their shares (no model call)"); p.set_defaults(func=cmd_projects)
     ps = p.add_subparsers(dest="action")
     q = ps.add_parser("add", help="add a project"); q.add_argument("name"); q.add_argument("path"); q.add_argument("--share", type=float, required=True)

@@ -12,6 +12,7 @@ from pathlib import Path
 
 TEMPLATES = Path(__file__).parent / "ways" / "templates"
 AGENTS = ("builder", "reviewer", "director")
+KINDS = {"code": ("", AGENTS), "research": ("research", ("researcher", "director"))}   # kind -> (template folder, agent files)
 DEFAULT_GOAL = "First milestone"
 
 
@@ -20,19 +21,21 @@ def project_name(root: Path) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "-", root.name) or "project"
 
 
-def targets(root: Path) -> list[Path]:
-    return [root / "room.toml", *(root / ".claude" / "agents" / f"{role}.md" for role in AGENTS)]
+def targets(root: Path, kind: str = "code") -> list[Path]:
+    return [root / "room.toml", *(root / ".claude" / "agents" / f"{role}.md" for role in KINDS[kind][1])]
 
 
-def render(root: Path, goal: str) -> dict[Path, str]:
+def render(root: Path, goal: str, kind: str = "code") -> dict[Path, str]:
     """The text of each file to write. Name and goal are filled in as TOML strings."""
-    toml = (TEMPLATES / "room.toml").read_text(encoding="utf-8")
+    folder, agents = KINDS[kind]
+    templates = TEMPLATES / folder
+    toml = (templates / "room.toml").read_text(encoding="utf-8")
     # ensure_ascii=False: json's surrogate-pair escapes for characters above U+FFFF are not valid TOML.
     toml = (toml.replace("{name}", json.dumps(project_name(root), ensure_ascii=False))
             .replace("{goal}", json.dumps(goal, ensure_ascii=False)))
     files = {root / "room.toml": toml}
-    for role in AGENTS:
-        files[root / ".claude" / "agents" / f"{role}.md"] = (TEMPLATES / f"{role}.md").read_text(encoding="utf-8")
+    for role in agents:
+        files[root / ".claude" / "agents" / f"{role}.md"] = (templates / f"{role}.md").read_text(encoding="utf-8")
     return files
 
 
@@ -41,19 +44,22 @@ def next_step(root: Path) -> str:
     return "room projects add " + quote([project_name(root), str(root)]) + " --share 10"
 
 
-def run(path: str, goal: str | None = None, out=print, err=None) -> int:
+def run(path: str, goal: str | None = None, out=print, err=None, kind: str = "code") -> int:
     root = Path(path).resolve()
     err = err or out
     if not root.is_dir():
         err(f"refused: {root} is not a folder")
         return 1
-    existing = [t for t in targets(root) if t.exists()]
+    if kind not in KINDS:
+        err(f"refused: unknown --kind {kind!r}; one of {', '.join(KINDS)}")
+        return 1
+    existing = [t for t in targets(root, kind) if t.exists()]
     if existing:
         err("refused: nothing written, these already exist:")
         for t in existing:
             err(f"  {t}")
         return 1
-    files = render(root, goal or DEFAULT_GOAL)
+    files = render(root, goal or DEFAULT_GOAL, kind)
     try:
         tomllib.loads(files[root / "room.toml"])
     except tomllib.TOMLDecodeError as exc:
@@ -63,6 +69,6 @@ def run(path: str, goal: str | None = None, out=print, err=None) -> int:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8", newline="\n")
         out(f"wrote {target}")
-    out("edit [project] repo in room.toml, then register the project (set --share to its slice of the allowance):")
+    out("edit [project] mission in room.toml, then" if kind == "research" else "edit [project] repo in room.toml, then register the project (set --share to its slice of the allowance):")
     out(f"  {next_step(root)}")
     return 0
