@@ -84,6 +84,16 @@ CREATE TABLE IF NOT EXISTS findings (
     since REAL NOT NULL,
     PRIMARY KEY (project, invariant, number)
 );
+CREATE TABLE IF NOT EXISTS routes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    session TEXT NOT NULL DEFAULT '',
+    from_place TEXT NOT NULL DEFAULT '',
+    to_place TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    how TEXT NOT NULL,
+    undone_at REAL
+);
 CREATE TABLE IF NOT EXISTS heartbeat_runs (
     project TEXT NOT NULL,
     command TEXT NOT NULL,
@@ -488,6 +498,27 @@ class Ledger:
         return [dict(r) for r in self.db.execute(
             "SELECT invariant, number, detail, since FROM findings WHERE project=? ORDER BY since, invariant, number",
             (project or "",))]
+
+    # Routes: where a session sent something (commonroom#576, docs/layer.md). Recorded by the session's own command,
+    # never classified by a model; one can be marked undone, and stays in the list.
+    def add_route(self, session: str, from_place: str, to_place: str, summary: str, how: str,
+                  at: float | None = None) -> int:
+        with self.db:
+            cur = self.db.execute("INSERT INTO routes (at, session, from_place, to_place, summary, how) VALUES (?,?,?,?,?,?)",
+                                  (time.time() if at is None else at, session or "", from_place or "", to_place, summary, how))
+        return cur.lastrowid
+
+    def routes(self, limit: int | None = None) -> list[dict]:
+        """Every route, newest first."""
+        sql = "SELECT id, at, session, from_place, to_place, summary, how, undone_at FROM routes ORDER BY at DESC, id DESC"
+        return [dict(r) for r in self.db.execute(sql + (f" LIMIT {int(limit)}" if limit else ""))]
+
+    def undo_route(self, route_id: int, at: float | None = None) -> bool:
+        """Mark a route undone. False when there is no such route or it was already undone."""
+        with self.db:
+            cur = self.db.execute("UPDATE routes SET undone_at=? WHERE id=? AND undone_at IS NULL",
+                                  (time.time() if at is None else at, route_id))
+        return cur.rowcount == 1
 
     def record_lineage(self, project: str, file: str, old: str, new: str, reason: str = "", context: str = "",
                        branch: str = "", commit: str = "", at: float | None = None, mark: str | None = None) -> bool:
