@@ -1116,6 +1116,14 @@ def owner_comments(issue: dict) -> list[dict]:
     return [c for c in issue.get("comments") or [] if not (c.get("body") or "").lstrip().startswith("[")]
 
 
+def handed_to_interactive(issue: dict) -> bool:
+    """The director's newest comment says the issue is for the interactive session. A newer comment from anyone else
+    (a builder blocked again) makes it an escalation again. Comments are oldest first and already trusted-only."""
+    comments = issue.get("comments") or []
+    body = (comments[-1].get("body") or "").lstrip() if comments else ""
+    return body.startswith("[agent:director]") and INTERACTIVE_PHRASE in body.lower()
+
+
 # Policy ------------------------------------------------------------------------------------------
 MIN_FREE_GB = {"room": 3, "project": 8}
 
@@ -3844,7 +3852,7 @@ class Dispatcher:
             names = labels(issue)
             if "needs:director" in names:
                 # Only the owner's interactive session can do this one; a headless run could only re-read it (commonroom#134).
-                if INTERACTIVE_PHRASE in (issue.get("body") or "").lower():
+                if INTERACTIVE_PHRASE in (issue.get("body") or "").lower() or handed_to_interactive(issue):
                     interactive.append(f"#{issue['number']} waits for the interactive session")
                 else:
                     reasons.append(f"#{issue['number']} escalated to the director")

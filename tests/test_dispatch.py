@@ -551,6 +551,19 @@ class WithLedger(unittest.TestCase):
         issues.append(issue(141, ["needs:director"], body="Please decide", milestone=None))
         self.assertIn("#141 escalated to the director", d.director_trigger())
 
+    def test_director_comment_handing_an_escalation_to_the_interactive_session(self):
+        handoff = {"body": "[agent:director] This is Interactive session work."}
+        issues = [issue(30, ["status:ready", "role:builder"]),
+                  issue(150, ["needs:director"], body="Please decide", comments=[handoff], milestone=None)]
+        d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
+        self.assertIsNone(d.director_trigger())
+        issues[1] = issue(150, ["needs:director"], body="Please decide",
+                          comments=[handoff, {"body": "[agent:builder] blocked again"}], milestone=None)
+        self.assertEqual(d.director_trigger(), "#150 escalated to the director")
+        issues[1] = issue(150, ["needs:director"], body="Please decide",
+                          comments=[{"body": "[agent:builder] blocked"}, {"body": "[agent:director] decided: retry"}], milestone=None)
+        self.assertEqual(d.director_trigger(), "#150 escalated to the director")
+
     def test_nothing_ready_counts_only_the_goal_milestone(self):
         issues = [issue(31, [], milestone="Later"), issue(32, [], milestone=None)]
         d = dispatch.Dispatcher(cfg_with(self.tmp.name), self.ledger, board=FakeBoard(issues), log=lambda *_: None)
