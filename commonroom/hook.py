@@ -35,6 +35,11 @@ COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
 PLACES_RECENT = read_way(handshake.TEMPLATES / "places-recent.md")
+FRESH_START = read_way(handshake.TEMPLATES / "fresh-start.md")
+OFFERED = "session-offers.json"   # in the room home: the sessions already offered a fresh start
+OFFER_KEEP = 90 * 86400          # seconds an offered session is remembered
+_CWD_VALUE = re.compile(rb'"cwd"\s*:\s*("(?:[^"\\]|\\.)*")')
+_STAMP_VALUE = re.compile(rb'"timestamp"\s*:\s*("[^"]*")')
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
 TAIL = 524288           # bytes: only the end of a transcript is read, for its last assistant turn
@@ -182,6 +187,79 @@ def cold_return(data: dict, now: float | None = None) -> str:
     return fill_way(COLD_RETURN, gap=_ago(now - turn[0]), context=f"{turn[1] // 1000}k", brief=named)
 
 
+def _span(path, budget: float = LIMIT / 2) -> tuple[float | None, int]:
+    """(time of the transcript's first timestamp, number of distinct folders its lines name), read in one pass that
+    keeps no text; (None, 0) when it cannot be read. What was seen is returned when `budget` seconds run out."""
+    stop = time.monotonic() + budget
+    first, folders = None, set()
+    try:
+        with open(path, "rb") as handle:
+            for raw in handle:
+                if time.monotonic() > stop:
+                    break
+                if first is None and (m := _STAMP_VALUE.search(raw)):
+                    try:
+                        first = datetime.fromisoformat(json.loads(m.group(1))).timestamp()
+                    except (ValueError, OverflowError):
+                        pass
+                if (m := _CWD_VALUE.search(raw)):
+                    try:
+                        if isinstance(cwd := json.loads(m.group(1)), str) and cwd:
+                            folders.add(sessions.path_key(cwd))
+                    except ValueError:
+                        pass
+    except (OSError, TypeError, ValueError):
+        return None, 0
+    return first, len(folders)
+
+
+def _offered(session: str, now: float, record: bool = False) -> bool:
+    """Whether `session` was already offered a fresh start; with `record`, notes it as offered (the one write the hook
+    makes, to a small file in the room home, beside the places file). Entries older than OFFER_KEEP are dropped."""
+    path = places.path_file().with_name(OFFERED)
+    try:
+        seen = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(seen, dict):
+            seen = {}
+    except (OSError, ValueError):
+        seen = {}
+    if session in seen or not record:
+        return session in seen
+    seen = {k: v for k, v in seen.items() if isinstance(v, (int, float)) and now - v < OFFER_KEEP} | {session: now}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(seen, sort_keys=True), encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+    return False
+
+
+def fresh_start(data: dict, now: float | None = None) -> str:
+    """The text to add for one UserPromptSubmit input, or "": the session began more than `fresh_start_days` days ago or
+    has worked in more than `fresh_start_places` folders, and has not been told so yet (commonroom#580). It offers
+    once per session and never blocks (axiom A0); it works in any folder, not only in a project's."""
+    now = time.time() if now is None else now
+    path, session = data.get("transcript_path"), data.get("session_id")
+    if os.environ.get("COMMONROOM_WORKER") or not isinstance(path, str) or not isinstance(session, str) or not session             or _offered(session, now):
+        return ""
+    began, count = _span(path)
+    days, limit = policy.DEFAULTS["fresh_start_days"], policy.DEFAULTS["fresh_start_places"]
+    if began is not None and now - began > days * 86400:
+        why = f"{int((now - began) // 86400)} days old"
+    elif count > limit:
+        why = f"{count} folders wide"
+    else:
+        return ""
+    ledger = Ledger.reader()
+    try:
+        p = _project(data, now, ledger)
+    finally:
+        if ledger is not None:
+            ledger.close()
+    command = f"room handoff {p.name if p else '<project>'} --session {session} --reason <text>"
+    _offered(session, now, record=True)
+    return fill_way(FRESH_START, why=why, command=command)
+
+
 def place_line(data: dict) -> str:
     """One short line for a folder that is a known place (and no project), or "" for any other folder or worker."""
     cwd = data.get("cwd")
@@ -256,7 +334,10 @@ def main(stdin=None, stdout=None, limit: float | None = None, event: str = EVENT
         try:
             data = json.loads(stdin.read() or "null")
             if isinstance(data, dict) and data.get("hook_event_name", event) == event:
-                found.append((context if event == EVENT else cold_return)(data))
+                if event == EVENT:
+                    found.append(context(data))
+                else:
+                    found.append("\n".join(t for t in (cold_return(data), fresh_start(data)) if t))
         except Exception:   # noqa: BLE001 - the hook must never fail a session
             pass
 
