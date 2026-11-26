@@ -30,6 +30,13 @@ Written in response to [postmortem-v1.md](postmortem-v1.md).
 | Dashboard | `room dashboard` at http://127.0.0.1:8770: one plain page (commonroom#248, `commonroom/page.py`): the week, the gate's and the pie's verdicts, the pie (a row per project and the owner's slice, estimates marked), what waits on the owner, and each project folded (working or resting until, what landed, open breakers). `/api/state` is the raw detail | rebuilt 2026-11-21 |
 
 ## How the owner takes part
+
+`room install` creates `<room home>/limits.txt` with commented examples and no active limits. The owner can add Claude
+Code permission rules, one per line, then preview with `room install --dry-run` and apply with `room install`. Each
+rule is shown with the notice that it cannot be lifted from inside a session. These are user-level `permissions.deny`
+rules, applying across projects; project settings are untouched. Reinstall applies list edits, and `room uninstall`
+removes only rules Room added. The list stays in the room home for the owner to keep or edit (commonroom#582).
+
 There are two channels, and they mean different things.
 
 | | Executive channel | Room channel |

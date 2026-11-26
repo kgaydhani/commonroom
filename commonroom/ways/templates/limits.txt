@@ -1,0 +1,13 @@
+# What must never happen: the owner's limits, empty until you choose them.
+# One Claude Code permission rule per line: Tool or Tool(specifier).
+# Blank lines and lines starting with # are ignored. Examples (inactive):
+# Bash(git push --force *)
+# Read(~/.ssh/**)
+# Edit(~/.ssh/**)
+#
+# Run room install --dry-run to preview, then room install to apply edits.
+# Rules go in user-level Claude Code settings, applying in every project.
+# A deny rule cannot be lifted from inside a session, even in bypass mode.
+# Remove a line and run room install to remove only the rule Room added.
+# room uninstall removes Room's rules; this file stays yours.
+# Syntax: https://code.claude.com/docs/en/permissions
