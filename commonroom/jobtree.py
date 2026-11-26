@@ -45,11 +45,13 @@ def _kernel():
     return k
 
 
-def start(command: str, cwd: str) -> tuple[subprocess.Popen, object]:
+def start(command: str, cwd: str, capture: bool = False) -> tuple[subprocess.Popen, object]:
     """Start `command` in a shell, inside a kill-on-close job when Windows allows it. Returns (process, job or None).
-    The process starts suspended and runs only once it is in the job, so no child can slip out first."""
+    The process starts suspended and runs only once it is in the job, so no child can slip out first.
+    `capture` gives it separate stdout and stderr pipes to read; otherwise it shares ours."""
+    pipes = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE} if capture else {}
     if os.name != "nt":
-        return subprocess.Popen(command, shell=True, cwd=cwd, start_new_session=True), None
+        return subprocess.Popen(command, shell=True, cwd=cwd, start_new_session=True, **pipes), None
     job = None
     try:
         k = _kernel()
@@ -60,11 +62,11 @@ def start(command: str, cwd: str) -> tuple[subprocess.Popen, object]:
         info.BasicLimitInformation.LimitFlags = _KILL_ON_CLOSE
         if not k.SetInformationJobObject(job, _EXTENDED_LIMIT_INFO, ctypes.byref(info), ctypes.sizeof(info)):
             raise OSError("job limits refused")
-        process = subprocess.Popen(command, shell=True, cwd=cwd, creationflags=CREATE_SUSPENDED)
+        process = subprocess.Popen(command, shell=True, cwd=cwd, creationflags=CREATE_SUSPENDED, **pipes)
     except OSError:
         if job:
             _close(job)
-        return subprocess.Popen(command, shell=True, cwd=cwd), None
+        return subprocess.Popen(command, shell=True, cwd=cwd, **pipes), None
     handle = k.OpenProcess(_PROCESS_ALL_ACCESS, False, process.pid)
     ok = bool(handle) and bool(k.AssignProcessToJobObject(job, handle))
     resumed = False
