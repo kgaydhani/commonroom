@@ -285,14 +285,25 @@ class RecentPlaces(Hook):
         self.assertLessEqual(-(-len(text) // 4), policy.DEFAULTS["session_start_max_tokens"])
         self.assertIn("- `nnn", text)
 
-    def test_the_longest_project_text_fits_the_budget_too(self):
+    def test_the_longest_project_text_fits_the_budget_with_the_list_after_it(self):
         self.register()
-        self.know_at("other", 1)
-        for n in (0, 1):
+        for n in range(8):
+            self.know_at(f"{'n' * 150}{n}", 1, "d" * 500)
+        for n in (0, 1, 2):
             self.note("Please write your charter.", "director" * 5)
         text = self.added(self.alpha)
         self.assertLessEqual(-(-len(text) // 4), policy.DEFAULTS["session_start_max_tokens"])
-        self.assertNotIn("Other places", text)   # a project's text is unchanged
+        self.assertTrue(text.startswith("Common Room keeps alpha"))
+        self.assertIn("Other places", text)
+        self.assertIn("- `nnn", text)
+
+    def test_a_project_session_gets_the_list_without_its_own_folder(self):
+        self.register()
+        self.know(self.alpha)
+        other = self.know_at("other", 1, "side")
+        text = self.added(self.alpha)
+        self.assertIn(f"- `other` ({other}): side", text)
+        self.assertNotIn("- `alpha`", text)
 
 
 class Silent(Hook):

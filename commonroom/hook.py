@@ -242,7 +242,9 @@ def context(data: dict, now: float | None = None) -> str:
         text = text.split("\n", 1)[0]
     if named:
         text = f"{text}\n" + fill_way(COMPACTED, count=str(n), brief=named)
-    return f"{text}\n{brief}" if brief else text
+    text = f"{text}\n{brief}" if brief else text
+    here = places.find(places.load(), p.path) or {"path": str(p.path)}   # the project's own folder is left out
+    return f"{text}\n{recent}" if (recent := recent_places(here, text)) else text
 
 
 def main(stdin=None, stdout=None, limit: float | None = None, event: str = EVENT) -> int:
