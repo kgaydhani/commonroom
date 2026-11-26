@@ -323,3 +323,56 @@ class InstallTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class PersonImportTest(InstallTest):
+    """commonroom#575: one line per vendor's user-level instruction file, nothing per prompt."""
+    def files(self):
+        return self.claude / "CLAUDE.md", self.codex / "AGENTS.md"
+
+    def test_line_added_shown_first_and_the_rest_untouched_then_removed(self):
+        claude_md, agents_md = self.files()
+        self.claude.mkdir(parents=True)
+        mine = "# Me\r\n\r\nBe brief.\r\n- no trailing newline"
+        claude_md.write_bytes(mine.encode())
+        _, out = self.run_cmd(install.cmd_install, dry=True)
+        want = "@" + (self.home / "person.md").as_posix()
+        self.assertIn(f"add    {want}", out)
+        self.assertEqual(claude_md.read_bytes(), mine.encode())
+        self.assertFalse(agents_md.exists())
+        self.run_cmd(install.cmd_install)
+        self.assertEqual(claude_md.read_bytes(), (mine + "\r\n" + want + "\r\n").encode())
+        self.assertIn((self.home / "person.md").as_posix(), agents_md.read_text())
+        _, out = self.run_cmd(install.cmd_uninstall)
+        self.assertIn(f"remove {want}", out)
+        self.assertEqual(claude_md.read_bytes(), mine.encode())
+        self.assertFalse(agents_md.exists())
+
+    def test_twice_adds_one_line_and_uninstall_keeps_edits_made_after(self):
+        claude_md, _ = self.files()
+        self.claude.mkdir(parents=True)
+        claude_md.write_text("top\n")
+        self.run_cmd(install.cmd_install)
+        self.run_cmd(install.cmd_install)
+        self.assertEqual(claude_md.read_text().count("person.md"), 1)
+        claude_md.write_text(claude_md.read_text() + "later\n")
+        self.run_cmd(install.cmd_uninstall)
+        self.assertEqual(claude_md.read_text(), "top\nlater\n")
+
+    def test_a_line_the_user_already_had_is_not_ours_to_remove(self):
+        claude_md, _ = self.files()
+        self.claude.mkdir(parents=True)
+        mine = "@" + (self.home / "person.md").as_posix() + "\n"
+        claude_md.write_text(mine)
+        self.run_cmd(install.cmd_install)
+        self.assertEqual(claude_md.read_text(), mine)
+        self.run_cmd(install.cmd_uninstall)
+        self.assertEqual(claude_md.read_text(), mine)
+
+    def test_the_hooks_add_none_of_the_person_file(self):
+        from commonroom import hook, person
+        person.save(["2026-11-01 prefers plain words zebra-marker"], self.home)
+        for name, event in (("UserPromptSubmit", hook.PROMPT), ("SessionStart", hook.EVENT)):
+            out = io.StringIO()
+            data = {"session_id": "s", "cwd": str(self.home), "hook_event_name": name, "prompt": "hi"}
+            hook.main(stdin=io.StringIO(json.dumps(data)), stdout=out, event=event)
+            self.assertNotIn("zebra-marker", out.getvalue())

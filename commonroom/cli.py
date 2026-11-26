@@ -1291,6 +1291,25 @@ def cmd_pie(args) -> int:
     return 0
 
 
+def _correction_note(args) -> dict:
+    """The note `room person from-note` names: a file path, or a file name in the inbox of --project (else the project
+    holding the current folder)."""
+    given = Path(args.value)
+    if given.is_file():
+        where, name = given.parent.parent, given.name
+        if given.parent.name != "inbox":
+            raise person_mod.PersonError(f"refused: {given} is not in an `inbox` folder.")
+    else:
+        try:
+            where, name = handshake.folder_of(handshake.find(handshake.load_registry(), args.project)), given.name
+        except handshake.HandshakeError as e:
+            raise person_mod.PersonError(str(e)) from None
+    found = next((n for n in handshake.read_notes(where) if n["name"] == name), None)
+    if found is None:
+        raise person_mod.PersonError(f"no note {name!r} in {where / 'inbox'}.")
+    return found
+
+
 def cmd_person(args) -> int:
     """`room person`, `room person add "line"`, `room person remove <n>`: the owner's capped, dated person file."""
     try:
@@ -1299,6 +1318,12 @@ def cmd_person(args) -> int:
                 print("usage: room person add \"line\"")
                 return 2
             lines = person_mod.add(args.value)
+            print(f"added line {len(lines)}: {lines[-1]}")
+        elif args.action == "from-note":
+            if not args.value:
+                print("usage: room person from-note <note file, or its name in the project's inbox> [--project name]")
+                return 2
+            lines = person_mod.from_note(_correction_note(args))
             print(f"added line {len(lines)}: {lines[-1]}")
         elif args.action == "remove":
             if not (args.value or "").isdigit():
@@ -1431,7 +1456,7 @@ def build_parser() -> argparse.ArgumentParser:
     timing.add_argument("--cancel-pending", action="store_true", help="drop this project's pending changes")
     q = ps.add_parser("remove", help="remove a project"); q.add_argument("name")
     p = sub.add_parser("away", help="tell the room when the owner is back, so his unneeded slice is lent (no model call)"); p.add_argument("words", nargs="*", metavar="until <date>"); p.add_argument("--clear", action="store_true"); p.set_defaults(func=cmd_away)
-    p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove")); p.add_argument("value", nargs="?"); p.set_defaults(func=cmd_person)
+    p = sub.add_parser("person", help="the owner's person file: show it, `add \"line\"` (dated, capped, no secrets) or `remove <n>`"); p.add_argument("action", nargs="?", default="show", choices=("show", "add", "remove", "from-note")); p.add_argument("value", nargs="?"); p.add_argument("--project"); p.set_defaults(func=cmd_person)
     p = sub.add_parser("card", help="one screen about a place or project: what it is for, its state, its method, who answers (no model call)"); p.add_argument("place", help="a name or a folder path"); p.set_defaults(func=cmd_card)
     p = sub.add_parser("route", help="record where something was sent: `route TO \"what\" --how note|hand|message|brief`, `route list`, `route undo ID` (no model call)"); p.add_argument("words", nargs="+", metavar="TO text | list | undo ID"); p.add_argument("--how", default="message"); p.add_argument("--from", dest="from_place"); p.add_argument("--session"); p.set_defaults(func=handshake.cmd_route)
     p = sub.add_parser("places", help="folders you have worked in that are not projects, most recent first; `describe <place> \"line\"` sets a description (no model call)"); p.add_argument("action", nargs="?", choices=("describe",)); p.add_argument("place", nargs="?"); p.add_argument("line", nargs="?"); p.set_defaults(func=cmd_places)

@@ -112,3 +112,6 @@ unread_note_hours = { value = 24, min = 1 }
 # enforced in code. Tokens are estimated as characters / 4. Room-wide only.
 person_max_lines = { value = 60, min = 1 }
 person_max_tokens = { value = 800, min = 1 }
+# Days (180): a person-file line older than this is a steward finding, so the owner can confirm or remove it. The
+# steward never deletes a line (commonroom#574: a third of one system's memories were stale after about 30 sessions).
+person_stale_days = { value = 180, min = 1 }

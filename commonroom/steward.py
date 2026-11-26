@@ -120,6 +120,14 @@ def unread_notes(unread: list[dict], now: float, hours: int) -> list[dict]:
             for n in sorted(unread, key=lambda n: n["at"]) if now - n["at"] > hours * 3600]
 
 
+def stale_person_lines(old: list[tuple[int, str]], days: int) -> list[dict]:
+    """One finding for each person-file line older than `days` (`person.stale`, commonroom#574). It only flags: the
+    owner confirms the line by removing and re-adding it, or removes it with `room person remove <n>`."""
+    return [finding("stale-person-line", n, f"Person file line {n} is more than {days} days old: {line[:80]!r}. "
+                    f"Still true? Remove it with `room person remove {n}`, or re-add it to date it again.")
+            for n, line in old]
+
+
 def heartbeat_failing(runs: dict[str, list[int]], needed: int, configured: list[str]) -> list[dict]:
     """A finding for each heartbeat command whose last `needed` runs all exited non-zero; one success clears it
     (commonroom#587). `runs` maps a command to its exit codes, newest first; `configured` is the project's current commands, joined as

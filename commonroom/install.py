@@ -13,13 +13,15 @@ import json
 import os
 from pathlib import Path
 
-from commonroom import wire
+from commonroom import person, wire
 
 MARKETPLACE = "commonroom"
 PLUGIN_KEY = "commonroom@commonroom"
 MANIFEST = "install.json"
 PATH_KEY = "room-path"  # manifest entry for the room-path file
-CODEX_KEY, BEAT_KEY = "codex-hooks", "beat"  # the other two entries; every remaining key is a settings file
+CODEX_KEY, BEAT_KEY = "codex-hooks", "beat"
+LF, CRLF = chr(10), chr(13) + chr(10)
+PERSON_KEY = "person-import"  # the lines added to each vendor's user-level instruction file; every other key is a settings file
 
 
 def room_home() -> Path:
@@ -32,6 +34,46 @@ def claude_dir() -> Path:
 
 def checkout() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def person_targets() -> list[tuple[Path, str]]:
+    """(instruction file, the one line install adds) per vendor. Claude Code imports a file with `@path`; Codex has no
+    import syntax, so its line asks the session to read the file. Neither adds text per prompt."""
+    where = person.path(room_home()).as_posix()
+    return [(claude_dir() / "CLAUDE.md", f"@{where}"),
+            (wire.codex_dir() / "AGENTS.md", f"Read the owner's person file at {where} at the start of every session.")]
+
+
+def _person_plan() -> list[dict]:
+    """The lines still to add: {file, line, text (the file's new text), existed, nl (a newline was added first)}."""
+    out = []
+    for f, line in person_targets():
+        raw = f.read_bytes().decode("utf-8") if f.exists() else None
+        if raw is not None and line in [x.strip() for x in raw.splitlines()]:
+            continue
+        nl = CRLF if raw and CRLF in raw else LF
+        lead = nl if raw and not raw.endswith(LF) else ""
+        out.append({"file": f, "line": line, "existed": raw is not None, "nl": bool(lead),
+                    "text": (raw or "") + lead + line + nl})
+    return out
+
+
+def _person_remove(rec: dict) -> None:
+    """Take out the one line install added (and the newline it added before it); the rest is left as it is."""
+    f = Path(rec["file"])
+    if not f.exists():
+        return
+    parts = f.read_bytes().decode("utf-8").splitlines(keepends=True)
+    idx = [i for i, x in enumerate(parts) if x.strip() == rec["line"]]
+    if not idx:
+        return
+    gone = parts.pop(idx[-1])
+    if rec["nl"] and idx[-1] == len(parts) and parts:
+        parts[-1] = parts[-1].rstrip(CRLF)
+    if not rec["existed"] and not "".join(parts).strip():
+        f.unlink()
+    else:
+        f.write_bytes("".join(parts).encode("utf-8"))
 
 
 def _wanted(root: Path) -> list[tuple[list[str], object]]:
@@ -120,6 +162,7 @@ def cmd_install(args) -> int:
     beat_done = wire.beat_registered(root)
     beat_cmd, _ = wire.beat_command(root)
     old_beats = [] if beat_done else wire.old_beats(root)
+    person_add = _person_plan()
     print(f"Settings file: {settings}")
     for name in added:
         print(f"  add    {name}")
@@ -130,6 +173,8 @@ def cmd_install(args) -> int:
     print(f"Codex hooks file: {codex_file}")
     for event in codex_added:
         print(f"  add    hooks.{event}")
+    for rec in person_add:
+        print(f"Instruction file: {rec['file']}{LF}  add    {rec['line']}")
     if old_beats:
         print("Beat: not registered, these enabled tasks already run this checkout's heartbeat: "
               + ", ".join(f'"{n}"' for n in old_beats))
@@ -138,7 +183,7 @@ def cmd_install(args) -> int:
             print(f'    schtasks /delete /tn "{n}" /f')
     else:
         print(f"Beat: {'already registered' if beat_done else 'register ' + beat_cmd}")
-    if not added and not path_change and not codex_added and (beat_done or old_beats):
+    if not added and not path_change and not codex_added and not person_add and (beat_done or old_beats):
         print("Nothing to change: already installed.")
         return 0
     if args.dry_run:
@@ -166,12 +211,15 @@ def cmd_install(args) -> int:
         old[str(settings)] = entry
     if codex_added:
         old.setdefault(CODEX_KEY, {"file": str(codex_file), "created": codex_new})
+    if person_add:
+        old[PERSON_KEY] = old.get(PERSON_KEY, []) + [{k: str(v) if k == "file" else v for k, v in r.items() if k != "text"}
+                                                      for r in person_add]
     ok, why = beat_done, ""
     if not beat_done and not old_beats:
         ok, why = wire.beat_register(root)
         if ok:
             old[BEAT_KEY] = {"command": beat_cmd}
-    if added or path_change or codex_added or BEAT_KEY in old:
+    if added or path_change or codex_added or person_add or BEAT_KEY in old:
         home.mkdir(parents=True, exist_ok=True)
         manifest.write_text(json.dumps(old, indent=2) + "\n", encoding="utf-8")
     if added:
@@ -182,6 +230,9 @@ def cmd_install(args) -> int:
         path_file.write_text(room_py + "\n", encoding="utf-8")
     if codex_added:
         wire.codex_write(codex_file, codex_data)
+    for rec in person_add:
+        rec["file"].parent.mkdir(parents=True, exist_ok=True)
+        rec["file"].write_bytes(rec["text"].encode("utf-8"))
     if not ok:
         print(f"Could not register the beat here ({why or 'no output'}). Run this yourself:\n{beat_cmd}")
     if codex_added:
@@ -219,6 +270,7 @@ def cmd_uninstall(args) -> int:
     path_rec = state.pop(PATH_KEY, None)
     codex_rec = state.pop(CODEX_KEY, None)
     beat_rec = state.pop(BEAT_KEY, None)
+    person_recs = state.pop(PERSON_KEY, [])
     root = checkout()
     actions = []
     for file, entry in state.items():
@@ -237,6 +289,8 @@ def cmd_uninstall(args) -> int:
                 print(f"  remove {name}")
     if codex_rec is not None:
         print(f"Codex hooks file: {codex_rec['file']}\n  remove our SessionStart and UserPromptSubmit entries")
+    for rec in person_recs:
+        print(f"Instruction file: {rec['file']}{LF}  remove {rec['line']}")
     if beat_rec is not None:
         print(f"Beat: remove the scheduled {beat_rec['command'].split()[0]} entry")
     if path_rec is not None:
@@ -257,6 +311,8 @@ def cmd_uninstall(args) -> int:
                 f.write_bytes(_render(data, raw.decode("utf-8")))
     if codex_rec is not None:
         wire.codex_remove(Path(codex_rec["file"]), root, codex_rec["created"])
+    for rec in person_recs:
+        _person_remove(rec)
     if beat_rec is not None and not wire.beat_unregister(root):
         print(f"Could not remove the beat; remove it yourself (see: room schedule).")
     if path_rec is not None:
