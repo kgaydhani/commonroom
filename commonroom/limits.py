@@ -1,5 +1,6 @@
 """The owner's optional Claude Code deny rules (commonroom#582). No defaults are active."""
 from pathlib import Path
+import json
 import os
 import re
 
@@ -66,6 +67,31 @@ def numbered(path: Path) -> list[tuple[int, str]]:
         if rule and not rule.startswith("#") and re.fullmatch(r"[^\s()]+(?:\(.+\))?", rule):
             out.append((n, rule))
     return out
+
+
+def in_force(room_home: Path) -> dict:
+    """Read-only page state: live hook lines plus Room's deny rules still installed after list edits."""
+    path = room_home / FILENAME
+    rows, error = {}, None
+    try:
+        for n, rule in numbered(path):
+            rows.setdefault(rule, {"rule": rule, "line": n, "deny": False})
+        manifest = room_home / "install.json"
+        installed = json.loads(manifest.read_text(encoding="utf-8")) if manifest.exists() else {}
+        for filename, entry in installed.items():
+            if not isinstance(entry, dict) or "deny_added" not in entry:
+                continue
+            settings = Path(filename)
+            data = json.loads(settings.read_text(encoding="utf-8")) if settings.exists() else {}
+            deny = data.get("permissions", {}).get("deny", [])
+            if not isinstance(deny, list) or any(not isinstance(r, str) for r in deny):
+                raise ValueError(f"{settings}: permissions.deny must be a list of strings")
+            for rule in dict.fromkeys([*rows, *entry["deny_added"]]):
+                if rule in deny:
+                    rows.setdefault(rule, {"rule": rule, "line": None, "deny": False})["deny"] = True
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        error = f"The limits in force can't be fully read: {exc}"
+    return {"file": str(path), "rules": list(rows.values()), "error": error}
 
 
 def _glob(pattern: str, text: str, path: bool) -> bool:

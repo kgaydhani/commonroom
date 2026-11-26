@@ -36,6 +36,9 @@ Code permission rules, one per line, then preview with `room install --dry-run` 
 rule is shown with the notice that it cannot be lifted from inside a session. These are user-level `permissions.deny`
 rules, applying across projects; project settings are untouched. Reinstall applies list edits, and `room uninstall`
 removes only rules Room added. The list stays in the room home for the owner to keep or edit (commonroom#582).
+The page's **Limits in force** section lists active lines and Room's installed deny rules. A removed line whose
+deny rule is still installed stays visible until `room install` removes it. An empty list with no installed rules
+says there are no limits; an unreadable list or installation record is shown as unknown (commonroom#584).
 
 There are two channels, and they mean different things.
 

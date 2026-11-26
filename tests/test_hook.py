@@ -384,7 +384,7 @@ class Margin(Hook):
 
 
 class Beside(Hook):
-    """Axiom A0: the hook only adds context. It runs no model, no network and no board, and writes nothing."""
+    """A0: context hooks only add context; only the owner's limits may block own sessions (test_limits)."""
 
     def test_the_output_is_added_context_and_nothing_else(self):
         self.register()
@@ -421,7 +421,7 @@ class Beside(Hook):
         after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in self.home.rglob("*") if p.is_file()}
         self.assertEqual(after, before)
 
-    def test_the_plugin_and_this_repos_settings_declare_one_session_start_command_and_nothing_else(self):
+    def test_the_plugin_declares_context_hooks_and_only_the_limits_pre_tool_hook(self):
         plugin = json.loads((ROOT / "plugin" / "hooks" / "hooks.json").read_text(encoding="utf-8"))
         settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
         self.assertEqual(json.loads((ROOT / "plugin" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
@@ -436,7 +436,11 @@ class Beside(Hook):
             for group in groups:
                 for entry in group["hooks"]:
                     entry.pop("commandWindows")
-        self.assertEqual(pre_tool[0]["hooks"][0]["args"][-1], "pre-tool")
+        self.assertEqual(pre_tool, [{"matcher": "Bash|PowerShell|Read|Edit|Write|MultiEdit|NotebookEdit",
+                                    "hooks": [{"type": "command", "command": "python", "timeout": 5,
+                                               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "pre-tool"],
+                                               "commandWindows": 'if exist "%PLUGIN_ROOT%\\hooks\\run.py" python '
+                                                                 '"%PLUGIN_ROOT%\\hooks\\run.py" pre-tool'}]}])
         [prompt] = plugin["hooks"]["UserPromptSubmit"]
         self.assertEqual(prompt["hooks"], [{"type": "command", "command": "python", "timeout": 5,
                                             "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/run.py", "prompt-submit"]}])
