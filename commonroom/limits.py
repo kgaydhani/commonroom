@@ -1,5 +1,6 @@
 """The owner's optional Claude Code deny rules (commonroom#582). No defaults are active."""
 from pathlib import Path
+import os
 import re
 
 FILENAME = "limits.txt"
@@ -49,3 +50,48 @@ def remove(data: dict, entry: dict) -> bool:
         data.pop("permissions", None)
         changed = True
     return changed
+
+
+def home() -> Path:
+    return Path(os.environ.get("COMMONROOM_HOME") or Path.home() / ".commonroom")
+
+
+def numbered(path: Path) -> list[tuple[int, str]]:
+    """The active (line number, rule) pairs of the owner's list. A missing file is an empty list."""
+    if not path.exists():
+        return []
+    out = []
+    for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        rule = line.strip()
+        if rule and not rule.startswith("#") and re.fullmatch(r"[^\s()]+(?:\(.+\))?", rule):
+            out.append((n, rule))
+    return out
+
+
+def _glob(pattern: str, text: str, path: bool) -> bool:
+    if path:
+        pattern, text = os.path.expanduser(pattern).replace("\\", "/"), text.replace("\\", "/")
+        regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
+    else:
+        pattern = pattern[:-2] + " *" if pattern.endswith(":*") else pattern
+        regex = re.escape(pattern).replace(r"\*", ".*")
+    return re.fullmatch(regex, text, re.S) is not None
+
+
+def matches(rule: str, tool: str, tool_input: dict) -> bool:
+    """Whether a Claude Code permission rule (Tool or Tool(specifier)) names this tool call."""
+    name, _, rest = rule.partition("(")
+    spec = rest[:-1] if rest else None
+    if name != tool:
+        return False
+    if tool in ("Bash", "PowerShell"):
+        command = tool_input.get("command")
+        return isinstance(command, str) and (spec is None or _glob(spec, command.strip(), False))
+    if spec is None:
+        return True
+    target = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")
+    return isinstance(target, str) and _glob(spec, target, True)
+
+
+def first_match(path: Path, tool: str, tool_input: dict) -> tuple[int, str] | None:
+    return next(((n, r) for n, r in numbered(path) if matches(r, tool, tool_input)), None)
