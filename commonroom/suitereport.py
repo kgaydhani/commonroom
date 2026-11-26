@@ -64,14 +64,12 @@ class Capture:
                 out.write(text.encode("ascii", "replace").decode("ascii"))
             out.flush()
 
-    def finish(self, wait: float = 5.0) -> None:
+    def finish(self, wait: float = 2.0) -> None:
+        """Let the readers drain what is already written. A stray child that still holds a pipe keeps its reader
+        blocked: wait a short, shared time, and never close the streams (close() would block on that reader)."""
+        end = time.monotonic() + wait
         for thread in self._threads:
-            thread.join(wait)
-        for stream in self._streams:
-            try:
-                stream.close()
-            except OSError:
-                pass
+            thread.join(max(0.0, end - time.monotonic()))
 
     def report(self, now: float) -> str:
         with self._lock:

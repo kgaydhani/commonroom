@@ -216,6 +216,26 @@ class CheckCommand(unittest.TestCase):
         self.assertIn("reached: tests.test_second", after)
         self.assertRegex(after, r"\d+\.\ds  tests\.test_first")
 
+    STRAY = ("import subprocess, sys, time\n"
+             "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(40)'], cwd=sys.exec_prefix)\n"
+             "print('done', flush=True)\n")
+
+    def test_suite_that_leaves_a_child_holding_its_pipes_does_not_hold_the_check(self):
+        self.project_running(self.STRAY, "max_minutes = 1\n")
+        began = time.monotonic()
+        with self.local_check() as out:
+            self.assertEqual(cli.cmd_check(None), 0)
+        self.assertLess(time.monotonic() - began, 15)
+        self.assertEqual(out.getvalue(), "done\n")
+
+    def test_timed_out_suite_with_a_stray_child_still_prints_the_incomplete_line(self):
+        self.project_running(self.STRAY.replace("print('done', flush=True)", "time.sleep(60)"), "max_minutes = 0.05\n")
+        began = time.monotonic()
+        with self.local_check() as out:
+            self.assertEqual(cli.cmd_check(None), 3)
+        self.assertLess(time.monotonic() - began, 20)
+        self.assertIn("TESTS: INCOMPLETE", out.getvalue())
+
     def test_timed_out_plain_command_prints_its_last_twenty_lines(self):
         self.project_running("import sys, time\n"
                              "for i in range(30): print('row', i, flush=True)\n"
