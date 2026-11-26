@@ -33,6 +33,8 @@ ul{margin:.3rem 0;padding-left:1.2rem}
 <div id="pie"></div>
 <h2>Waiting on you</h2>
 <div id="waiting"></div>
+<h2>Routes</h2>
+<div id="routes"></div>
 <h2>Projects</h2>
 <div id="projects"></div>
 <p class="dim">est. = an estimate: the weekly meter covers the whole plan, so each part is inferred.</p>
@@ -98,6 +100,13 @@ function render(d) {
       el("span", ` (${t.project}${t.due ? ", due " + t.due : ""})`, "dim", li);
     }
     if (d.waiting.length > 8) el("p", `and ${d.waiting.length - 8} more`, "dim", wt);
+  }
+
+  const rt = $("routes");
+  rt.textContent = "";
+  if (!(d.routes || []).length) el("p", "Nothing has been routed.", "dim", rt);
+  for (const r of d.routes || []) {
+    el("p", `${when(r.at)}  ${r.from_place || "?"} -> ${r.to_place} (${r.how}${r.session ? ", session " + r.session : ""}): ${r.summary}${r.undone_at ? " [undone " + when(r.undone_at) + "]" : ""}`, r.undone_at ? "dim" : null, rt);
   }
 
   const pj = $("projects");
