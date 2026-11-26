@@ -57,7 +57,7 @@ class CheckCommand(unittest.TestCase):
         with mock.patch.dict(os.environ, {"COMMONROOM_HOME": str(self.home)}), \
                 mock.patch.object(cli.config_mod, "load", return_value=cfg), \
                 mock.patch("os.getcwd", return_value=str(self.project)), \
-                contextlib.redirect_stdout(io.StringIO()) as out:
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
             yield out
 
     def dead_pid(self):
@@ -196,6 +196,58 @@ class CheckCommand(unittest.TestCase):
                 time.sleep(0.1)
             self.assertFalse(alive(pid), pid)
 
+    def project_running(self, source, extra="max_minutes = 0.1\n"):
+        script = self.project / "fake.py"
+        script.write_text(source)
+        (self.project / "room.toml").write_text(
+            "[project]\nname = \"demo\"\nrepo = \"o/demo\"\n[goal]\nmilestone = \"M\"\n[checks]\n"
+            f"test = '\"{sys.executable}\" \"{script}\"'\n{extra}")
+
+    VERBOSE = ("import sys, time\n"
+               "def line(m, n): sys.stderr.write(f'test_{n} (tests.{m}.Case.test_{n}) ... '); sys.stderr.flush()\n"
+               "line('test_first', 'a'); time.sleep(1.0); sys.stderr.write('ok\\n')\n"
+               "line('test_second', 'b'); sys.stderr.flush(); time.sleep(60)\n")
+
+    def test_timed_out_verbose_suite_names_the_module_reached_and_finished_times(self):
+        self.project_running(self.VERBOSE, "max_minutes = 0.05\n")
+        with self.local_check() as out:
+            self.assertEqual(cli.cmd_check(None), 3)
+        after = out.getvalue().split("INCOMPLETE", 1)[1]
+        self.assertIn("reached: tests.test_second", after)
+        self.assertRegex(after, r"\d+\.\ds  tests\.test_first")
+
+    def test_timed_out_plain_command_prints_its_last_twenty_lines(self):
+        self.project_running("import sys, time\n"
+                             "for i in range(30): print('row', i, flush=True)\n"
+                             "time.sleep(60)\n", "max_minutes = 0.05\n")
+        with self.local_check() as out:
+            self.assertEqual(cli.cmd_check(None), 3)
+        before, after = out.getvalue().split("INCOMPLETE", 1)
+        self.assertIn("row 29", after)
+        self.assertIn("row 10", after)
+        self.assertNotIn("row 9\n", after)
+        self.assertNotIn("reached:", after)
+        self.assertIn("row 0\n", before)   # the output still passes through live
+
+    def test_finished_suite_prints_nothing_extra_and_keeps_its_codes(self):
+        for code in (0, 4):
+            self.project_running("import sys\nsys.stderr.write('test_a (tests.test_x.C.test_a) ... ok\\n')\n"
+                                 f"print('done')\nsys.exit({code})\n", "max_minutes = 1\n")
+            with self.subTest(code=code), self.local_check() as out:
+                self.assertEqual(cli.cmd_check(None), code)
+                self.assertEqual(out.getvalue(), "done\n")
+
+    def test_report_ranks_modules_slowest_first_and_caps_at_ten(self):
+        cap = cli.suitereport.Capture()
+        start = 0.0
+        for i in range(12):   # module m<i> takes i+1 seconds
+            cap.feed(f"test_a (tests.m{i}.C.test_a) ... ok\n", start)
+            start += i + 1
+        report = cap.report(start + 2)
+        self.assertIn("reached: tests.m11 (running 14.0s)", report)
+        listed = [line.split()[-1] for line in report.splitlines()[2:]]
+        self.assertEqual(listed, [f"tests.m{i}" for i in range(10, 0, -1)])
+
     def test_suite_inside_the_limit_passes_its_code(self):
         self.project_with(f"\"{self.project / 'log.txt'}\" 0 5", "max_minutes = 1\n")
         self.assertEqual(self.run_check()[0], 5)
@@ -205,7 +257,7 @@ class CheckCommand(unittest.TestCase):
         with self.local_check(), mock.patch.object(cli.time, "monotonic", return_value=100), \
                 mock.patch.object(cli.time, "time", side_effect=AssertionError("wall clock used")), \
                 mock.patch.object(cli.jobtree, "start") as start:
-            start.return_value = (mock.Mock(), None)
+            start.return_value = (mock.Mock(stdout=None, stderr=None), None)
             start.return_value[0].wait.return_value = 7
             self.assertEqual(cli.cmd_check(None), 7)
         start.return_value[0].wait.assert_called_once_with(timeout=540)
@@ -225,7 +277,7 @@ class CheckCommand(unittest.TestCase):
         with self.local_check(), mock.patch.object(cli.time, "monotonic", side_effect=lambda: now[0]), \
                 mock.patch.object(cli.time, "sleep", side_effect=sleep), \
                 mock.patch.object(cli.jobtree, "start") as start:
-            start.return_value = (mock.Mock(), None)
+            start.return_value = (mock.Mock(stdout=None, stderr=None), None)
             start.return_value[0].wait.return_value = 7
             self.assertEqual(cli.cmd_check(None), 7)
         start.return_value[0].wait.assert_called_once_with(timeout=2)

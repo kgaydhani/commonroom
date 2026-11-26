@@ -20,7 +20,7 @@ from commonroom import install as install_mod
 from commonroom import card as card_mod
 from commonroom import places as places_mod
 from commonroom import schedule as schedule_mod
-from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, trials
+from commonroom import doctor, starter, handshake, hook, jobtree, roomconfig, suitereport, trials
 from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
 from commonroom.lock import acquire_lock, claim_lock, release_lock, suite_lock
@@ -859,14 +859,17 @@ def cmd_reconcile(args, board_for=None) -> int:
     return 0
 
 
-def _run_limited(test: str, deadline: float) -> int | None:
-    """Run the test command; None if it is still going at the deadline (its process tree is killed first)."""
+def _run_limited(test: str, deadline: float, capture: suitereport.Capture | None = None) -> int | None:
+    """Run the test command; None if it is still going at the deadline (its process tree is killed first).
+    With `capture`, its output is passed through and kept there."""
     if time.monotonic() >= deadline:
         return None   # waiting for the lock may have used the whole allowance
     posix = os.name != "nt"
-    process, job = jobtree.start(test, os.getcwd())
+    process, job = jobtree.start(test, os.getcwd(), capture=True) if capture else jobtree.start(test, os.getcwd())
+    if capture:
+        capture.attach(process)
     try:
-        return process.wait(timeout=max(0.0, deadline - time.monotonic()))
+        code = process.wait(timeout=max(0.0, deadline - time.monotonic()))
     except subprocess.TimeoutExpired:
         if posix:
             try:
@@ -879,6 +882,9 @@ def _run_limited(test: str, deadline: float) -> int | None:
         process.kill()
         process.wait()
         return None
+    if capture:
+        capture.finish()
+    return code
 
 
 def cmd_check(args) -> int:
@@ -900,9 +906,12 @@ def cmd_check(args) -> int:
     deadline, told = min(started + wait, limit), None
 
     def run() -> int:
-        code = _run_limited(test, limit)
+        capture = suitereport.Capture()
+        code = _run_limited(test, limit, capture)
         if code is None:
+            capture.finish()
             print(f"suite ran out of time after {max_minutes:g} min: report TESTS: INCOMPLETE", flush=True)
+            print(capture.report(capture.clock()), flush=True)
             return 3
         return code
     # A sandbox that can read the room home but not write it (Codex) fails on any claim, the first or a retry after
