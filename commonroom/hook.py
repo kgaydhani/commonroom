@@ -36,6 +36,12 @@ COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
 HOME_START = read_way(handshake.TEMPLATES / "home-start.md")
 PLACES_RECENT = read_way(handshake.TEMPLATES / "places-recent.md")
+FRESH_START = read_way(handshake.TEMPLATES / "fresh-start.md")
+OFFERED = "session-offers.json"   # in the room home: the sessions already offered a fresh start
+SCANS = "session-scans.json"   # in the room home: how far each session's transcript has been read
+OFFER_KEEP = 90 * 86400          # seconds an offered session is remembered
+_CWD_VALUE = re.compile(rb'"cwd"\s*:\s*("(?:[^"\\]|\\.)*")')
+_STAMP_VALUE = re.compile(rb'"timestamp"\s*:\s*("[^"]*")')
 ANSWER_BACK = read_way(handshake.TEMPLATES / "answer-back.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
@@ -185,6 +191,100 @@ def cold_return(data: dict, now: float | None = None) -> str:
     return fill_way(COLD_RETURN, gap=_ago(now - turn[0]), context=f"{turn[1] // 1000}k", brief=named)
 
 
+def _span(path, state: dict, budget: float = LIMIT / 2) -> dict:
+    """The scan of a transcript, carried on from `state` ({"off": bytes read, "first": time of its first timestamp or None,
+    "dirs": the distinct folders its lines name}): only the bytes added since then are read, keeping no text, and only whole
+    lines count. Starts over if the file got shorter. Stops early when `budget` seconds run out, and the next call goes on."""
+    off, first, dirs = state.get("off", 0), state.get("first"), set(state.get("dirs", []))
+    stop = time.monotonic() + budget
+    with open(path, "rb") as handle:
+        if os.fstat(handle.fileno()).st_size < off:
+            off, first, dirs = 0, None, set()
+        handle.seek(off)
+        for raw in handle:
+            if not raw.endswith(b"\n") or time.monotonic() > stop:
+                break
+            off += len(raw)
+            if first is None and (m := _STAMP_VALUE.search(raw)):
+                try:
+                    first = datetime.fromisoformat(json.loads(m.group(1))).timestamp()
+                except (ValueError, OverflowError):
+                    pass
+            if (m := _CWD_VALUE.search(raw)):
+                try:
+                    if isinstance(cwd := json.loads(m.group(1)), str) and cwd:
+                        dirs.add(sessions.path_key(cwd))
+                except ValueError:
+                    pass
+    return {"off": off, "first": first, "dirs": sorted(dirs)}
+
+
+def _records(name: str, now: float) -> dict:
+    """The small record file `name` in the room home, entries older than OFFER_KEEP dropped; {} if missing or corrupt."""
+    try:
+        seen = json.loads(places.path_file().with_name(name).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(seen, dict):
+        return {}
+    return {k: v for k, v in seen.items() if isinstance(v, dict) and isinstance(v.get("at"), (int, float)) and now - v["at"] < OFFER_KEEP}
+
+
+def _store(name: str, seen: dict) -> None:
+    path = places.path_file().with_name(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(seen, sort_keys=True), encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def _offered(session: str, now: float, record: bool = False) -> bool:
+    """Whether `session` was already offered a fresh start; with `record`, notes it as offered (a write to a small file in
+    the room home, beside the places file)."""
+    seen = _records(OFFERED, now)
+    if session in seen or not record:
+        return session in seen
+    _store(OFFERED, seen | {session: {"at": now}})
+    return False
+
+
+def fresh_start(data: dict, now: float | None = None) -> str:
+    """The text to add for one UserPromptSubmit input, or "": the session began more than `fresh_start_days` days ago or
+    has worked in more than `fresh_start_places` folders, and has not been told so yet (commonroom#580). It offers
+    once per session and never blocks (axiom A0); it works in any folder, not only in a project's. Each prompt reads only the
+    transcript bytes added since the last one (state in SCANS, kept until the session is offered)."""
+    now = time.time() if now is None else now
+    path, session = data.get("transcript_path"), data.get("session_id")
+    if os.environ.get("COMMONROOM_WORKER") or not isinstance(path, str) or not isinstance(session, str) or not session:
+        return ""
+    if _offered(session, now):
+        return ""
+    scans = _records(SCANS, now)
+    before = scans.get(session, {})
+    state = _span(path, before)
+    if state != {k: before.get(k) for k in state}:
+        _store(SCANS, scans | {session: state | {"at": now}})
+    began, count = state["first"], len(state["dirs"])
+    days, limit = policy.DEFAULTS["fresh_start_days"], policy.DEFAULTS["fresh_start_places"]
+    if began is not None and now - began > days * 86400:
+        why = f"{int((now - began) // 86400)} days old"
+    elif count > limit:
+        why = f"{count} folders wide"
+    else:
+        return ""
+    ledger = Ledger.reader()
+    try:
+        p = _project(data, now, ledger)
+    finally:
+        if ledger is not None:
+            ledger.close()
+    command = f"room handoff {p.name if p else '<project>'} --session {session} --reason <text>"
+    _offered(session, now, record=True)
+    scans.pop(session, None)
+    _store(SCANS, scans)
+    return fill_way(FRESH_START, why=why, command=command)
+
+
 def answers_back(data: dict) -> str:
     """The answers to this session's questions (`room route answer`, commonroom#577), one short line each, each delivered
     once. At most ANSWERS_PER_PROMPT, each at most ANSWER_CHARS long, so it fits the hook's text budget; the rest wait for the next prompt. Never in a worker."""
@@ -208,10 +308,11 @@ def answers_back(data: dict) -> str:
                      for r in rows)
 
 
-def prompt_context(data: dict) -> str:
-    """What the prompt hook adds: the cold-return offer and any answers back, each failing alone."""
-    parts = []
-    for part in (cold_return, answers_back):
+def prompt_context(data: dict, parts: list | None = None) -> str:
+    """What the prompt hook adds: the cold-return offer, the fresh-start offer and any answers back, each failing alone.
+    Each text is added to `parts` as soon as it is ready, so one that runs out of time loses only itself."""
+    parts = [] if parts is None else parts
+    for part in (cold_return, fresh_start, answers_back):
         try:
             parts.append(part(data))
         except Exception:   # noqa: BLE001
@@ -291,21 +392,23 @@ def main(stdin=None, stdout=None, limit: float | None = None, event: str = EVENT
     """Read the hook's JSON, write the added context (or nothing), exit 0 whatever happens."""
     stdin, stdout = stdin or sys.stdin, stdout or sys.stdout
     found: list[str] = []
+    pieces: list[str] = []   # prompt texts as they are ready: what is done survives a later one running out of time
 
     def work():
         try:
             data = json.loads(stdin.read() or "null")
             if isinstance(data, dict) and data.get("hook_event_name", event) == event:
-                found.append((context if event == EVENT else prompt_context)(data))
+                found.append(context(data) if event == EVENT else prompt_context(data, pieces))
         except Exception:   # noqa: BLE001 - the hook must never fail a session
             pass
 
     worker = threading.Thread(target=work, daemon=True)
     worker.start()
     worker.join(LIMIT if limit is None else limit)
-    if found and found[0]:
+    text = found[0] if found else "\n".join(list(pieces))
+    if text:
         try:
-            stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": found[0]}}))
+            stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}))
             stdout.flush()
         except Exception:   # noqa: BLE001
             pass

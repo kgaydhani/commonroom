@@ -688,7 +688,7 @@ class ColdReturn(Hook):
 
     def test_a_rollout_with_no_usable_token_count_adds_nothing(self):
         self.register()
-        head = {"timestamp": "2026-01-01T00:00:00Z", "type": "session_meta", "payload": {"cli_version": "0.167.0"}}
+        head = {"timestamp": datetime.fromtimestamp(self.NOW - 600, timezone.utc).isoformat(), "type": "session_meta", "payload": {"cli_version": "0.167.0"}}
         odd = [{"type": "future_thing", "payload": {}}, {"type": "event_msg", "payload": {"type": "token_count", "info": None}},
                {"type": "event_msg", "payload": {"type": "token_count", "info": {"last_token_usage": {}}}}]
         for name, lines in (("a.jsonl", [head]), ("b.jsonl", [head, *odd])):
@@ -809,6 +809,118 @@ class HandshakeOnlyUnderAReviewFolder(HandshakeOnly):
         self.addCleanup(temp.stop)
         super().setUp()
         self.assertIn("review-1", str(self.tmp))
+
+
+class FreshStart(Hook):
+    """commonroom#580: a session older than N days, or one that worked in more than M folders, is offered a fresh
+    start once. Everything is built in a temporary room home."""
+
+    NOW = ColdReturn.NOW
+    transcript, prompt = ColdReturn.transcript, ColdReturn.prompt
+
+    def long_transcript(self, days, folders, name="long.jsonl"):
+        def line(ago_days, cwd):
+            at = datetime.fromtimestamp(self.NOW - ago_days * 86400, timezone.utc).isoformat()
+            return json.dumps({"type": "user", "timestamp": at, "sessionId": "s1", "cwd": str(cwd)})
+        rows = [line(days - i * days / max(folders, 1) / 2, self.tmp / f"f{i}") for i in range(folders)] or [line(days, self.alpha)]
+        path = self.tmp / name
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        return path
+
+    def test_an_old_session_is_offered_once_with_the_handover_command(self):
+        self.register()
+        path = self.long_transcript(3.5, 1)
+        text = self.prompt(path)
+        self.assertIn("3 days old", json.loads(text)["hookSpecificOutput"]["additionalContext"])
+        self.assertIn("room handoff alpha --session s1 --reason", text)
+        self.assertEqual(self.prompt(path), "")
+
+    def test_a_wandering_session_is_offered_once_in_any_folder(self):
+        path = self.long_transcript(0.5, 4)
+        text = self.prompt(path, cwd=self.elsewhere)
+        self.assertIn("4 folders wide", text)
+        self.assertIn("room handoff <project> --session s1", text)
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+
+    def test_below_the_thresholds_nothing_is_offered_and_nothing_is_written(self):
+        path = self.long_transcript(2.9, 3)
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        self.assertFalse((self.home / hook.OFFERED).exists())
+
+    def test_the_numbers_are_the_policy_ones(self):
+        path = self.long_transcript(2.0, 2)
+        with mock.patch.dict(policy.DEFAULTS, {"fresh_start_days": 1}):
+            self.assertIn("days old", self.prompt(path, cwd=self.elsewhere))
+        self.assertEqual((policy.DEFAULTS["fresh_start_days"], policy.DEFAULTS["fresh_start_places"]), (3, 3))
+
+    def test_another_session_is_offered_on_its_own_and_a_worker_never(self):
+        path = self.long_transcript(4, 1)
+        with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": "1"}):
+            self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        self.assertIn("days old", self.prompt(path, cwd=self.elsewhere))
+        self.assertEqual(hook.fresh_start({"session_id": "s2", "cwd": str(self.elsewhere), "transcript_path": str(path)}, self.NOW).count("days old"), 1)
+
+    def test_a_missing_transcript_or_a_corrupt_record_adds_nothing(self):
+        self.assertEqual(self.prompt(self.tmp / "none.jsonl", cwd=self.elsewhere), "")
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / hook.OFFERED).write_text("{not json", encoding="utf-8")
+        self.assertIn("days old", self.prompt(self.long_transcript(4, 1), cwd=self.elsewhere))
+
+    def old_cold_transcript(self):
+        """A cold-return transcript whose first line is 4 days old."""
+        path = self.transcript(90, 300000)
+        at = datetime.fromtimestamp(self.NOW - 4 * 86400, timezone.utc).isoformat()
+        path.write_text(json.dumps({"type": "user", "timestamp": at, "cwd": str(self.alpha)}) + "\n" + path.read_text(encoding="utf-8"), encoding="utf-8")
+        return path
+
+    def test_a_cold_return_keeps_its_text_and_the_offer_follows_it(self):
+        self.register()
+        text = json.loads(self.prompt(self.old_cold_transcript()))["hookSpecificOutput"]["additionalContext"]
+        self.assertLess(text.index("prompt cache has expired"), text.index("days old"))
+
+    def test_the_cold_return_text_survives_a_fresh_start_that_raises_or_is_slow(self):
+        self.register()
+        path = self.old_cold_transcript()
+        with mock.patch.object(hook, "fresh_start", side_effect=OSError("disk")):
+            out = self.prompt(path)
+        self.assertIn("prompt cache has expired", out)
+        self.assertNotIn("days old", out)
+        with mock.patch.object(hook, "_span", side_effect=lambda *a, **k: time.sleep(3)):
+            data = {"session_id": "s1", "cwd": str(self.alpha), "hook_event_name": "UserPromptSubmit", "transcript_path": str(path)}
+            out, started = io.StringIO(), time.monotonic()
+            with mock.patch.object(hook.time, "time", return_value=self.NOW):
+                hook.main(io.StringIO(json.dumps(data)), out, limit=0.5, event="UserPromptSubmit")
+        self.assertIn("prompt cache has expired", out.getvalue())
+        self.assertLess(time.monotonic() - started, 2.5)
+
+    def test_a_second_prompt_reads_only_the_bytes_added_since_the_first(self):
+        path = self.long_transcript(1, 2)
+        size, reads = path.stat().st_size, []
+        real = open
+        def spy(file, mode="r", *a, **k):
+            handle = real(file, mode, *a, **k)
+            if str(file) == str(path):
+                reads.append(None)
+                seek = handle.seek
+                handle.seek = lambda off, *x: (reads.__setitem__(-1, off), seek(off, *x))[1]
+            return handle
+        with mock.patch.object(hook, "open", spy, create=True):
+            self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "user", "cwd": str(self.tmp / "f9")}) + "\n")
+            self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        self.assertEqual(reads[-2:], [0, size])
+
+    def test_the_scan_goes_on_across_prompts_and_a_half_written_line_waits(self):
+        path = self.long_transcript(0.5, 3)
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "user", "cwd": str(self.tmp / "f9")}))   # no newline yet
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
+        with path.open("a", encoding="utf-8") as f:
+            f.write("\n")
+        self.assertIn("4 folders wide", self.prompt(path, cwd=self.elsewhere))
+        self.assertEqual(self.prompt(path, cwd=self.elsewhere), "")
 
 
 if __name__ == "__main__":

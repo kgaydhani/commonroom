@@ -49,7 +49,7 @@ class Budget(unittest.TestCase):
         self.assertEqual(problems, [], "; ".join(problems))
 
     def test_the_handshake_templates_count_toward_the_same_budget(self):
-        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "answer-back.md", "charter.md", "cold-return.md", "compacted.md", "decisions-more.md", "decisions.md", "digest.md", "handoff-offer.md", "handoff.md", "hands.md", "home-start.md", "place-start.md", "places-recent.md", "reply.md",
+        self.assertEqual(sorted(p.name for p in HANDSHAKE.iterdir()), ["README.md", "answer-back.md", "charter.md", "cold-return.md", "compacted.md", "decisions-more.md", "decisions.md", "digest.md", "fresh-start.md", "handoff-offer.md", "handoff.md", "hands.md", "home-start.md", "place-start.md", "places-recent.md", "reply.md",
                                                                      "session-start.md"])
         with tempfile.TemporaryDirectory() as tmp:
             handshake = Path(tmp) / "handshake"

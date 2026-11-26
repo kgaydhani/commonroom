@@ -127,3 +127,9 @@ person_stale_days = { value = 180, min = 1 }
 places_listed = { value = 5, min = 0 }
 places_days = { value = 14, min = 1 }
 session_start_max_tokens = { value = 300, min = 1 }
+
+# A session older than `fresh_start_days` days, or one that has worked in more than `fresh_start_places` folders, is
+# offered a fresh start once, with the handover command ready; it blocks nothing (commonroom#580, docs/layer.md: 27 of
+# the owner's sessions lived over three days, two roamed across 17 and 35 folders). Room-wide only.
+fresh_start_days = { value = 3, min = 1 }
+fresh_start_places = { value = 3, min = 1 }
