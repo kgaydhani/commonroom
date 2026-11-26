@@ -92,7 +92,11 @@ CREATE TABLE IF NOT EXISTS routes (
     to_place TEXT NOT NULL,
     summary TEXT NOT NULL,
     how TEXT NOT NULL,
-    undone_at REAL
+    undone_at REAL,
+    due REAL,
+    answer TEXT,
+    answered_at REAL,
+    delivered_at REAL
 );
 CREATE TABLE IF NOT EXISTS heartbeat_runs (
     project TEXT NOT NULL,
@@ -139,6 +143,10 @@ class Ledger:
                            ("cache_write_tokens", "INTEGER"), ("compactions", "INTEGER"), ("wake_reason", "TEXT")):
             if name not in columns:
                 self.db.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
+        routes = {r[1] for r in self.db.execute("PRAGMA table_info(routes)")}
+        for name, kind in (("due", "REAL"), ("answer", "TEXT"), ("answered_at", "REAL"), ("delivered_at", "REAL")):
+            if name not in routes:
+                self.db.execute(f"ALTER TABLE routes ADD COLUMN {name} {kind}")
 
     @classmethod
     def reader(cls, path: Path | str | None = None, timeout: float = 1.0) -> "Ledger | None":
@@ -502,15 +510,16 @@ class Ledger:
     # Routes: where a session sent something (commonroom#576, docs/layer.md). Recorded by the session's own command,
     # never classified by a model; one can be marked undone, and stays in the list.
     def add_route(self, session: str, from_place: str, to_place: str, summary: str, how: str,
-                  at: float | None = None) -> int:
+                  at: float | None = None, due: float | None = None) -> int:
+        """`due` makes it a question: the time an answer is expected by (commonroom#577)."""
         with self.db:
-            cur = self.db.execute("INSERT INTO routes (at, session, from_place, to_place, summary, how) VALUES (?,?,?,?,?,?)",
-                                  (time.time() if at is None else at, session or "", from_place or "", to_place, summary, how))
+            cur = self.db.execute("INSERT INTO routes (at, session, from_place, to_place, summary, how, due) VALUES (?,?,?,?,?,?,?)",
+                                  (time.time() if at is None else at, session or "", from_place or "", to_place, summary, how, due))
         return cur.lastrowid
 
     def routes(self, limit: int | None = None) -> list[dict]:
         """Every route, newest first."""
-        sql = "SELECT id, at, session, from_place, to_place, summary, how, undone_at FROM routes ORDER BY at DESC, id DESC"
+        sql = "SELECT id, at, session, from_place, to_place, summary, how, undone_at, due, answer, answered_at, delivered_at FROM routes ORDER BY at DESC, id DESC"
         return [dict(r) for r in self.db.execute(sql + (f" LIMIT {int(limit)}" if limit else ""))]
 
     def undo_route(self, route_id: int, at: float | None = None) -> bool:
@@ -519,6 +528,39 @@ class Ledger:
             cur = self.db.execute("UPDATE routes SET undone_at=? WHERE id=? AND undone_at IS NULL",
                                   (time.time() if at is None else at, route_id))
         return cur.rowcount == 1
+
+    def answer_route(self, route_id: int, text: str, at: float | None = None) -> bool:
+        """Close a question with its answer. False when it is not a question, is undone, or was already answered."""
+        with self.db:
+            cur = self.db.execute("UPDATE routes SET answer=?, answered_at=? WHERE id=? AND due IS NOT NULL "
+                                  "AND undone_at IS NULL AND answered_at IS NULL",
+                                  (text, time.time() if at is None else at, route_id))
+        return cur.rowcount == 1
+
+    def waiting_answers(self, session: str, limit: int = 2) -> list[dict]:
+        """The answers to `session`'s questions not yet delivered, oldest first. Only reads."""
+        if not session:
+            return []
+        return [dict(r) for r in self.db.execute(
+            "SELECT id, to_place, summary, answer FROM routes WHERE session=? AND answered_at IS NOT NULL "
+            "AND delivered_at IS NULL AND undone_at IS NULL ORDER BY answered_at, id LIMIT ?", (session, limit))]
+
+    def take_answers(self, session: str, limit: int = 2) -> list[dict]:
+        """`waiting_answers`, each marked delivered as it is taken, so it reaches the session once."""
+        rows = self.waiting_answers(session, limit)
+        taken = []
+        with self.db:
+            for r in rows:
+                if self.db.execute("UPDATE routes SET delivered_at=? WHERE id=? AND delivered_at IS NULL",
+                                   (time.time(), r["id"])).rowcount == 1:
+                    taken.append(r)
+        return taken
+
+    def overdue_questions(self, now: float) -> list[dict]:
+        """Questions past their time with no answer (not undone), oldest first."""
+        return [dict(r) for r in self.db.execute(
+            "SELECT id, from_place, to_place, summary, due FROM routes WHERE due IS NOT NULL AND due < ? "
+            "AND answered_at IS NULL AND undone_at IS NULL ORDER BY due, id", (now,))]
 
     def record_lineage(self, project: str, file: str, old: str, new: str, reason: str = "", context: str = "",
                        branch: str = "", commit: str = "", at: float | None = None, mark: str | None = None) -> bool:

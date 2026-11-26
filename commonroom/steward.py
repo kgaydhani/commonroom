@@ -120,6 +120,14 @@ def unread_notes(unread: list[dict], now: float, hours: int) -> list[dict]:
             for n in sorted(unread, key=lambda n: n["at"]) if now - n["at"] > hours * 3600]
 
 
+def overdue_questions(rows: list[dict], now: float) -> list[dict]:
+    """One finding for each question sent to a place (`room route ... --ask`) still unanswered past its time
+    (commonroom#577). The number is the route's own, so each keeps its `since`."""
+    return [finding("unanswered-question", r["id"], f"The question to {r['to_place']} (route {r['id']}: {r['summary'][:80]!r}) "
+                    f"is {int((now - r['due']) // 3600)} hours past its time with no answer: ask again, or close it with "
+                    f"`room route undo {r['id']}`.") for r in rows]
+
+
 def stale_person_lines(old: list[tuple[int, str]], days: int) -> list[dict]:
     """One finding for each person-file line older than `days` (`person.stale`, commonroom#574). It only flags: the
     owner confirms the line by removing and re-adding it, or removes it with `room person remove <n>`."""

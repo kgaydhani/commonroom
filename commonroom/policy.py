@@ -17,7 +17,7 @@ NAMES = ("review_rounds", "incomplete_rounds", "ci_bounces", "ci_reruns", "ci_ba
          "notify_max", "heartbeat_failures", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens", "pie_idle_minutes",
          "owner_floor_weekly", "pie_notice_margin", "pie_own_active_minutes", "cold_return_minutes", "cold_return_context",
          "handoff_offer_hours", "looking_max_percent", "unread_note_hours", "person_max_lines", "person_max_tokens", "person_stale_days",
-         "places_listed", "places_days", "session_start_max_tokens")
+         "places_listed", "places_days", "session_start_max_tokens", "question_hours")
 # Name -> why no project may set it.
 GLOBAL_ONLY = {"prompt_max_tokens": "because it limits the room's own text (axiom A9)",
                "templates_max_tokens": "because it limits the room's own text (axiom A9)",
@@ -40,6 +40,7 @@ GLOBAL_ONLY = {"prompt_max_tokens": "because it limits the room's own text (axio
                "person_stale_days": "because it ages the owner's own person file, the same in every project (commonroom#574)",
                "places_listed": "because it shapes the owner's own sessions alike in every project (commonroom#578)",
                "places_days": "because it shapes the owner's own sessions alike in every project (commonroom#578)",
+               "question_hours": "because the asking session's command sets it, not a project (commonroom#577)",
                "session_start_max_tokens": "because it limits the room's own text (axiom A9, commonroom#578)"}
 
 
