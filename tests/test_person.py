@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from unittest import mock
 
-from commonroom import cli, person, policy
+from commonroom import cli, person, policy, steward
 
 DAY = date(2026, 11, 24)
 
@@ -127,3 +127,54 @@ class Command(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Stale(unittest.TestCase):
+    """Old lines are flagged by the steward and never deleted (commonroom#574)."""
+    def test_an_old_line_is_flagged_a_new_one_is_not_and_nothing_is_deleted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            person.add("old fact", home, date(2026, 1, 1))
+            person.add("new fact", home, date(2026, 11, 1))
+            before = person.path(home).read_bytes()
+            old = person.stale(person.load(home), DAY, policy.DEFAULTS["person_stale_days"])
+            self.assertEqual(old, [(1, "2026-01-01 old fact")])
+            found = steward.stale_person_lines(old, 180)
+            self.assertEqual([(f["invariant"], f["number"]) for f in found], [("stale-person-line", 1)])
+            self.assertIn("room person remove 1", found[0]["detail"])
+            self.assertEqual(person.path(home).read_bytes(), before)
+
+    def test_the_age_is_a_boundary_and_a_project_cannot_set_it(self):
+        self.assertEqual(person.stale(["2026-05-28 x"], DAY, 180), [])
+        self.assertEqual(len(person.stale(["2026-05-27 x"], DAY, 180)), 1)
+        with self.assertRaisesRegex(ValueError, "room-wide only"):
+            policy.overrides({"policy": {"person_stale_days": 9}})
+
+
+class FromNote(unittest.TestCase):
+    def make(self, root, kind, body="Keep replies short.\nmore"):
+        inbox = Path(root) / "inbox"
+        inbox.mkdir(exist_ok=True)
+        note = inbox / "n1.md"
+        note.write_text(f"---\nfrom: owner\nkind: {kind}\nat: 2026-11-20T10:00:00\n---\n{body}\n", encoding="utf-8")
+        return note
+
+    def test_a_correction_note_becomes_a_dated_line_through_the_cap(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as proj, \
+                mock.patch.dict(os.environ, {"COMMONROOM_HOME": tmp}):
+            note = self.make(proj, "correction")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = cli.main(["person", "from-note", str(note)])
+            self.assertEqual(code, 0)
+            self.assertEqual(person.load(Path(tmp)), ["2026-11-20 Keep replies short."])
+
+    def test_other_kinds_and_secrets_are_refused(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as proj, \
+                mock.patch.dict(os.environ, {"COMMONROOM_HOME": tmp}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["person", "from-note", str(self.make(proj, "decision"))]), 1)
+                self.assertEqual(cli.main(["person", "from-note", str(self.make(proj, "correction", "token = abcdef123456"))]), 1)
+                self.assertEqual(cli.main(["person", "from-note", str(Path(proj) / "inbox" / "gone.md")]), 1)
+            self.assertEqual(person.load(Path(tmp)), [])

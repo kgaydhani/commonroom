@@ -16,7 +16,7 @@ NAMES = ("review_rounds", "incomplete_rounds", "ci_bounces", "ci_reruns", "ci_ba
          "room_error_backoff_seconds", "room_error_escalate", "resume_window_seconds", "rework_resume_seconds", "progress_min_work_seconds",
          "notify_max", "heartbeat_failures", "run_timeout_seconds", "prompt_max_tokens", "templates_max_tokens", "pie_idle_minutes",
          "owner_floor_weekly", "pie_notice_margin", "pie_own_active_minutes", "cold_return_minutes", "cold_return_context",
-         "handoff_offer_hours", "looking_max_percent", "unread_note_hours", "person_max_lines", "person_max_tokens")
+         "handoff_offer_hours", "looking_max_percent", "unread_note_hours", "person_max_lines", "person_max_tokens", "person_stale_days")
 # Name -> why no project may set it.
 GLOBAL_ONLY = {"prompt_max_tokens": "because it limits the room's own text (axiom A9)",
                "templates_max_tokens": "because it limits the room's own text (axiom A9)",
@@ -35,7 +35,8 @@ GLOBAL_ONLY = {"prompt_max_tokens": "because it limits the room's own text (axio
                "handoff_offer_hours": "because it shapes the owner's own sessions alike in every project "
                                       "(commonroom#384)",
                "person_max_lines": "because it caps the owner's own person file, the same in every project (commonroom#573)",
-               "person_max_tokens": "because it caps the owner's own person file, the same in every project (commonroom#573)"}
+               "person_max_tokens": "because it caps the owner's own person file, the same in every project (commonroom#573)",
+               "person_stale_days": "because it ages the owner's own person file, the same in every project (commonroom#574)"}
 
 
 def check(name: str, value, where: str, low: int = 0, high: int | None = None) -> int:

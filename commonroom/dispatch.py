@@ -32,7 +32,7 @@ from commonroom.ledger import Ledger
 from commonroom.localboard import LocalBoard
 from commonroom.waytext import PLACEHOLDER, fill_way, read_way   # moved there so handshake can import them (commonroom#345)
 from commonroom.liveness import ORPHAN_AGE, orphaned, pid_alive   # moved there for the pie (commonroom#238)
-from commonroom import measure, metrics as metrics_mod, owner_reserve, steward, tokens as tokens_mod, weights as weights_mod
+from commonroom import measure, metrics as metrics_mod, owner_reserve, person as person_mod, steward, tokens as tokens_mod, weights as weights_mod
 from commonroom.lock import acquire_lock, suite_lock
 from commonroom.workers import load_role, run_worker, worker_tmp
 
@@ -3759,6 +3759,12 @@ class Dispatcher:
                     found += steward.odd_weights(weights_mod.read_history(home / weights_mod.FILENAME), meter)
             except Exception as exc:
                 self.log(f"   steward: the meter checks failed: {exc}")
+            try:   # an unreadable person file costs only this check
+                days = self.policy_overrides.get("person_stale_days", policy_mod.DEFAULTS["person_stale_days"])
+                found += steward.stale_person_lines(person_mod.stale(
+                    person_mod.load(Path(self.ledger.path).parent), datetime.date.fromtimestamp(now), days), days)
+            except Exception as exc:
+                self.log(f"   steward: the person-file check failed: {exc}")
             try:   # an unreadable registry or inbox costs only this check, never the rest of the sweep
                 reg = registry_mod.load(Path(self.ledger.path).parent / registry_mod.FILENAME, check=False)   # the ledger's own home
                 mine = handshake.project_named(reg, self.project)
