@@ -34,6 +34,7 @@ SESSION_START = read_way(handshake.TEMPLATES / "session-start.md")
 COLD_RETURN = read_way(handshake.TEMPLATES / "cold-return.md")
 COMPACTED = read_way(handshake.TEMPLATES / "compacted.md")
 PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
+HOME_START = read_way(handshake.TEMPLATES / "home-start.md")
 PLACES_RECENT = read_way(handshake.TEMPLATES / "places-recent.md")
 EVENT = "SessionStart"
 PROMPT = "UserPromptSubmit"
@@ -191,6 +192,9 @@ def place_line(data: dict) -> str:
     if place is None:
         return ""
     name = Path(place["path"]).name or place["path"]
+    if place.get("home"):
+        line = HOME_START.strip()
+        return f"{line}\n{recent}" if (recent := recent_places(place, line)) else line
     described = " ".join(str(place.get("description") or "").split())
     line = fill_way(PLACE_START, place=name, description=f": {described.rstrip('.')}" if described else "")
     return f"{line}\n{recent}" if (recent := recent_places(place, line)) else line

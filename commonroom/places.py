@@ -135,7 +135,7 @@ def discover(reg=None, projects_dir: Path | None = None, path: Path | None = Non
         places[key] = {"path": new["path"] if new["last"] >= old.get("last", 0) else old["path"],
                        "last": max(new["last"], old.get("last", 0)),
                        "sessions": sorted(set(old["sessions"]) | new["sessions"]),
-                       "description": old.get("description", "")}
+                       "description": old.get("description", "")} | ({"home": True} if old.get("home") else {})
     for key in [k for k, p in places.items() if _excluded(p["path"], project_roots, worktrees, temp)]:
         del places[key]                       # a folder that became a project (or holds a room.toml) is no place
     data["files"] = {k: v for k, v in files.items()} | {k: v for k, v in data["files"].items() if k not in files}
@@ -146,7 +146,8 @@ def discover(reg=None, projects_dir: Path | None = None, path: Path | None = Non
 def listing(data: dict) -> list[dict]:
     """Each place as {"name", "path", "last", "sessions", "exists", "description"}, most recent first."""
     rows = [{"name": Path(p["path"]).name or p["path"], "path": p["path"], "last": p["last"],
-             "sessions": len(p["sessions"]), "exists": Path(p["path"]).is_dir(), "description": p.get("description", "")}
+             "sessions": len(p["sessions"]), "exists": Path(p["path"]).is_dir(), "description": p.get("description", ""),
+             "home": bool(p.get("home"))}
             for p in data["places"].values()]
     return sorted(rows, key=lambda r: (-r["last"], r["path"]))
 
