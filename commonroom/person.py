@@ -86,6 +86,32 @@ def add(text: str, home: Path | None = None, today: date | None = None) -> list[
     return after
 
 
+def stale(lines: list[str], today: date, days: int) -> list[tuple[int, str]]:
+    """The (1-based number, line) of each line dated more than `days` before `today`. Reads only; a line whose date
+    does not parse is not flagged. Nothing is ever deleted here (commonroom#574)."""
+    found = []
+    for i, line in enumerate(lines, 1):
+        try:
+            age = (today - date.fromisoformat(line[:10])).days
+        except ValueError:
+            continue
+        if age > days:
+            found.append((i, line))
+    return found
+
+
+def from_note(note: dict, home: Path | None = None, today: date | None = None) -> list[str]:
+    """Turn a note of kind `correction` (as `handshake.read_notes` returns it) into one dated line, through `add`, so the
+    same cap and secret check apply. The line is the note's first non-empty line, dated by the note when it has a date."""
+    if note.get("kind") != "correction":
+        raise PersonError(f"refused: {note.get('name')} is a note of kind {note.get('kind') or 'none'}, not a correction.")
+    first = next((x for x in (note.get("text") or "").splitlines() if x.strip()), "")
+    if not first:
+        raise PersonError(f"nothing to add: {note.get('name')} has no text")
+    when = date.fromtimestamp(note["at"]) if note.get("dated") else today
+    return add(first, home, when)
+
+
 def remove(n: int, home: Path | None = None) -> str:
     """Remove line `n` (1-based) and return it. Raises PersonError when there is no such line."""
     lines = load(home)
