@@ -195,5 +195,9 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
             for t in found if isinstance(found, list) else []:
                 waiting.append({"project": key, "number": t["number"], "title": t["title"], "due": t.get("due"),
                                 "url": t.get("url")})
-    return {"now": now, "week": week, "gate": gate, "pie": pie_verdict, "rows": rows, "waiting": waiting,
+    try:
+        routes = ledger.routes(30)
+    except Exception:
+        routes = []
+    return {"now": now, "routes": routes, "week": week, "gate": gate, "pie": pie_verdict, "rows": rows, "waiting": waiting,
             "projects": sections, "registered": bool(reg.projects), "error": error}

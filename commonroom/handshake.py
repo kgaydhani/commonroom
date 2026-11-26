@@ -926,6 +926,76 @@ def cmd_attach(args) -> int:
     return 0
 
 
+ROUTE_HOWS = ("note", "hand", "message", "brief")
+
+
+def _place_here(reg: registry.Registry) -> str:
+    """The place the command runs in: its project's name, else the folder's name."""
+    try:
+        return find(reg).name
+    except HandshakeError:
+        return Path.cwd().name or str(Path.cwd())
+
+
+def _record_crossing(reg: registry.Registry, to_place: str, summary: str, how: str, session: str | None = None) -> None:
+    """A note or hand that crosses places is a route too. Never lets a ledger fault stop the note or hand."""
+    here = _place_here(reg)
+    if here == to_place:
+        return
+    try:
+        ledger = Ledger()
+        try:
+            ledger.add_route(session or os.environ.get("CLAUDE_SESSION_ID", ""), here, to_place, _one_line(summary)[:200], how)
+        finally:
+            ledger.close()
+    except Exception:
+        pass
+
+
+def _when(at: float) -> str:
+    return datetime.fromtimestamp(at).strftime("%Y-%m-%d %H:%M")
+
+
+@_run
+def cmd_route(args) -> int:
+    """`route list`, `route undo ID`, or `route TO "what was sent" --how note|hand|message|brief`: record where a
+    session sent something. The room only records it; no model call classifies anything (commonroom#576)."""
+    words = list(args.words)
+    ledger = Ledger()
+    try:
+        if words == ["list"]:
+            rows = ledger.routes()
+            if not rows:
+                print("no routes")
+            for r in rows:
+                print(f"#{r['id']} {_when(r['at'])}  {r['from_place'] or '?'} -> {r['to_place']}  [{r['how']}]"
+                      + (f" session {r['session']}" if r["session"] else "") + f"  {r['summary']}"
+                      + (f"  [undone {_when(r['undone_at'])}]" if r["undone_at"] else ""))
+            return 0
+        if words[0] == "undo":
+            if len(words) != 2 or not words[1].isdigit():
+                raise HandshakeError("refused: `route undo ID` takes a route number.")
+            if not ledger.undo_route(int(words[1])):
+                raise HandshakeError(f"refused: no route {words[1]} that is not already undone.")
+            print(f"route {words[1]} marked undone")
+            return 0
+        if len(words) != 2:
+            raise HandshakeError("refused: `route TO \"what was sent\"` (two arguments, the text in quotes).")
+        to_place, text = words
+        text = sys.stdin.read() if text == "-" else text
+        if not text.strip() or not to_place.strip():
+            raise HandshakeError("refused: say where it went and what was sent.")
+        if args.how not in ROUTE_HOWS:
+            raise HandshakeError(f"refused: --how must be one of {', '.join(ROUTE_HOWS)}.")
+        origin = args.from_place or _place_here(load_registry())
+        n = ledger.add_route(args.session or os.environ.get("CLAUDE_SESSION_ID", ""), origin, to_place.strip(),
+                             _one_line(text)[:200], args.how)
+        print(f"route {n}: {origin} -> {to_place.strip()} [{args.how}]")
+        return 0
+    finally:
+        ledger.close()
+
+
 @_run
 def cmd_note(args) -> int:
     *named, text = args.words    # `note TEXT` or `note PROJECT TEXT`
@@ -956,6 +1026,7 @@ def cmd_note(args) -> int:
             ledger.mark(p.name, DIRECTION, now)
         finally:
             ledger.close()
+    _record_crossing(reg, p.name, text, "note")
     refresh(reg, p)
     print(f"note for {p.name} from {_one_line(sender)}: {path}")
     return 0
@@ -1279,6 +1350,7 @@ def cmd_hand(args) -> int:
             hand_id = uuid.uuid4().hex[:6]
             path = write_note(where, text, sender, args.to, now, "hand", {"hand": hand_id})
             ledger.mark(p.name, HAND_MARK + hand_id, now)
+            _record_crossing(reg, p.name, text, "hand")
             print(hand_id)
     finally:
         ledger.close()
