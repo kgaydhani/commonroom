@@ -47,6 +47,48 @@ def _project_name(cfg: dict) -> str | None:
 
 
 # Commands ---------------------------------------------------------------------
+def cmd_finding(args) -> int:
+    """File or triage a room-wide finding without loading any project or session settings."""
+    if args.mode != "record" and args.words is not None:
+        print("--words requires a finding report", file=sys.stderr)
+        return 1
+    if args.mode == "record" and not (args.detail or "").strip():
+        print("A finding needs a description", file=sys.stderr)
+        return 1
+    if args.mode == "resolve":
+        outcome, n, value = args.disposition
+        try:
+            n = int(n)
+            issue = None if outcome == "closed" else int(value)
+            reason = value.strip() if outcome == "closed" else None
+            if n < 1 or (issue is not None and issue < 1) or reason == "":
+                raise ValueError
+        except ValueError:
+            print("Use positive finding and issue numbers, or give a nonempty reason to close", file=sys.stderr)
+            return 1
+    ledger = Ledger()
+    try:
+        if args.mode == "record":
+            n = ledger.add_room_finding(str(Path.cwd()), args.detail, args.words)
+            print(f"Finding {n} recorded")
+        elif args.mode in ("list", "trail"):
+            print(json.dumps(ledger.room_findings(pending=args.mode == "list"), ensure_ascii=False, indent=2))
+        elif ledger.resolve_room_finding(n, outcome, issue, reason):
+            print(f"Finding {n} {outcome}")
+        else:
+            print(f"No pending finding {n}", file=sys.stderr)
+            return 1
+    finally:
+        ledger.close()
+    return 0
+
+
+class FindingDisposition(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        namespace.mode = "resolve"
+        namespace.disposition = (option_string[2:], *values)
+
+
 def cmd_guard_command(args) -> int:
     """Claude Code PreToolUse hook for workers: exit 2 blocks a filter-based process kill (commonroom#18)."""
     return guard.main()
@@ -1426,6 +1468,16 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("label", help="add or remove labels on an item"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("--add", action="append", metavar="LABEL"); p.add_argument("--remove", action="append", metavar="LABEL"); p.set_defaults(func=cmd_label)
     p = sub.add_parser("close", help="close an item, with an optional reason"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("reason", nargs="?", default=""); p.set_defaults(func=cmd_close)
     p = sub.add_parser("claim", help="mark an item as held by you so the room leaves it alone; --release gives it back"); p.add_argument("name", metavar="project"); p.add_argument("n", type=int, metavar="item"); p.add_argument("--as", dest="who", default="owner"); p.add_argument("--release", action="store_true"); p.set_defaults(func=cmd_claim)
+    p = sub.add_parser("finding", help="report a gap in the room from any folder, or record its triage")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("detail", nargs="?", help="what you saw")
+    g.add_argument("--list", action="store_const", dest="mode", const="list", help="show pending reports")
+    g.add_argument("--trail", action="store_const", dest="mode", const="trail", help="show all reports and outcomes")
+    g.add_argument("--created", action=FindingDisposition, nargs=2, metavar=("ID", "ISSUE"), help="record a new issue")
+    g.add_argument("--attached", action=FindingDisposition, nargs=2, metavar=("ID", "ISSUE"), help="record an existing issue")
+    g.add_argument("--closed", action=FindingDisposition, nargs=2, metavar=("ID", "REASON"), help="close with a reason")
+    p.add_argument("--words", help="the owner's exact words")
+    p.set_defaults(func=cmd_finding, mode="record")
     p = sub.add_parser("findings", help="every finding of a project's latest steward sweep"); p.add_argument("name", nargs="?", help="the project (same as --project)"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_findings)
     p = sub.add_parser("artifact", help="`artifact published <name>`: record that a published artifact was republished"); p.add_argument("action", choices=["published"]); p.add_argument("artifact"); p.add_argument("--project"); p.set_defaults(func=handshake.cmd_artifact)
     p = sub.add_parser("handoff", help="write a brief for the next session from standard input or --file, and record its lineage (no model call)"); p.add_argument("name", nargs="?", help="the project (same as --project); or `take <file>` / `list [project]`"); p.add_argument("rest", nargs="*", help=argparse.SUPPRESS); p.add_argument("--project"); p.add_argument("--session"); p.add_argument("--reason"); p.add_argument("--context", type=int, help="the session's context size in tokens"); p.add_argument("--file", help="read the session's text from this file ('-': standard input, the default)"); p.set_defaults(func=handshake.cmd_handoff)
