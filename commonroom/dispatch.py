@@ -3876,6 +3876,10 @@ class Dispatcher:
                            if i["number"] != log_issue and not labels(i) and (i.get("body") or "").lstrip().startswith("[agent:"))
         reasons += [f"#{n} was filed by an agent and is untriaged: make it ready, park it or close it"
                     for n in untriaged[:5]]
+        if (self.cfg.get("director") or {}).get("room_findings"):
+            pending = self.ledger.room_findings(pending=True, limit=5)
+            if pending:
+                reasons.append("room findings awaiting triage: " + ", ".join(str(f["id"]) for f in pending))
         open_issues = [i for i in every_open
                        if self.milestone and (i.get("milestone") or {}).get("title") == self.milestone]
         for issue in open_issues:

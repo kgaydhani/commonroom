@@ -67,6 +67,7 @@ codex = "Seven of this repo's tests fail only inside the Codex sandbox (commonro
 claude_slots = 1
 
 [director]
+room_findings = true
 # Director 2026-10-10: the room's own director used 23% of its 15% share (5 runs, 29 min in 24 h) while builds waited 1.5-3.5 h
 # for review. Steer every 6 h here; the game keeps 3 h. Escalations still wake it at once.
 # Director 2026-10-12 (#104): at 6 h it still took 34% of this project's spend ($3.42 of $10.11 in 24 h) while the project sat

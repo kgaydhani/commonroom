@@ -94,14 +94,46 @@ def in_force(room_home: Path) -> dict:
     return {"file": str(path), "rules": list(rows.values()), "error": error}
 
 
+def _case_insensitive() -> bool:
+    return os.name == "nt"
+
+
+def statements(command: str) -> list[str]:
+    """The statements of a shell command, split on && || ; | & and newlines outside quotes."""
+    out, cur, quote, i = [], [], None, 0
+    while i < len(command):
+        c = command[i]
+        if quote:
+            cur.append(c)
+            if c == "\\" and quote == '"' and i + 1 < len(command):
+                i += 1
+                cur.append(command[i])
+            elif c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+            cur.append(c)
+        elif c in ";|&\n":
+            out.append("".join(cur))
+            cur = []
+        else:
+            cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return [x.strip() for x in out if x.strip()]
+
+
 def _glob(pattern: str, text: str, path: bool) -> bool:
     if path:
         pattern, text = os.path.expanduser(pattern).replace("\\", "/"), text.replace("\\", "/")
         regex = re.escape(pattern).replace(r"\*\*", ".*").replace(r"\*", "[^/]*")
     else:
+        if pattern.endswith(":*") and text == pattern[:-2]:
+            return True
         pattern = pattern[:-2] + " *" if pattern.endswith(":*") else pattern
         regex = re.escape(pattern).replace(r"\*", ".*")
-    return re.fullmatch(regex, text, re.S) is not None
+    flags = re.S | (re.I if path and _case_insensitive() else 0)
+    return re.fullmatch(regex, text, flags) is not None
 
 
 def matches(rule: str, tool: str, tool_input: dict) -> bool:
@@ -112,7 +144,9 @@ def matches(rule: str, tool: str, tool_input: dict) -> bool:
         return False
     if tool in ("Bash", "PowerShell"):
         command = tool_input.get("command")
-        return isinstance(command, str) and (spec is None or _glob(spec, command.strip(), False))
+        if not isinstance(command, str):
+            return False
+        return spec is None or any(_glob(spec, c, False) for c in [command.strip(), *statements(command)])
     if spec is None:
         return True
     target = tool_input.get("file_path") or tool_input.get("path") or tool_input.get("notebook_path")

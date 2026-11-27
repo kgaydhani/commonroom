@@ -154,13 +154,12 @@ def off_schedule_resets(readings: list[dict], meter: str, since: float) -> list[
     prev = None
     for r in sorted(readings, key=lambda r: (r["first_seen"], r.get("observed_at") or 0)):
         due = prev and prev.get("resets_at")
-        if due and r["first_seen"] >= since and r["first_seen"] < due - weights.ROLLOVER_SLACK:
-            moved = r.get("resets_at") and abs(r["resets_at"] - due) > weights.ROLLOVER_SLACK
-            if r["used_pct"] < prev["used_pct"] - 1e-6 or moved:
-                early = (due - r["first_seen"]) / 86400
-                found.append(finding("off-schedule-reset", int(r["first_seen"]),
-                                     f"The {meter} meter reset on {weights._day(r['first_seen'])}, {early:.1f} days before its "
-                                     "scheduled time: the vendor changed it, so check the budget's windows and what it assumes."))
+        if (due and since <= r["first_seen"] < due - weights.ROLLOVER_SLACK
+                and weights.window_changed(prev, r)):
+            early = (due - r["first_seen"]) / 86400
+            found.append(finding("off-schedule-reset", int(r["first_seen"]),
+                                 f"The {meter} meter reset on {weights._day(r['first_seen'])}, {early:.1f} days before its "
+                                 "scheduled time: the vendor changed it, so check the budget's windows and what it assumes."))
         prev = r
     return found
 
