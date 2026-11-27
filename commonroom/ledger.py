@@ -84,6 +84,17 @@ CREATE TABLE IF NOT EXISTS findings (
     since REAL NOT NULL,
     PRIMARY KEY (project, invariant, number)
 );
+CREATE TABLE IF NOT EXISTS room_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    cwd TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    words TEXT,
+    outcome TEXT,
+    issue INTEGER,
+    reason TEXT,
+    resolved_at REAL
+);
 CREATE TABLE IF NOT EXISTS routes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     at REAL NOT NULL,
@@ -506,6 +517,24 @@ class Ledger:
         return [dict(r) for r in self.db.execute(
             "SELECT invariant, number, detail, since FROM findings WHERE project=? ORDER BY since, invariant, number",
             (project or "",))]
+
+    # Session reports about the room itself survive steward sweeps and director runs.
+    def add_room_finding(self, cwd: str, detail: str, words: str | None) -> int:
+        with self.db:
+            cur = self.db.execute("INSERT INTO room_findings (at, cwd, detail, words) VALUES (?,?,?,?)",
+                                  (time.time(), cwd, detail, words))
+        return cur.lastrowid
+
+    def room_findings(self, *, pending: bool, limit: int = -1) -> list[dict]:
+        where = "WHERE resolved_at IS NULL" if pending else ""
+        return [dict(row) for row in self.db.execute(f"SELECT * FROM room_findings {where} ORDER BY id LIMIT ?", (limit,))]
+
+    def resolve_room_finding(self, n: int, outcome: str, issue: int | None, reason: str | None) -> bool:
+        with self.db:
+            cur = self.db.execute(
+                "UPDATE room_findings SET outcome=?, issue=?, reason=?, resolved_at=? WHERE id=? AND resolved_at IS NULL",
+                (outcome, issue, reason, time.time(), n))
+        return cur.rowcount == 1
 
     # Routes: where a session sent something (commonroom#576, docs/layer.md). Recorded by the session's own command,
     # never classified by a model; one can be marked undone, and stays in the list.
