@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from commonroom import board, config as config_mod, glance, handshake, metrics, pie, registry as registry_mod, standings
+from commonroom import board, config as config_mod, glance, handshake, limits, metrics, pie, registry as registry_mod, standings
 from commonroom.dispatch import pie_active, pie_holds, verdicts
 from commonroom.liveness import orphaned
 from commonroom.localboard import LocalBoard
@@ -203,5 +203,6 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
         layer = glance.layer(ledger, now)
     except Exception as e:
         layer = {"error": str(e)}
-    return {"now": now, "routes": routes, "layer": layer, "week": week, "gate": gate, "pie": pie_verdict, "rows": rows, "waiting": waiting,
+    return {"now": now, "routes": routes, "layer": layer, "limits": limits.in_force(ledger.path.parent),
+            "week": week, "gate": gate, "pie": pie_verdict, "rows": rows, "waiting": waiting,
             "projects": sections, "registered": bool(reg.projects), "error": error}

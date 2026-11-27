@@ -35,6 +35,8 @@ ul{margin:.3rem 0;padding-left:1.2rem}
 <div id="waiting"></div>
 <h2>Routes</h2>
 <div id="routes"></div>
+<h2>Limits in force</h2>
+<div id="limits"></div>
 <h2>The layer today</h2>
 <div id="layer"></div>
 <h2>Projects</h2>
@@ -109,6 +111,18 @@ function render(d) {
   if (!(d.routes || []).length) el("p", "Nothing has been routed.", "dim", rt);
   for (const r of d.routes || []) {
     el("p", `${when(r.at)}  ${r.from_place || "?"} -> ${r.to_place} (${r.how}${r.session ? ", session " + r.session : ""}): ${r.summary}${r.undone_at ? " [undone " + when(r.undone_at) + "]" : ""}`, r.undone_at ? "dim" : null, rt);
+  }
+
+  const lm = $("limits");
+  lm.textContent = "";
+  if (d.limits) {
+    el("p", `Your list: ${d.limits.file}`, "dim", lm);
+    if (d.limits.error) el("p", d.limits.error, "bad", lm);
+    else if (!d.limits.rules.length) el("p", "No limits are in force.", "dim", lm);
+    for (const r of d.limits.rules) {
+      const source = r.line == null ? "removed from the list; run room install to remove its deny rule" : `line ${r.line}`;
+      el("p", `${r.rule} (${source}${r.deny ? "; installed deny rule" : ""})`, null, lm);
+    }
   }
 
   const ly = $("layer");
