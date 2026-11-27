@@ -162,3 +162,30 @@ class LimitsTest(unittest.TestCase):
             self.assertEqual(json.loads(target.read_text())["permissions"]["deny"], ["WebFetch"])
             self.run_cmd(install.cmd_uninstall)
             self.assertFalse(target.exists())
+
+
+class MatcherTest(unittest.TestCase):
+    def test_windows_paths_compare_case_insensitively(self):
+        rule = "Read(C:/Users/u/.ssh/**)"
+        call = {"file_path": r"c:\users\u\.ssh\id_rsa"}
+        with mock.patch.object(limits, "_case_insensitive", return_value=True):
+            self.assertTrue(limits.matches(rule, "Read", call))
+        with mock.patch.object(limits, "_case_insensitive", return_value=False):
+            self.assertFalse(limits.matches(rule, "Read", call))
+
+    def test_a_rule_matches_any_statement_of_a_compound_command(self):
+        for cmd in ("cd x && git push origin", "a || git push", "ls; git push -f", "cat f | git push", "x\ngit push"):
+            self.assertTrue(limits.matches("Bash(git push:*)", "Bash", {"command": cmd}), cmd)
+            self.assertTrue(limits.matches("PowerShell(git push:*)", "PowerShell", {"command": cmd}), cmd)
+
+    def test_a_command_that_only_mentions_the_pattern_in_quotes_is_not_blocked(self):
+        for cmd in ("echo 'cd x && git push origin'", 'echo "a; git push"', "git commit -m 'no git push | here'"):
+            self.assertFalse(limits.matches("Bash(git push:*)", "Bash", {"command": cmd}), cmd)
+
+    def test_plain_commands_match_as_before(self):
+        self.assertTrue(limits.matches("Bash(git push:*)", "Bash", {"command": "git push origin"}))
+        self.assertFalse(limits.matches("Bash(git push:*)", "Bash", {"command": "git status"}))
+
+    def test_a_prefix_rule_matches_the_bare_command(self):
+        self.assertTrue(limits.matches("Bash(git push:*)", "Bash", {"command": "git push"}))
+        self.assertFalse(limits.matches("Bash(git push:*)", "Bash", {"command": "git pushx"}))
