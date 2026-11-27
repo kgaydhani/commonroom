@@ -1,11 +1,12 @@
 """Owner-chosen limits only; all homes, settings, projects and ledgers are scratch."""
+import io
 import json
 import os
 from pathlib import Path
 import unittest
 from unittest import mock
 
-from commonroom import install, ledger, limits
+from commonroom import cli, hook, install, ledger, limits, pretool, registry
 import test_install
 
 
@@ -30,6 +31,49 @@ class LimitsTest(unittest.TestCase):
 
     def settings_data(self):
         return json.loads(self.settings.read_text(encoding="utf-8"))
+
+    def test_a0_only_the_owners_list_can_block_own_sessions(self):
+        self.put('{"permissions":{"deny":["WebFetch"]}}')
+        self.choose("# An example is not a limit\n# Bash(pkill *)\nBash(git push --force *)\n")
+        self.run_cmd(install.cmd_install)
+        self.assertEqual(self.settings_data()["permissions"]["deny"], ["WebFetch", "Bash(git push --force *)"])
+        project = Path(self.tmp.name) / "orchard"
+        project.mkdir()
+        (project / "room.toml").write_text('[project]\nname = "orchard"\n', encoding="utf-8", newline="\n")
+        registry.save(registry.Registry({"orchard": registry.Project("orchard", str(project), 0)}))
+        transcript = self.claude / "projects" / "orchard" / "session.jsonl"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({"type": "assistant", "timestamp": "2000-01-01T00:00:00+00:00",
+                              "sessionId": "scratch", "cwd": str(project),
+                              "message": {"usage": {"input_tokens": 300000}}}) + "\n", encoding="utf-8")
+        with mock.patch.dict(os.environ), mock.patch.object(hook, "LIMIT", 30):
+            os.environ.pop("COMMONROOM_WORKER", None)
+            for command, expected in (("git push --force origin topic", 2), ("git push origin topic", 0),
+                                      ("pkill -f example", 0)):
+                for event in ("session-start", "prompt-submit", "pre-tool"):
+                    with self.subTest(command=command, event=event):
+                        out, err = io.StringIO(), io.StringIO()
+                        data = {"cwd": str(project), "tool_name": "Bash", "tool_input": {"command": command},
+                                "transcript_path": str(transcript)}
+                        with mock.patch("sys.stdin", io.StringIO(json.dumps(data))), \
+                                mock.patch("sys.stdout", out), mock.patch("sys.stderr", err):
+                            code = cli.main(["hook", event])
+                        self.assertEqual(code, expected if event == "pre-tool" else 0)
+                        if event == "pre-tool":
+                            self.assertEqual(out.getvalue(), "")
+                            self.assertEqual(bool(err.getvalue()), expected == 2)
+                        else:
+                            self.assertEqual(err.getvalue(), "")
+                            payload = json.loads(out.getvalue())
+                            self.assertEqual(list(payload), ["hookSpecificOutput"])
+                            self.assertEqual(sorted(payload["hookSpecificOutput"]),
+                                             ["additionalContext", "hookEventName"])
+        self.choose("")
+        self.run_cmd(install.cmd_install)
+        self.assertEqual(self.settings_data()["permissions"]["deny"], ["WebFetch"])
+        with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": ""}):
+            self.assertEqual(pretool.hook(json.dumps({"tool_name": "Bash",
+                             "tool_input": {"command": "git push --force origin topic"}})), (0, ""))
 
     def test_default_list_is_readable_empty_and_changes_no_project_permissions(self):
         projects = [Path(self.tmp.name) / n for n in ("orchard", "pottery")]

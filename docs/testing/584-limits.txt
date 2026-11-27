@@ -1,0 +1,51 @@
+Issue #584: the owner's limits are the narrow A0 exception
+
+Implementation
+- The A0 test exercises SessionStart and UserPromptSubmit with a scratch transcript:
+  both return only added context even when a chosen limit matches a tool call.
+- PreToolUse blocks the chosen rule only. A commented worker-guard example and
+  an unlisted call pass; clearing the list removes the added deny rule and block.
+- AX-A0 names that test, documents only the owner-list exception, and marks the
+  axiom wording gap. docs/axioms.md is unchanged. Gap recorded on #562:
+  https://github.com/kgaydhani/commonroom/issues/562#issuecomment-7195830224
+- The dashboard lists active lines and tracked deny rules still installed after
+  list edits. Empty state is explicit; unreadable state is reported as unknown.
+  Pre-existing deny rules are shown only when also in the owner's current list.
+- Page tests compare every other page-state field and project/settings bytes
+  before and after reading limits. No project behavior or settings changes.
+
+Isolation and regression evidence
+- New tests use temporary COMMONROOM_HOME, scratch HOME/USERPROFILE and Claude
+  settings/transcripts, a temporary Ledger and made-up projects. Installer tests
+  reuse the existing fake scheduler; no scheduler action was performed.
+- Before implementation, the four original new page tests failed on the unchanged
+  page with KeyError: 'limits' (5 errors including subtests).
+- No external-tool parser or external-tool output fixture was added.
+- Node executed the actual dashboard render function with a scratch DOM:
+  PASS: dashboard render handles empty, active, stale deny, unknown and literal rule text.
+- Decisions ledger: Ran 17 tests in 30.449s / OK.
+- Limits and page regression tests: Ran 16 tests in 13.455s / OK.
+- A0 hook class: Ran 3 tests in 0.747s / OK.
+- Full hook module: Ran 70 tests in 35.370s / FAILED (errors=1).
+  The unchanged ColdReturn.test_only_the_tail_is_read embeds a long temporary
+  path, producing a 423-byte record for a fixed 400-byte tail. Reported separately:
+  https://github.com/kgaydhani/commonroom/issues/711
+- git diff --check passes; changed source/document files use LF.
+
+Full-suite check
+Command: python "D:/Dev/commonroom/room.py" check (from this worktree).
+The runner reported: suite lock unavailable here; running unlocked
+Final output:
+  suite ran out of time after 9 min: report TESTS: INCOMPLETE
+  no output before the limit
+TESTS: INCOMPLETE. No aggregate test count or pass/fail result was available.
+The shell tool reported exit 1 despite the runner's explicit incomplete verdict;
+this is recorded as unfinished, not as a suite failure. All 16 focused limits/page
+tests passed on the final implementation. The full suite still needs to finish
+outside the sandbox before review.
+
+Activation and remaining work
+- Dashboard process restart required to load the page-state code and HTML.
+  No room process was stopped or restarted.
+- No project room.toml or prompt additions are needed.
+- Commit, push and PR creation are left to Common Room because .git is read-only.
