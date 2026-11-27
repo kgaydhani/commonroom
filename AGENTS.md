@@ -23,7 +23,7 @@ Every agent working on this repo reads this first: Claude Code (through `CLAUDE.
 - **Tests:** `python -m unittest discover -s tests`, run from the worktree root. It must pass before you push. The core uses only the standard library.
 - **No CI.** Nothing on GitHub runs the tests. The reviewer runs them on the PR head and states the result in the review, and housekeeping merges on that approval, one PR per pass.
 - **Blocked:** comment on the issue with exactly what's missing, then stop. Don't retry the same approach.
-- Stay inside the issue's scope. If you find other work, open an issue for it in this repo instead of doing it.
+- Stay inside the issue's scope. If you find other work, open an issue for it in this repo instead of doing it: in the goal milestone with the `kind:follow-up` label, which the director releases on its next run without being woken for it. Use `needs:director` only for a decision a live project needs first.
 
 ## Engineering rules
 - Python 3.11+, standard library only in the core (`pywinpty` and `pyte` are optional extras for the `/usage` reader).
