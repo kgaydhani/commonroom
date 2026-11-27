@@ -1,3 +1,4 @@
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -40,6 +41,60 @@ class ParallelRunnerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("test_imp.py", out)
         self.assertIn("FAILED", out)
+
+
+TWO = (
+    "import unittest\n"
+    "class A(unittest.TestCase):\n    def test_a(self): pass\n"
+    "class B(unittest.TestCase):\n    def test_b(self): pass\n"
+    "    def test_c(self): self.fail('boom')\n"
+)
+BIG = ("class Big(unittest.TestCase):\n"
+       + "".join(f"    def test_{i}(self): pass\n" for i in range(9)))
+
+
+def load_runner():
+    spec = importlib.util.spec_from_file_location("parallel_under_test", RUNNER)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def plan(files):
+    with tempfile.TemporaryDirectory() as d:
+        for name, body in files.items():
+            (Path(d) / name).write_text(body, encoding="utf-8", newline="\n")
+        return load_runner().plan_units(Path(d))
+
+
+class SplitTests(unittest.TestCase):
+    def test_failure_in_one_class_names_module_and_class(self):
+        code, out = run({"test_two.py": TWO, "test_one.py": PASS})
+        self.assertEqual(code, 1, out)
+        self.assertIn("Ran 5 tests", out)
+        self.assertIn("MODULE FAILED: test_two.py::B", out)
+        self.assertNotIn("test_two.py::A", out)
+        self.assertIn("FAILED (failures=1)", out)
+
+    def test_units_start_largest_first_and_single_class_stays_whole(self):
+        units = plan({"test_two.py": TWO + BIG, "test_single.py": PASS})
+        sizes = [u[2] for u in units]
+        self.assertEqual(sizes, sorted(sizes, reverse=True))
+        self.assertEqual(units[0][:2], ("test_two.py", "Big"))
+        self.assertEqual(len([u for u in units if u[0] == "test_two.py"]), 3)
+        self.assertEqual([u[:2] for u in units if u[0] == "test_single.py"],
+                         [("test_single.py", None)])
+
+    def test_unresolved_base_keeps_module_whole(self):
+        body = ("import unittest\nfrom elsewhere import Base\n"
+                "class A(unittest.TestCase):\n    def test_a(self): pass\n"
+                "class B(Base):\n    pass\n")
+        self.assertEqual([u[:2] for u in plan({"test_x.py": body})], [("test_x.py", None)])
+
+    def test_local_subclass_of_testcase_is_a_unit(self):
+        body = ("import unittest\nclass Base(unittest.TestCase):\n    def test_a(self): pass\n"
+                "class Sub(Base):\n    def test_b(self): pass\n")
+        self.assertEqual(sorted(u[1] for u in plan({"test_x.py": body})), ["Base", "Sub"])
 
 
 if __name__ == "__main__":
