@@ -15,6 +15,7 @@ from commonroom.localboard import LocalBoard
 
 PROVIDER = "claude"
 WEEK_SECONDS = pie.WEEK
+HISTORY_WEEKS = 8
 RECENT_LANDINGS = 3
 
 
@@ -47,6 +48,41 @@ def _is_local(p) -> bool:
         return bool(p) and handshake._local(p)
     except Exception:
         return False
+
+
+def _weekly_activity(ledger, cfg: dict, reg, names: dict, now: float) -> list[dict]:
+    """Room-wide counts for rolling seven-day windows, newest first, independent of the usage meter."""
+    since = now - HISTORY_WEEKS * WEEK_SECONDS
+    weeks = [{"until": now - i * WEEK_SECONDS, "corrections": 0, "undone_routes": 0, "landings": 0}
+             for i in range(HISTORY_WEEKS)]
+
+    def count(field, times):
+        for at in times:
+            if since < at <= now:
+                weeks[int((now - at) // WEEK_SECONDS)][field] += 1
+
+    host = cfg["project"].get("name")
+    try:
+        folders = {handshake.folder_of(p).resolve() for p in reg.projects.values()}
+        if not reg.projects and host:
+            folders.add(handshake.home() / "projects" / host)
+        for folder in folders:
+            count("corrections", (n["at"] for n in handshake.read_notes(folder) if n["kind"] == "correction"))
+    except OSError:
+        for week in weeks:
+            week["corrections"] = None
+
+    count("undone_routes", ledger.route_undos(since, now))
+    projects = [(name, _is_local(reg.projects[key])) for key, name in names.items()]
+    if not reg.projects:
+        projects = [(host, config_mod.board_kind(cfg) == "local")]
+    for name, local in projects:
+        landed = metrics.landings(ledger.runs_since(name, since), since, now, local)
+        count("landings", (r["started_at"] for r in landed))
+    if reg.projects and not names:
+        for week in weeks:
+            week["landings"] = None
+    return weeks
 
 
 def _project(ledger, name, now: float, row, ok: bool, win, slack: float, local: bool = False) -> dict:
@@ -199,5 +235,6 @@ def page_state(ledger, cfg: dict, now: float, reg=None, queue=None, transcripts:
         routes = ledger.routes(30)
     except Exception:
         routes = []
-    return {"now": now, "routes": routes, "week": week, "gate": gate, "pie": pie_verdict, "rows": rows, "waiting": waiting,
+    return {"now": now, "routes": routes, "weekly_activity": _weekly_activity(ledger, cfg, reg, names, now),
+            "week": week, "gate": gate, "pie": pie_verdict, "rows": rows, "waiting": waiting,
             "projects": sections, "registered": bool(reg.projects), "error": error}

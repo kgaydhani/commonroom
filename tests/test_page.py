@@ -1,5 +1,8 @@
 """The dashboard's one page (commonroom#248): its state function on a temporary room home, never ~/.commonroom."""
 import json
+import os
+import shutil
+import subprocess
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -119,6 +122,100 @@ class PageState(Room):
         self.assertNotIn("https://fonts", html)
         self.assertIn("/api/page", html)
         self.assertNotIn("innerHTML", html)
+
+
+class WeeklyActivity(Room):
+    def setUp(self):
+        super().setUp()
+        user = self.root / "user"
+        (user / ".claude" / "projects").mkdir(parents=True)
+        self.enterContext(mock.patch.dict(os.environ, {"HOME": str(user), "USERPROFILE": str(user)}))
+        self.now = 1_800_000_000
+
+    def test_eight_weeks_from_notes_and_ledger_without_a_meter_reading(self):
+        reg = self.register()
+        beta = Path(reg.projects["beta"].path)
+        (beta / "room.toml").write_text('[project]\nname = "beta-site"\nboard = "local"\n', encoding="utf-8")
+        week = page.WEEK_SECONDS
+        alpha_notes = handshake.folder_of(reg.projects["alpha"])
+        for at, kind in ((self.now, "correction"), (self.now - week, "correction"),
+                         (self.now - 8 * week, "correction"), (self.now + 1, "correction"),
+                         (self.now - 1, "suggestion")):
+            handshake.write_note(alpha_notes, "scratch note", "owner", now=at, kind=kind)
+        handshake.write_note(handshake.folder_of(reg.projects["beta"]), "scratch note", "owner",
+                             now=self.now - 7 * week, kind="correction")
+
+        def landed(project, role, at, outputs=()):
+            run = self.ledger.start_run(project, "#1", role, "claude", now=at)
+            self.ledger.finish_run(run, "done", outputs=list(outputs), now=at)
+
+        landed("alpha-site", "merge", self.now)
+        landed("alpha-site", "merge", self.now - week)
+        landed("alpha-site", "merge", self.now - 8 * week)
+        landed("alpha-site", "merge", self.now + 1)
+        landed("unregistered", "merge", self.now)
+        landed("beta-site", "merge", self.now)
+        landed("beta-site", "builder", self.now - 7 * week, [{"kind": "builder", "ref": "#1 closed"}])
+        landed("beta-site", "builder", self.now)
+
+        old = self.ledger.add_route("", "elsewhere", "alpha", "scratch", "note", at=self.now - 10 * week)
+        self.assertTrue(self.ledger.undo_route(old, at=self.now - week))
+        for _ in range(31):
+            self.ledger.add_route("", "elsewhere", "beta", "scratch", "note", at=self.now)
+        future = self.ledger.add_route("", "elsewhere", "alpha", "scratch", "note", at=self.now)
+        self.assertTrue(self.ledger.undo_route(future, at=self.now + 1))
+
+        changes = self.ledger.db.total_changes
+        state = page.page_state(self.ledger, PageState.cfg(self), self.now)
+        self.assertEqual(self.ledger.db.total_changes, changes)
+        self.assertIsNone(state["week"])
+        self.assertNotIn(old, [r["id"] for r in state["routes"]])
+        weeks = state["weekly_activity"]
+        self.assertEqual([w["until"] for w in weeks], [self.now - i * week for i in range(8)])
+        self.assertEqual([(w["corrections"], w["undone_routes"], w["landings"]) for w in weeks],
+                         [(1, 0, 1), (1, 1, 1)] + [(0, 0, 0)] * 5 + [(1, 0, 1)])
+
+    def test_standalone_page_counts_the_host_and_shows_empty_weeks(self):
+        run = self.ledger.start_run("alpha-site", "#1", "merge", "claude", now=self.now)
+        self.ledger.finish_run(run, "done", now=self.now)
+        state = page.page_state(self.ledger, PageState.cfg(self), self.now)
+        self.assertEqual([w["landings"] for w in state["weekly_activity"]], [1] + [0] * 7)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is optional for the dashboard render test")
+    def test_dashboard_renders_the_scratch_counts_with_their_sources(self):
+        alpha = self.register().projects["alpha"]
+        handshake.write_note(handshake.folder_of(alpha), "scratch note", "owner", now=self.now, kind="correction")
+        run = self.ledger.start_run("alpha-site", "#1", "merge", "claude", now=self.now)
+        self.ledger.finish_run(run, "done", now=self.now)
+        rid = self.ledger.add_route("", "", "alpha", "scratch", "note", at=self.now)
+        self.ledger.undo_route(rid, at=self.now)
+        state = page.page_state(self.ledger, PageState.cfg(self), self.now)
+
+        # Run the shipped script against a minimal DOM, with neither a server nor a live room.
+        script = dashboard.PAGE.split("<script>", 1)[1].split("//<live>", 1)[0]
+        dom = """
+const root = {};
+function element(tag) {
+  return {tag, children: [], appendChild(child) { this.children.push(child); }};
+}
+const document = {
+  createElement: element,
+  getElementById(id) { return root[id] ??= element(id); }
+};
+"""
+        call = f'\nrender({json.dumps(state)});\nconsole.log(JSON.stringify(root["weekly-activity"] ?? null));'
+        rendered = subprocess.run(["node", "-"], input=dom + script + call, encoding="utf-8",
+                                  capture_output=True, check=True, timeout=10, cwd=self.root)
+        activity = json.loads(rendered.stdout)
+        self.assertIsNotNone(activity, "The dashboard did not render the weekly activity")
+        table, sources = activity["children"]
+        head, body = table["children"]
+        self.assertEqual([cell["textContent"] for cell in head["children"][0]["children"][1:]],
+                         ["Correction notes", "Routes undone", "Landings"])
+        self.assertEqual([[cell["textContent"] for cell in row["children"][1:]] for row in body["children"]],
+                         [[1, 1, 1]] + [[0, 0, 0]] * 7)
+        for source in ("inbox files marked correction", "ledger merge runs", "counted when marked undone"):
+            self.assertIn(source, sources["textContent"])
 
 
 class Trail(Room):
