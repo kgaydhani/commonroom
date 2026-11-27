@@ -109,24 +109,33 @@ def discover(reg=None, projects_dir: Path | None = None, path: Path | None = Non
     found: dict = {}
     files: dict = {}
     folder = projects_dir or sessions.default_dir()
+    listed = True
     try:
         transcripts = sorted(folder.glob("*/*.jsonl")) + sorted(folder.glob("*/*/subagents/*.jsonl"))
     except OSError:
-        transcripts = []
+        transcripts, listed = [], False
     for transcript in transcripts:
         key = sessions.path_key(transcript)
         try:
             st = transcript.stat()
         except OSError:
             continue
-        files[key] = [st.st_size, st.st_mtime]
-        if data["files"].get(key) == files[key]:
+        cached = data["files"].get(key)
+        left_out = cached[2] if isinstance(cached, list) and len(cached) == 3 and isinstance(cached[2], list) else None
+        if left_out is not None and cached[:2] == [st.st_size, st.st_mtime] and all(
+                _excluded(c, project_roots, worktrees, temp) for c in left_out):
+            files[key] = cached               # unchanged, and every folder it left out is still left out
             continue
+        skipped = set()
         for cwd, session, at in _read(transcript):
+            if _excluded(cwd, project_roots, worktrees, temp):
+                skipped.add(cwd)
+                continue
             place = found.setdefault(sessions.path_key(cwd), {"path": cwd, "last": 0.0, "sessions": set()})
             place["sessions"].add(session)
             if at >= place["last"]:
                 place["last"], place["path"] = at, cwd
+        files[key] = [st.st_size, st.st_mtime, sorted(skipped)]
     places = data["places"]
     for key, new in found.items():
         if _excluded(new["path"], project_roots, worktrees, temp):
@@ -138,7 +147,8 @@ def discover(reg=None, projects_dir: Path | None = None, path: Path | None = Non
                        "description": old.get("description", "")} | ({"home": True} if old.get("home") else {})
     for key in [k for k, p in places.items() if _excluded(p["path"], project_roots, worktrees, temp)]:
         del places[key]                       # a folder that became a project (or holds a room.toml) is no place
-    data["files"] = {k: v for k, v in files.items()} | {k: v for k, v in data["files"].items() if k not in files}
+    # Transcripts no longer on disk are dropped (their places stay); if the folder could not be listed, keep what we had.
+    data["files"] = files if listed else data["files"]
     save(data, path)
     return data
 

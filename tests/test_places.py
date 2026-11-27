@@ -87,6 +87,34 @@ class PlacesTest(unittest.TestCase):
         rows = places.listing(places.discover(self.reg, self.records))
         self.assertEqual((len(rows), rows[0]["sessions"], rows[0]["exists"]), (1, 1, False))
 
+    def test_folder_that_stops_being_left_out_becomes_a_place(self):
+        other = self.make("other")
+        self.session(other, "o1", "2026-11-01T10:00:00+00:00")
+        reg = registry.Registry(projects={"proj": registry.Project("proj", str(self.proj), 50),
+                                          "other": registry.Project("other", str(other), 10)})
+        self.assertEqual(places.listing(places.discover(reg, self.records)), [])
+        self.assertEqual(places.listing(places.discover(reg, self.records)), [])   # cached, still left out
+        rows = places.listing(places.discover(self.reg, self.records))             # unregistered
+        self.assertEqual([(r["name"], r["sessions"]) for r in rows], [("other", 1)])
+        # a room.toml that is deleted does the same
+        held = self.make("held")
+        (held / "room.toml").write_text("")
+        self.session(held, "h1", "2026-11-01T10:00:00+00:00")
+        places.discover(self.reg, self.records)
+        (held / "room.toml").unlink()
+        names = [r["name"] for r in places.listing(places.discover(self.reg, self.records))]
+        self.assertIn("held", names)
+
+    def test_files_drop_pruned_transcripts_and_places_stay(self):
+        a = self.make("a")
+        self.session(a, "s1", "2026-11-01T10:00:00+00:00")
+        self.session(a, "s2", "2026-11-02T10:00:00+00:00")
+        self.assertEqual(len(places.discover(self.reg, self.records)["files"]), 2)
+        next(self.records.rglob("s1.jsonl")).unlink()
+        data = places.discover(self.reg, self.records)
+        self.assertEqual(len(data["files"]), 1)
+        self.assertEqual(places.listing(data)[0]["sessions"], 2)
+
     def test_rediscovery_does_not_double_count(self):
         a = self.make("a")
         self.session(a, "s1", "2026-11-01T10:00:00+00:00")
