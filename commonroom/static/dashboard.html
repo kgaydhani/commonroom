@@ -35,6 +35,8 @@ ul{margin:.3rem 0;padding-left:1.2rem}
 <div id="waiting"></div>
 <h2>Routes</h2>
 <div id="routes"></div>
+<h2>The layer today</h2>
+<div id="layer"></div>
 <h2>Projects</h2>
 <div id="projects"></div>
 <p class="dim">est. = an estimate: the weekly meter covers the whole plan, so each part is inferred.</p>
@@ -107,6 +109,21 @@ function render(d) {
   if (!(d.routes || []).length) el("p", "Nothing has been routed.", "dim", rt);
   for (const r of d.routes || []) {
     el("p", `${when(r.at)}  ${r.from_place || "?"} -> ${r.to_place} (${r.how}${r.session ? ", session " + r.session : ""}): ${r.summary}${r.undone_at ? " [undone " + when(r.undone_at) + "]" : ""}`, r.undone_at ? "dim" : null, rt);
+  }
+
+  const ly = $("layer");
+  ly.textContent = "";
+  const L = d.layer || {};
+  const fig = (text, o) => {
+    el("p", o.error ? `${o.error}.` : text, o.error ? "bad" : null, ly);
+    el("p", `${o.how} Leaves out: ${o.leaves_out}`, "dim", ly);
+  };
+  if (L.error) el("p", `The layer section can't be built: ${L.error}`, "bad", ly);
+  else {
+    const r = L.routes, o = L.offers, p = L.person;
+    fig(r.total === 0 ? "No routes made today." : `Routes made today: ${r.total}${r.undone ? " (+" + r.undone + " undone)" : ""}: ${(r.to || []).map(x => `${x.count} to ${x.place} (${x.how})`).join(", ")}.`, r);
+    fig(`Sessions offered a fresh start today: ${o.offered}. Whether they took it: not yet recorded.`, o);
+    fig(p.lines === 0 ? "The person file is empty." : `Person file: ${p.lines} of ${p.max_lines} lines, about ${p.tokens} of ${p.max_tokens} tokens; oldest line ${p.oldest ? p.oldest + " (" + p.oldest_days + " days old)" : "undated"}.`, p);
   }
 
   const pj = $("projects");
