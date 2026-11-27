@@ -653,12 +653,23 @@ class ColdReturn(Hook):
             self.assertEqual(self.prompt(path), "")
         self.assertNotEqual(self.prompt(path), "")
 
+    def check_tail(self):
+        path = self.transcript(90, 300000)
+        last = len(path.read_bytes().rstrip(b"\n").split(b"\n")[-1])
+        path.write_bytes(b"x" * 2000 + b"\n" + path.read_bytes())
+        self.assertEqual(hook.last_turn(path, last + 1)[1], 300001)
+        self.assertIsNone(hook.last_turn(path, last // 2))
+        self.assertIsNone(hook.last_turn(path, 5))
+
     def test_only_the_tail_is_read(self):
         self.register()
-        path = self.transcript(90, 300000)
-        path.write_bytes(b"x" * 2000 + b"\n" + path.read_bytes())
-        self.assertEqual(hook.last_turn(path, 400)[1], 300001)
-        self.assertIsNone(hook.last_turn(path, 5))
+        self.check_tail()
+
+    def test_only_the_tail_is_read_under_a_long_folder_path(self):
+        self.register()
+        self.alpha = self.tmp / ("long-branch-name-" * 14)
+        self.assertGreaterEqual(len(str(self.alpha)), 200)
+        self.check_tail()
 
     def rollout(self, minutes_ago, context, name="r.jsonl", extra=()):
         """A synthetic Codex rollout (cli_version 0.167) whose last token_count is `minutes_ago` old."""
