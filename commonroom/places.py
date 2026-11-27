@@ -121,21 +121,23 @@ def discover(reg=None, projects_dir: Path | None = None, path: Path | None = Non
         except OSError:
             continue
         cached = data["files"].get(key)
-        left_out = cached[2] if isinstance(cached, list) and len(cached) == 3 and isinstance(cached[2], list) else None
-        if left_out is not None and cached[:2] == [st.st_size, st.st_mtime] and all(
-                _excluded(c, project_roots, worktrees, temp) for c in left_out):
-            files[key] = cached               # unchanged, and every folder it left out is still left out
+        known = cached[2:] if isinstance(cached, list) and len(cached) == 4 and all(isinstance(x, list) for x in cached[2:]) else None
+        if known is not None and cached[:2] == [st.st_size, st.st_mtime] and all(
+                _excluded(c, project_roots, worktrees, temp) for c in known[0]) and not any(
+                _excluded(c, project_roots, worktrees, temp) for c in known[1]):
+            files[key] = cached               # unchanged, and no folder it shows has changed between left out and a place
             continue
-        skipped = set()
+        skipped, kept = set(), set()
         for cwd, session, at in _read(transcript):
             if _excluded(cwd, project_roots, worktrees, temp):
                 skipped.add(cwd)
                 continue
+            kept.add(cwd)
             place = found.setdefault(sessions.path_key(cwd), {"path": cwd, "last": 0.0, "sessions": set()})
             place["sessions"].add(session)
             if at >= place["last"]:
                 place["last"], place["path"] = at, cwd
-        files[key] = [st.st_size, st.st_mtime, sorted(skipped)]
+        files[key] = [st.st_size, st.st_mtime, sorted(skipped), sorted(kept)]
     places = data["places"]
     for key, new in found.items():
         if _excluded(new["path"], project_roots, worktrees, temp):

@@ -105,6 +105,24 @@ class PlacesTest(unittest.TestCase):
         names = [r["name"] for r in places.listing(places.discover(self.reg, self.records))]
         self.assertIn("held", names)
 
+    def test_place_that_is_registered_then_unregistered_comes_back(self):
+        a = self.make("a")
+        self.session(a, "a1", "2026-11-01T10:00:00+00:00")
+        reg_a = registry.Registry(projects={"proj": registry.Project("proj", str(self.proj), 50),
+                                            "a": registry.Project("a", str(a), 10)})
+        self.assertEqual([r["name"] for r in places.listing(places.discover(self.reg, self.records))], ["a"])
+        self.assertEqual(places.listing(places.discover(reg_a, self.records)), [])
+        rows = places.listing(places.discover(self.reg, self.records))
+        self.assertEqual([(r["name"], r["sessions"]) for r in rows], [("a", 1)])
+        # the same through a room.toml added to a folder that was already a place, then deleted
+        b = self.make("b")
+        self.session(b, "b1", "2026-11-01T10:00:00+00:00")
+        places.discover(self.reg, self.records)
+        (b / "room.toml").write_text("")
+        self.assertNotIn("b", [r["name"] for r in places.listing(places.discover(self.reg, self.records))])
+        (b / "room.toml").unlink()
+        self.assertIn("b", [r["name"] for r in places.listing(places.discover(self.reg, self.records))])
+
     def test_files_drop_pruned_transcripts_and_places_stay(self):
         a = self.make("a")
         self.session(a, "s1", "2026-11-01T10:00:00+00:00")
