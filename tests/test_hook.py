@@ -319,7 +319,7 @@ class FindingLine(Hook):
     """commonroom#590: every session start, project or not, ends with the one line that says to send `room finding`."""
     def know(self, folder, description=""):
         data = places.load()
-        data["places"][places.sessions.path_key(folder)] = {"path": str(folder), "last": 1.0, "sessions": ["s"],
+        data["places"][places.sessions.path_key(folder)] = {"path": str(folder), "last": time.time(), "sessions": ["s"],
                                                             "description": description}
         places.save(data)
 
@@ -357,11 +357,9 @@ class FindingLine(Hook):
     def test_the_text_with_the_line_stays_inside_the_budget(self):
         self.register()
         for n in range(8):
-            self.know_places = None
-            data = places.load()
-            data["places"][f"k{n}"] = {"path": str(self.elsewhere), "last": time.time(), "sessions": ["s"],
-                                       "description": "d" * 500}
-            places.save(data)
+            folder = self.tmp / f"k{n}"
+            folder.mkdir()
+            self.know(folder, "d" * 500)
         for _ in range(3):
             self.note("Please write your charter.", "director" * 5)
         limit = policy.DEFAULTS["session_start_max_tokens"]

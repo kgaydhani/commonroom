@@ -1,6 +1,6 @@
 # {{project}}
 
-Built by the room at {{built}} from its ledger and this folder.
+Built by the room at {{built}} from its ledger and folder.
 
 {{reply}}
 
