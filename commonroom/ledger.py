@@ -551,6 +551,11 @@ class Ledger:
         sql = "SELECT id, at, session, from_place, to_place, summary, how, undone_at, due, answer, answered_at, delivered_at FROM routes ORDER BY at DESC, id DESC"
         return [dict(r) for r in self.db.execute(sql + (f" LIMIT {int(limit)}" if limit else ""))]
 
+    def route_undos(self, since: float, until: float) -> list[float]:
+        """Times routes were marked undone in (since, until], regardless of when they were sent."""
+        return [r[0] for r in self.db.execute(
+            "SELECT undone_at FROM routes WHERE undone_at > ? AND undone_at <= ?", (since, until))]
+
     def undo_route(self, route_id: int, at: float | None = None) -> bool:
         """Mark a route undone. False when there is no such route or it was already undone."""
         with self.db:
