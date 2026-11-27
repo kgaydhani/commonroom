@@ -4,6 +4,7 @@ import json
 import time
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from commonroom import steward, weights
@@ -28,6 +29,38 @@ def fit(date, dpp, spread=0.01):
 
 
 class OffSchedule(unittest.TestCase):
+    def test_alternating_sources_count_only_new_highs(self):
+        start = T0 - T0 % DAY
+        due = start + 5 * 3600
+        for disagreement in (1, 2):
+            with self.subTest(disagreement=disagreement):
+                rs = []
+                for i, pct in enumerate((31, 31, 33, 33 - disagreement, 33, 35, 35 - disagreement, 35)):
+                    source = "stream" if i % 2 else "usage-screen"
+                    rs.append(dict(reading(start + i * 1800, pct, due), source=source))
+                self.assertEqual(steward.off_schedule_resets(rs, "five_hour", start), [])
+                day = datetime.fromtimestamp(start, timezone.utc).date().isoformat()
+                self.assertEqual(weights.daily_rises(rs), ({day: 4.0}, []))
+
+    def test_ten_point_drop_two_hours_early_with_unchanged_due(self):
+        due = T0 + 5 * 3600
+        at = due - 2 * 3600
+        rs = [reading(T0, 31, due), reading(at, 21, due), reading(at + 60, 24, due)]
+        self.assert_early_reset(rs, at, expected_rise=3.0)
+
+    def test_due_moves_early_even_though_meter_rises(self):
+        due = T0 + 5 * 3600
+        at = due - 2 * 3600
+        rs = [reading(T0, 31, due), reading(at, 32, due + 3600)]
+        self.assert_early_reset(rs, at)
+
+    def assert_early_reset(self, readings, at, expected_rise=None):
+        found = steward.off_schedule_resets(readings, "five_hour", T0)
+        self.assertEqual([f["invariant"] for f in found], ["off-schedule-reset"])
+        day = datetime.fromtimestamp(at, timezone.utc).date().isoformat()
+        expected_rises = {} if expected_rise is None else {day: expected_rise}
+        self.assertEqual(weights.daily_rises(readings), (expected_rises, [day]))
+
     def test_reset_two_days_early_is_a_finding_and_names_the_day(self):
         due = T0 + 4 * DAY
         rs = [reading(T0, 40.0, due), reading(T0 + 2 * DAY, 3.0, T0 + 9 * DAY)]
