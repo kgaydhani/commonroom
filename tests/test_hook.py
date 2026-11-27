@@ -77,14 +77,18 @@ class Hook(unittest.TestCase):
             code = cli.main(["hook", "session-start"])
         return code, out.getvalue(), err.getvalue()
 
-    def added(self, cwd, **extra):
-        """The context the hook adds for a session starting in `cwd`, or "" when it prints nothing."""
+    def added(self, cwd, raw=False, **extra):
+        """The context the hook adds for a session starting in `cwd`, or "" when it prints nothing. The finding line
+        every start ends with (#590) is cut off unless `raw`, so these tests read the rest of the text."""
         data = {"session_id": "s1", "cwd": str(cwd), "hook_event_name": "SessionStart", "source": "startup", **extra}
         code, out, err = self.run_hook(json.dumps(data))
         self.assertEqual((code, err), (0, ""))
         if not out:
             return ""
-        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        text = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        if raw:
+            return text
+        return text[:-len(hook.FINDING)].rstrip(chr(10)) if text.endswith(hook.FINDING) else text
 
     def folder(self):
         return self.home / "projects" / "alpha"
@@ -309,6 +313,58 @@ class RecentPlaces(Hook):
         text = self.added(self.alpha)
         self.assertIn(f"- `other` ({other}): side", text)
         self.assertNotIn("- `alpha`", text)
+
+
+class FindingLine(Hook):
+    """commonroom#590: every session start, project or not, ends with the one line that says to send `room finding`."""
+    def know(self, folder, description=""):
+        data = places.load()
+        data["places"][places.sessions.path_key(folder)] = {"path": str(folder), "last": time.time(), "sessions": ["s"],
+                                                            "description": description}
+        places.save(data)
+
+    def assertEnds(self, text):
+        self.assertEqual(text.split(chr(10))[-1], hook.FINDING)
+        self.assertEqual(text.count("room finding"), 1)
+
+    def test_the_line_names_the_command_and_says_to_carry_on(self):
+        self.assertIn("`room finding", hook.FINDING)
+        self.assertIn("carry on", hook.FINDING)
+        self.assertNotIn(chr(10), hook.FINDING)
+
+    def test_a_project_folder_a_known_place_and_an_unknown_folder_all_get_it(self):
+        self.register()
+        self.assertEnds(self.added(self.alpha, raw=True))
+        self.know(self.elsewhere, "scratch")
+        self.assertEnds(self.added(self.elsewhere, raw=True))
+        other = self.tmp / "unknown"
+        other.mkdir()
+        self.assertEqual(self.added(other, raw=True), hook.FINDING)
+
+    def test_the_owner_home_place_gets_it(self):
+        data = places.load()
+        data["places"][places.sessions.path_key(self.elsewhere)] = {"path": str(self.elsewhere), "last": 1.0,
+                                                                    "sessions": ["s"], "home": True}
+        places.save(data)
+        self.assertEnds(self.added(self.elsewhere, raw=True))
+
+    def test_a_room_worker_gets_nothing(self):
+        self.register()
+        with mock.patch.dict(os.environ, {"COMMONROOM_WORKER": "1"}):
+            self.assertEqual(self.added(self.alpha, raw=True), "")
+            self.assertEqual(self.added(self.elsewhere, raw=True), "")
+
+    def test_the_text_with_the_line_stays_inside_the_budget(self):
+        self.register()
+        for n in range(8):
+            folder = self.tmp / f"k{n}"
+            folder.mkdir()
+            self.know(folder, "d" * 500)
+        for _ in range(3):
+            self.note("Please write your charter.", "director" * 5)
+        limit = policy.DEFAULTS["session_start_max_tokens"]
+        self.assertLessEqual(-(-len(self.added(self.alpha, raw=True)) // 4), limit)
+        self.assertLessEqual(-(-len(self.added(self.elsewhere, raw=True)) // 4), limit)
 
 
 class Silent(Hook):

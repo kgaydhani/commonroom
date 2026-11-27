@@ -37,6 +37,7 @@ PLACE_START = read_way(handshake.TEMPLATES / "place-start.md")
 HOME_START = read_way(handshake.TEMPLATES / "home-start.md")
 PLACES_RECENT = read_way(handshake.TEMPLATES / "places-recent.md")
 FRESH_START = read_way(handshake.TEMPLATES / "fresh-start.md")
+FINDING = read_way(handshake.TEMPLATES / "finding.md").strip()   # the line every session start ends with (#590)
 OFFERED = "session-offers.json"   # in the room home: the sessions already offered a fresh start
 SCANS = "session-scans.json"   # in the room home: how far each session's transcript has been read
 OFFER_KEEP = 90 * 86400          # seconds an offered session is remembered
@@ -62,6 +63,10 @@ def _senders(notes: list[dict]) -> str:
     return ", ".join(f"{who} ({k})" if k > 1 else who for who, k in counts.most_common())
 
 
+def _in_worker_dir(cwd: str, now: float, ledger: Ledger | None) -> bool:
+    return ledger is not None and any(handshake._inside(cwd, d) for d in ledger.worker_dirs(now - WORKER_WINDOW))
+
+
 def _project(data: dict, now: float, ledger: Ledger | None):
     """The registered project a hook's `cwd` is in, or None: a room worker, an unknown folder or an empty registry."""
     cwd = data.get("cwd")
@@ -70,7 +75,7 @@ def _project(data: dict, now: float, ledger: Ledger | None):
     reg = registry.load(check=False)
     if not reg.projects:
         return None
-    if ledger is not None and any(handshake._inside(cwd, d) for d in ledger.worker_dirs(now - WORKER_WINDOW)):
+    if _in_worker_dir(cwd, now, ledger):
         return None   # a room worker: its prompt already carries the record
     try:
         return handshake.find(reg, cwd=Path(cwd))
@@ -352,15 +357,34 @@ def recent_places(here: dict | None, room_line: str = "", now: float | None = No
             continue
         said = " ".join(str(row["description"] or "").split()).rstrip(" .")
         lines.append((f"- `{row['name']}` ({row['path']})" + (f": {said}" if said else ""))[:LINE_CHARS])
-    budget = policy.DEFAULTS["session_start_max_tokens"] * 4 - len(room_line)   # characters, as tokens are chars / 4
+    budget = policy.DEFAULTS["session_start_max_tokens"] * 4 - len(room_line) - len(FINDING) - 2   # the finding line follows (#590); characters, as tokens are chars / 4
     while lines and len(fill_way(PLACES_RECENT, days=str(policy.DEFAULTS["places_days"]), places="\n".join(lines))) + 1 > budget:
         lines.pop()                       # over the hook's budget: the oldest go first
     return fill_way(PLACES_RECENT, days=str(policy.DEFAULTS["places_days"]), places="\n".join(lines)) if lines else ""
 
 
 def context(data: dict, now: float | None = None) -> str:
-    """The text to add for one SessionStart input, or "" to add nothing."""
+    """The text to add for one SessionStart input, or "" to add nothing: the place's or project's text, then the one
+    line that says to send `room finding` (#590), in every folder, known or not. A room worker gets neither."""
     now = time.time() if now is None else now
+    cwd = data.get("cwd")
+    if os.environ.get("COMMONROOM_WORKER"):
+        return ""
+    if not isinstance(cwd, str) or not os.path.isdir(cwd):
+        return ""
+    ledger = Ledger.reader()
+    try:
+        if _in_worker_dir(cwd, now, ledger):
+            return ""
+    finally:
+        if ledger is not None:
+            ledger.close()
+    text = _context(data, now)
+    return f"{text}{chr(10)}{FINDING}" if text else FINDING
+
+
+def _context(data: dict, now: float) -> str:
+    """The place's or project's text, kept inside the budget with room left for the finding line."""
     ledger = Ledger.reader()
     try:
         p = _project(data, now, ledger)
