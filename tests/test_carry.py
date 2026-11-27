@@ -725,3 +725,56 @@ class DirectorDecided(Carry):
 
 for _name in [n for n in dir(Carry) if n.startswith("test_")]:
     setattr(DirectorDecided, _name, getattr(DirectorDecided, _name) if _name in DirectorDecided.__dict__ else None)
+
+
+class TreeReuse(MainSuite):
+    """commonroom#726: main's tree is one the room already passed: the post-merge run is skipped."""
+
+    def test_the_same_tree_under_the_same_command_reuses_the_pass(self):
+        board = self.setup_ready_pr()
+        a = self.sha()
+        d = self.dispatcher(self.cfg(), board)
+        d.record_pass(a, PASS)                      # what a PASS through the room's own runner records
+        self.git("commit", "--amend", "--no-edit", "--date=2026-01-01T00:00:00")   # b: same tree, new sha
+        b = self.sha()
+        self.assertNotEqual(a, b)
+        actions = []
+        self.assertFalse(d.main_suite_red([], actions))
+        self.assertEqual(self.calls, [])
+        self.assertTrue([x for x in actions if "reused" in x and a[:7] in x])
+        self.assertIsNotNone(d.ledger.marked(d.project, f"main-suite:{b}"))
+
+    def test_a_pass_through_the_runner_is_recorded(self):
+        board = self.setup_ready_pr()
+        self.results = [("PASS", "Ran 3 tests OK")]
+        d = self.dispatcher(self.cfg(), board)
+        d.main_suite_red([], [])
+        a = self.sha()
+        self.assertEqual(d.passed_tree(a + "", PASS), "")      # only another commit counts
+        self.git("commit", "--amend", "--no-edit", "--date=2026-01-01T00:00:00")
+        self.assertEqual(d.passed_tree(self.sha(), PASS), a)
+
+    def test_a_different_tree_command_or_a_failed_result_runs_the_suite(self):
+        board = self.setup_ready_pr()
+        a = self.sha()
+        d = self.dispatcher(self.cfg(), board)
+        d.record_pass(a, "other command")           # a different command
+        self.git("commit", "--amend", "--no-edit", "--date=2026-01-01T00:00:00")
+        self.results = [("PASS", "Ran 3 tests OK")]
+        d.main_suite_red([], [])
+        self.assertEqual(len(self.calls), 1)
+        self.write("more.md", "more\n")             # a different tree
+        c = self.commit("changes the tree")
+        d.record_pass(a, PASS)
+        self.results = [("FAIL", "exit 1: x")]
+        d.main_suite_red([], [])
+        self.assertEqual(self.calls[-1], c)
+
+    def test_a_fail_or_incomplete_is_never_recorded(self):
+        board = self.setup_ready_pr()
+        d = self.dispatcher(self.cfg(), board)
+        for result in ("FAIL", "INCOMPLETE"):
+            carry.run_suite = lambda *a, r=result, **k: (r, "x")
+            d.run_suite(self.sha(), PASS, self.root / "w", None, 1)
+        self.assertEqual(d.passed_tree(self.sha(), PASS), "")
+        self.assertEqual(d.ledger.marks(d.project, "suite-pass:"), [])

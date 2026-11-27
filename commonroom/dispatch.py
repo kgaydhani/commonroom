@@ -2333,7 +2333,7 @@ class Dispatcher:
         tip, numbers = steps[-1][3], [s[0]["number"] for s in steps]
         names = ", ".join(f"#{n}" for n in numbers)
         started = time.time()
-        result, line = carry_mod.run_suite(self.root, tip, checks["test"], self.worktree_base() / "carry-train",
+        result, line = self.run_suite(tip, checks["test"], self.worktree_base() / "carry-train",
                                            suite_lock(Path(self.ledger.path).parent, self.project),
                                            float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
         if result == "BUSY":
@@ -2449,6 +2449,33 @@ class Dispatcher:
             return live, f"main {sha[:7]}'s room.toml unusable ({str(exc)[:60]}); testing with the live checks"
         return tested, ""
 
+    def run_suite(self, *args, **kw):
+        """`carry.run_suite`, and a PASS is recorded against the commit's tree and the test command (commonroom#726)."""
+        result, line = carry_mod.run_suite(self.root, *args, **kw)
+        if result == "PASS":
+            self.record_pass(args[0], args[1])
+        return result, line
+
+    def tree_of(self, sha: str) -> str:
+        try:
+            return git(["rev-parse", f"{sha}^{{tree}}"], self.root).strip().lower()
+        except RuntimeError:
+            return ""
+
+    def record_pass(self, sha: str, command: str):
+        tree = self.tree_of(sha)
+        if tree:
+            self.ledger.mark(self.project, f"suite-pass:{tree}:{sha.lower()}:{command}")
+
+    def passed_tree(self, sha: str, command: str) -> str:
+        """The commit whose identical tree passed under this same command, or ''."""
+        tree = self.tree_of(sha)
+        for rest, _ in (self.ledger.marks(self.project, f"suite-pass:{tree}:") if tree else ()):
+            other, _, cmd = rest.partition(":")
+            if cmd == command and other != sha.lower():
+                return other
+        return ""
+
     def main_suite_red(self, everything: list[dict], actions: list[str]) -> bool:
         """The no-CI `main_red` (commonroom#303): run the suite on main's head once per sha, in code with no model, and
         hold merges while the latest result is FAIL, with the one `Main is red` task open. The result is a ledger mark per
@@ -2469,7 +2496,16 @@ class Dispatcher:
             checks, note = self.checks_at(sha, checks)
             if note:
                 actions.append(note)
-            result, line = carry_mod.run_suite(self.root, sha, checks["test"], self.worktree_base() / "main-suite",
+            tested = self.passed_tree(sha, checks["test"])
+            if tested:
+                run = self.ledger.start_run(self.project, f"main {sha[:7]}", "carry", "none", now=started)
+                self.ledger.finish_run(run, "done", outputs=[{"kind": "carry", "ref": f"main {sha[:7]}", "head": sha,
+                                                              "result": "PASS",
+                                                              "line": f"result: PASS; reused the tree of {tested}"}])
+                self.ledger.mark(self.project, seen_key)
+                actions.append(f"tests PASS on main {sha[:7]}: reused the passed result of {tested[:7]} (same tree), suite not run")
+                return False
+            result, line = self.run_suite(sha, checks["test"], self.worktree_base() / "main-suite",
                                                suite_lock(Path(self.ledger.path).parent, self.project),
                                                float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES),
                                                keep=(Path(self.ledger.path).parent / "suite-logs", self.project))
@@ -3057,7 +3093,7 @@ class Dispatcher:
         issue once, and the PR stays with the director."""
         n, head, checks = pr["number"], head_sha(detail).lower(), self.cfg.get("checks") or {}
         started = time.time()
-        result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
+        result, line = self.run_suite(head, checks["test"], self.worktree_base() / f"carry-{n}",
                                            suite_lock(Path(self.ledger.path).parent, self.project),
                                            float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
         if result == "BUSY":
@@ -3098,7 +3134,7 @@ class Dispatcher:
         row, a `[room] TESTS:` comment with no approval. A FAIL also tells the issue which tests failed."""
         n, head, checks = pr["number"], head_sha(detail).lower(), self.cfg.get("checks") or {}
         started = time.time()
-        result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
+        result, line = self.run_suite(head, checks["test"], self.worktree_base() / f"carry-{n}",
                                            suite_lock(Path(self.ledger.path).parent, self.project),
                                            float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
         if result == "BUSY":
@@ -3124,7 +3160,7 @@ class Dispatcher:
         checks = self.cfg.get("checks") or {}
         tested = self.approval_tested(detail, approval)
         started = time.time()
-        result, line = carry_mod.run_suite(self.root, head, checks["test"], self.worktree_base() / f"carry-{n}",
+        result, line = self.run_suite(head, checks["test"], self.worktree_base() / f"carry-{n}",
                                            suite_lock(Path(self.ledger.path).parent, self.project),
                                            float(checks.get("max_minutes") or carry_mod.DEFAULT_MAX_MINUTES))
         if result == "BUSY":
