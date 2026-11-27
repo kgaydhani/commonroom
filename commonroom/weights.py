@@ -28,6 +28,7 @@ MIN_RISE = 3.0      # points a day must rise to be fitted
 MIN_DAYS = 6        # usable days a fit needs, and at least models + 2
 MODEL_DAYS = 3      # usable days a model must appear on to be fitted
 ROLLOVER_SLACK = 1800.0
+JITTER = 2.0        # points of disagreement between meter sources
 FRESH = 2.0         # a window first seen at or below this many points began at zero
 
 # API dollars per million tokens: input, output, cache write (5 minute), cache read. Read 25 Nov 2026 from the vendor's
@@ -75,23 +76,28 @@ def daily_rises(readings: list[dict]) -> tuple[dict, list[str]]:
     rises: dict = {}
     resets: set = set()
     prev = None
+    high = 0.0
     for r in sorted(readings, key=lambda r: (r["first_seen"], r.get("observed_at") or 0)):
         day, pct = _day(r["first_seen"]), r["used_pct"]
-        if prev is not None:
-            if pct >= prev["used_pct"] - 1e-6 and not _moved(prev, r):
-                rises[day] = rises.get(day, 0.0) + max(0.0, pct - prev["used_pct"])
-            elif prev.get("resets_at") and r["first_seen"] >= prev["resets_at"] - ROLLOVER_SLACK and pct <= FRESH:
+        if prev is None:
+            high = pct
+        elif window_changed(prev, r):
+            if prev.get("resets_at") and r["first_seen"] >= prev["resets_at"] - ROLLOVER_SLACK and pct <= FRESH:
                 rises[day] = rises.get(day, 0.0) + pct          # natural rollover: the new window began at zero
             else:
                 resets.add(day)                                  # fell early, or first seen part-way: not fitted across
+            high = pct
+        else:
+            rises[day] = rises.get(day, 0.0) + max(0.0, pct - high)
+            high = max(high, pct)
         prev = r
     return rises, sorted(resets)
 
 
-def _moved(prev: dict, r: dict) -> bool:
-    """A new window with a higher reading (resets_at jumped): its rise from the old window's level means nothing."""
+def window_changed(prev: dict, r: dict) -> bool:
+    """Detect a meter reset from a drop beyond source jitter or a jump in its scheduled reset time."""
     a, b = prev.get("resets_at"), r.get("resets_at")
-    return bool(a and b and abs(b - a) > ROLLOVER_SLACK)
+    return prev["used_pct"] - r["used_pct"] > JITTER or bool(a and b and abs(b - a) > ROLLOVER_SLACK)
 
 
 def lsq(rows: list[list[float]], ys: list[float]) -> list[float]:
