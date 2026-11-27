@@ -21,6 +21,9 @@ p{margin:.3rem 0}
 details{margin:.4rem 0}
 summary{cursor:pointer}
 ul{margin:.3rem 0;padding-left:1.2rem}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:.25rem;text-align:right;border-bottom:1px solid #ddd}
+th:first-child{text-align:left}
 </style>
 </head>
 <body>
@@ -35,6 +38,8 @@ ul{margin:.3rem 0;padding-left:1.2rem}
 <div id="waiting"></div>
 <h2>Routes</h2>
 <div id="routes"></div>
+<h2>Corrections and landings</h2>
+<div id="weekly-activity"></div>
 <h2>Limits in force</h2>
 <div id="limits"></div>
 <h2>The layer today</h2>
@@ -56,6 +61,23 @@ function el(tag, text, cls, parent) {
 const when = t => new Date(t * 1000).toLocaleString([], {weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"});
 const ago = s => s < 90 ? "just now" : s < 5400 ? Math.round(s / 60) + " minutes old" : s < 172800 ? Math.round(s / 3600) + " hours old" : Math.round(s / 86400) + " days old";
 const pct = n => (n == null ? "-" : n.toFixed(1) + "%");
+
+function renderWeeklyActivity(weeks) {
+  const parent = $("weekly-activity");
+  parent.textContent = "";
+  const table = el("table", null, null, parent);
+  const headings = el("tr", null, null, el("thead", null, null, table));
+  for (const label of ["7 days ending", "Correction notes", "Routes undone", "Landings"]) {
+    el("th", label, null, headings).scope = "col";
+  }
+  const body = el("tbody", null, null, table);
+  for (const w of weeks) {
+    const row = el("tr", null, null, body);
+    el("th", when(w.until), null, row).scope = "row";
+    for (const n of [w.corrections, w.undone_routes, w.landings]) el("td", n ?? "Unavailable", null, row);
+  }
+  el("p", "Correction notes and landings cover the projects on this dashboard. Correction notes are inbox files marked correction, counted by note date. Landings come from ledger merge runs and local role runs that closed an item, counted by run start. Routes undone cover the whole room ledger, counted when marked undone.", "dim", parent);
+}
 
 function render(d) {
   const w = $("week");
@@ -113,6 +135,7 @@ function render(d) {
     el("p", `${when(r.at)}  ${r.from_place || "?"} -> ${r.to_place} (${r.how}${r.session ? ", session " + r.session : ""}): ${r.summary}${r.undone_at ? " [undone " + when(r.undone_at) + "]" : ""}`, r.undone_at ? "dim" : null, rt);
   }
 
+  renderWeeklyActivity(d.weekly_activity || []);
   const lm = $("limits");
   lm.textContent = "";
   if (d.limits) {
