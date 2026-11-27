@@ -96,6 +96,18 @@ class SplitTests(unittest.TestCase):
                 "class Sub(Base):\n    def test_b(self): pass\n")
         self.assertEqual(sorted(u[1] for u in plan({"test_x.py": body})), ["Base", "Sub"])
 
+    def test_classes_built_on_a_sibling_modules_base_are_split(self):
+        base = "import unittest\nclass Base(unittest.TestCase):\n    def test_a(self): pass\n"
+        user = ("import unittest\nfrom test_base import Base\n"
+                "class A(Base):\n    def test_b(self): pass\n"
+                "class B(unittest.TestCase):\n    def test_c(self): pass\n")
+        units = plan({"test_base.py": base, "test_user.py": user})
+        self.assertEqual(sorted(u[1] for u in units if u[0] == "test_user.py"),
+                         ["A", "B", "Base"])
+        code, out = run({"test_base.py": base, "test_user.py": user})
+        self.assertEqual(code, 0, out)
+        self.assertIn("Ran 5 tests", out)  # same count as one process per module
+
 
 if __name__ == "__main__":
     unittest.main()

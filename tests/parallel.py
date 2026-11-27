@@ -27,51 +27,72 @@ def _base_name(node) -> str:
     return node.id if isinstance(node, ast.Name) else ""
 
 
-def split_module(path: Path) -> list:
-    """Return [(class name, source lines)] for the module's TestCase classes,
-    or [] when the module should run as one unit: it has fewer than two test
-    classes, or a top-level class whose base can't be resolved here (so a
-    split could drop tests)."""
+def _parse(path: Path):
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        return ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError, UnicodeDecodeError):
-        return []
-    classes = [n for n in tree.body if isinstance(n, ast.ClassDef)]
-    local = {c.name: c for c in classes}
-    kind: dict = {}
+        return None
 
-    def classify(c, seen=()):
-        if c.name in kind:
-            return kind[c.name]
-        if c.name in seen:
-            return "unknown"
-        result = "plain"
-        for b in c.bases:
-            n = _base_name(b)
-            if n.endswith("TestCase"):
-                result = "test"
-                break
-            if n in local:
-                sub = classify(local[n], seen + (c.name,))
+
+def _kind(path: Path, name: str, seen=()) -> str:
+    """'test' when the class `name` (defined in or imported into `path`) is a
+    unittest.TestCase subclass, 'plain' when it is not, 'unknown' when its
+    base can't be resolved from source. Follows `from sibling import X`."""
+    key = (str(path), name)
+    tree = _parse(path)
+    if tree is None or key in seen:
+        return "unknown"
+    seen = seen + (key,)
+    for n in tree.body:
+        if isinstance(n, ast.ClassDef) and n.name == name:
+            result = "plain"
+            for b in n.bases:
+                bn = _base_name(b)
+                if bn.endswith("TestCase"):
+                    return "test"
+                if bn in ("object", ""):
+                    continue
+                sub = _kind(path, bn, seen)
+                if sub == "test":
+                    return "test"
                 if sub == "unknown":
                     result = "unknown"
-                elif sub == "test":
-                    result = "test"
-                    break
-            elif n not in ("object", ""):
-                result = "unknown"
-        kind[c.name] = result
-        return result
+            return result
+        if isinstance(n, ast.ImportFrom) and n.level == 0 and n.module:
+            for al in n.names:
+                if (al.asname or al.name) == name:
+                    sib = path.parent / (n.module + ".py")
+                    return _kind(sib, al.name, seen) if sib.is_file() else "unknown"
+    return "unknown"
 
+
+def split_module(path: Path) -> list:
+    """Return [(class name, source lines)] for every TestCase class the loader
+    would find in the module (defined there, or imported from a sibling test
+    module), or [] when the module should run as one unit: it has fewer than
+    two such classes, or a base that can't be resolved here (so a split could
+    drop tests)."""
+    tree = _parse(path)
+    if tree is None:
+        return []
+    if any(isinstance(n, ast.FunctionDef) and n.name == "load_tests" for n in tree.body):
+        return []
     tests = []
-    for c in classes:
-        k = classify(c)
+    for n in tree.body:
+        if isinstance(n, ast.ClassDef):
+            k = _kind(path, n.name)
+            size = (n.end_lineno or n.lineno) - n.lineno + 1
+        elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module                 and (path.parent / (n.module + ".py")).is_file():
+            for al in n.names:
+                if _kind(path, al.asname or al.name) == "test":
+                    tests.append((al.asname or al.name, 1))
+            continue
+        else:
+            continue
         if k == "unknown":
             return []
         if k == "test":
-            tests.append((c.name, (c.end_lineno or c.lineno) - c.lineno + 1))
-    if any(isinstance(n, ast.FunctionDef) and n.name == "load_tests" for n in tree.body):
-        return []
+            tests.append((n.name, size))
     return tests if len(tests) > 1 else []
 
 
